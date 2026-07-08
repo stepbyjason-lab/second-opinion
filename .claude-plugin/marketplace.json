@@ -1,0 +1,14 @@
+{
+  "name": "second-opinion",
+  "owner": {
+    "name": "stepbyjason-lab",
+    "url": "https://github.com/stepbyjason-lab"
+  },
+  "plugins": [
+    {
+      "name": "second-opinion",
+      "source": "./plugins/second-opinion",
+      "description": "Use external AI vendors (Codex/GPT, Antigravity/Gemini) from Claude Code in plain language — second opinions, task offloading, and capabilities like image generation"
+    }
+  ]
+}

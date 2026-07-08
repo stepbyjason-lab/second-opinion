@@ -1,0 +1,9 @@
+{
+  "name": "second-opinion",
+  "version": "0.2.1",
+  "description": "Use external AI vendors (Codex/GPT, Antigravity/Gemini) from Claude Code in plain language — second opinions, task offloading, and capabilities like image generation",
+  "author": {
+    "name": "stepbyjason-lab"
+  },
+  "license": "MIT"
+}
