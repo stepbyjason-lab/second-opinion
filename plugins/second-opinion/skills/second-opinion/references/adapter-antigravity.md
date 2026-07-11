@@ -2,11 +2,15 @@
 
 기본 커맨드는 SKILL.md fast-path 참조.
 
+금지(하지마) 규칙에는 근본원인(버전·버그·환경)을 함께 적는다 — 원인이 바뀌면 우회 해제 여부를 판단할 수 있다.
+
 ## 텍스트 과업 세부
 
-- **brief는 stdin으로** (`-p -` + 파일 리다이렉트) — 105KB 실측 통과, argv 경로의
+- **brief는 무-플래그 stdin으로** (파일 리다이렉트) — 대용량 실측 통과, argv 경로의
   30,000자 한계 없음. 파일 리다이렉트가 stdin을 닫아주므로 hang 걱정도 없다.
-  `-p`만 쓰고 `-`를 빠뜨리면 help 출력으로 떨어지니 주의 (v1.0.16 실측)
+  `-p -`는 1.1.1에서 `-`가 리터럴 프롬프트로 바뀌어 깨졌다. stdin은 미문서화
+  (#525/#542)라 자동업데이트로 다시 깨질 수 있으므로, 대형 입력이나 재파손 시
+  `--add-dir`로 디렉토리를 허용하고 파일 경로를 읽게 하는 폴백을 쓴다
 - ⚠️ argv로 줄 때(`-p "$(cat brief.txt)"`)만 적용되는 함정 둘: **`</dev/null` 필수**
   (stdin 안 닫으면 무한 hang) + **30,000자 한계** (Windows CreateProcess) — 특별한
   이유가 없으면 stdin 경로를 기본으로 쓸 것
@@ -43,18 +47,30 @@
 >
 > ```powershell
 > $agy = if (Get-Command agy -ErrorAction SilentlyContinue) { "agy" } else { "$env:LOCALAPPDATA\agy\bin\agy.exe" }
-> Get-Content brief.txt | & $agy --model "Gemini 3.1 Pro (High)" -p - > out.txt 2> err.txt
+> Get-Content brief.txt | & $agy --model "Gemini 3.1 Pro (High)" > out.txt 2> err.txt
 > ```
 >
 > `agy models` 출력으로 사용 가능한 모델 라벨을 확인할 수 있다 (Codex 세션에서도
 > 실측 통과 — 2026-07-08).
 
+## 파일 입력 과업 — 이미지·영상 분석
+
+이미지와 영상 모두 파일이 있는 디렉토리를 허용하고 짧은 경로 지시를 준다. argv 프롬프트를
+쓰므로 기존 hang 방지를 위해 `</dev/null`을 유지한다.
+
+```bash
+FILE="<이미지 또는 영상 파일의 절대경로>"
+timeout 280 "$AGY" --model "Gemini 3.1 Pro (High)" --add-dir "$(dirname "$FILE")" -p "Read and analyze this file: $FILE" </dev/null
+```
+
 ## 파일 산출물 과업 — 이미지 생성
+
+이미지 생성 전 `references/image-craft.md`(벤더무관 프롬프트 크래프트)로 프롬프트를 채운다.
 
 ### Antigravity (agy)
 
 ```bash
-echo "Generate an image: <프롬프트>. Save it as <파일명>.png." | timeout 280 "$AGY" -p -
+echo "Generate an image: <프롬프트>. Save it as <파일명>.png." | timeout 280 "$AGY"
 ```
 
 - 사진급 생성모델 실측 확인. 단 **저장 위치 지시를 무시**하고 자기 scratch 디렉토리
@@ -64,9 +80,11 @@ echo "Generate an image: <프롬프트>. Save it as <파일명>.png." | timeout 
 
 ## 벤더 불능 시 — Antigravity 복구 커맨드
 
-- agy 미설치 — Windows PowerShell: `irm https://antigravity.google/cli/install.ps1 | iex`
+- **설치·업데이트(같은 명령, 공식 installer)** — Windows PowerShell:
+  `irm https://antigravity.google/cli/install.ps1 | iex`
   / macOS·Linux: `curl -fsSL https://antigravity.google/cli/install.sh | bash`
-  (v1.0.15 미만은 Windows 비-TTY 출력 유실 버그 — 이상이면 업데이트).
-  Antigravity IDE가 깔려 있어도 headless CLI `agy`는 별개다 — IDE 존재를 설치됨으로
-  오인하지 말 것
+  (v1.0.15 미만은 Windows 비-TTY 출력 유실 버그 — 이상이면 위 명령 재실행으로 업데이트).
+  **검증**: `agy --version` + 실제 스모크(파일 존재 ≠ 동작). Antigravity IDE가 깔려 있어도
+  headless CLI `agy`는 별개다 — IDE 존재를 설치됨으로 오인하지 말 것. 채널 혼용 시 stale
+  PATH로 낡은 본이 잡힐 수 있으니(codex 실측 사고) 설치 후 호스트 앱 재시작으로 배제.
 - agy 인증 문제: `agy` 1회 대화 실행(재로그인)

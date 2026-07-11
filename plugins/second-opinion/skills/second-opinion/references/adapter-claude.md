@@ -97,3 +97,23 @@ timeout 280 claude -p --model sonnet --effort high --output-format json \
 >
 > Codex Desktop 샌드박스 내부에서는 45초 무출력 timeout이 관측됨(실측). 이미
 > 호스트 정책상 unsandboxed/network-enabled 실행이 허용된 경우에 한해 사용할 것.
+
+## 벤더 불능 시 — Claude Code 설치·복구 커맨드
+
+이 역방향 채널은 host가 codex/antigravity 등 **비-Claude일 때** 쓰므로, 그 호스트에
+`claude` CLI가 없을 수 있다. 없으면 설치한다 — 공식 안내: <https://code.claude.com/docs/en/setup>
+
+- **설치(권장: native installer, 백그라운드 자동 업데이트)**:
+  - Windows PowerShell: `irm https://claude.ai/install.ps1 | iex`
+  - macOS·Linux·WSL: `curl -fsSL https://claude.ai/install.sh | bash`
+  - npm 대안: `npm install -g @anthropic-ai/claude-code` (업데이트는 `@latest` 재설치, `npm update -g` 아님)
+  - 설치 경로(native): `~/.local/bin/claude`.
+- **업데이트**: native는 자동. 즉시 적용은 `claude update`. (winget/npm은 수동.)
+- **검증**: `claude --version`(상세 `claude doctor`). **실제 스모크로 확인**한 뒤에만 성공으로
+  본다(파일 존재 ≠ 동작).
+- **stale PATH 주의**: 방금 설치·갱신했다면 이 세션(호스트 앱)이 그 전에 떠 있어 낡은 PATH를
+  물 수 있다 — 호스트 앱 재시작(재부팅 불필요)으로 배제, 급하면 절대경로 직접 호출.
+- **여러 채널 혼용 금지**: native·npm·winget을 섞으면 PATH 순서로 어느 게 실행될지 모호해진다
+  (codex 어댑터에서 실측한 사고 — 낡은 본이 조용히 잡힘). 한 채널만 유지한다.
+- **인증**: Pro/Max/Team/Enterprise 계정 필요(무료 플랜 불가). `claude` 실행 후 브라우저 로그인
+  (OAuth라 에이전트가 대행 못 한다). 재설치는 `~/.claude` 설정을 건드리지 않는다.
