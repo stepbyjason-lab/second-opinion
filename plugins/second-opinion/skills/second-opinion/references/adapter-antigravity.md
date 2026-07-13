@@ -14,7 +14,7 @@
 - ⚠️ argv로 줄 때(`-p "$(cat brief.txt)"`)만 적용되는 함정 둘: **`</dev/null` 필수**
   (stdin 안 닫으면 무한 hang) + **30,000자 한계** (Windows CreateProcess) — 특별한
   이유가 없으면 stdin 경로를 기본으로 쓸 것
-- ⚠️ `--model`은 **디스플레이 라벨 그대로**(`"Gemini 3.1 Pro (High)"`). slug/ID 형식(`gemini-3-1-pro-high` 등)은 **exit 0인 채 silent-ignore → 계정 기본값(저급 모델)으로 조용히 강등** (실측). **정확한 라벨은 `agy models`로 확인**해서 그대로 복사할 것
+- ⚠️ `--model`은 **디스플레이 라벨 그대로**(`"Gemini 3.5 Flash (High)"`). slug/ID 형식(`gemini-3-1-pro-high` 등)은 **exit 0인 채 silent-ignore → 계정 기본값(저급 모델)으로 조용히 강등** (실측). **정확한 라벨은 `agy models`로 확인**해서 그대로 복사할 것
 - 모델 메뉴 (`agy models` 실측, 2026-07-03 기준 — 라벨은 벤더가 바꿀 수 있으니 실행해
   재확인): Gemini 3.1 Pro (High/Low) · Gemini 3.5 Flash (High/Medium/Low) ·
   GPT-OSS 120B (Medium) · Claude Opus/Sonnet 4.6 (Thinking)
@@ -32,7 +32,7 @@
 - **인증: Antigravity IDE 로그인을 공유** (실측) — IDE에 로그인돼 있으면 agy 별도
   로그인 불필요. IDE가 없거나 응답 없이 exit 0이면 `agy` 1회 대화 실행(로그인) 안내
 
-(이 블록의 커맨드는 SKILL.md 코어 fast-path 티저와 동일 문자열이어야 한다 — 코어 수정 시 여기도 동기화)
+정본은 `scripts/vendor-policy.mjs`이며 아래 커맨드는 비정본 설명이다.
 
 > **Codex Desktop / Windows 호스트 참고** (실측 2026-07-08):
 > SKILL.md fast-path의 Bash 예시는 Bash 문법이다. Codex Desktop의 `exec_command`에서는 `timeout`과
@@ -47,7 +47,7 @@
 >
 > ```powershell
 > $agy = if (Get-Command agy -ErrorAction SilentlyContinue) { "agy" } else { "$env:LOCALAPPDATA\agy\bin\agy.exe" }
-> Get-Content brief.txt | & $agy --model "Gemini 3.1 Pro (High)" > out.txt 2> err.txt
+> Get-Content brief.txt | & $agy --model "Gemini 3.5 Flash (High)" > out.txt 2> err.txt
 > ```
 >
 > `agy models` 출력으로 사용 가능한 모델 라벨을 확인할 수 있다 (Codex 세션에서도
@@ -60,7 +60,7 @@
 
 ```bash
 FILE="<이미지 또는 영상 파일의 절대경로>"
-timeout 280 "$AGY" --model "Gemini 3.1 Pro (High)" --add-dir "$(dirname "$FILE")" -p "Read and analyze this file: $FILE" </dev/null
+timeout 280 "$AGY" --model "Gemini 3.5 Flash (High)" --add-dir "$(dirname "$FILE")" -p "Read and analyze this file: $FILE" </dev/null
 ```
 
 ## 파일 산출물 과업 — 이미지 생성
@@ -69,16 +69,20 @@ timeout 280 "$AGY" --model "Gemini 3.1 Pro (High)" --add-dir "$(dirname "$FILE")
 
 ### Antigravity (agy)
 
-```bash
-echo "Generate an image: <프롬프트>. Save it as <파일명>.png." | timeout 280 "$AGY"
+**brief 내용 (정본 — Claude가 brief에 담는다)**: image-craft로 채운 프롬프트 + 저장 지시. 예:
+
+```text
+Generate an image: <프롬프트>. Save it as <파일명>.png.
 ```
+
+**실행 (정본 — 디스패처)**: `node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor agy --operation image-generate --brief brief.txt --model "Gemini 3.5 Flash (High)" --out out.txt --err err.txt` — raw `echo … | "$AGY"`는 비정본이며 직접 실행 시 훅이 차단한다.
 
 - 사진급 생성모델 실측 확인. 단 **저장 위치 지시를 무시**하고 자기 scratch 디렉토리
   `~/.gemini/antigravity-cli/scratch/`에 저장한다 (파일명은 지시대로 따름) — 거기서
   회수해 사용자가 원한 위치로 복사
 - "IMG-SAVED" 같은 성공 답변이 요청 경로 기준으로는 거짓일 수 있다 (실측)
 
-## 벤더 불능 시 — Antigravity 복구 커맨드
+## 설치·업데이트·복구
 
 - **설치·업데이트(같은 명령, 공식 installer)** — Windows PowerShell:
   `irm https://antigravity.google/cli/install.ps1 | iex`

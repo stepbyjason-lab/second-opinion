@@ -6,14 +6,14 @@
 
 ## 텍스트 과업 세부
 
-- git repo가 아닌 cwd면 `codex exec --skip-git-repo-check -`
+- 비-git cwd는 디스패처가 `--skip-git-repo-check`를 자동 판정·삽입한다(직접 `codex exec` 형태는 훅이 차단)
 - 출력 머리에 taskkill 한글 잡음(프로세스 정리 메시지)이 섞일 수 있음 — 본문만 취하면 됨
 - codex는 로컬 파일을 읽는다(전 sandbox 모드 실측). 큰 내용은 파일로 두고 경로를 지시한다.
   과거 CryptUnprotectData 오류는 elevated sandbox 계정의 DPAPI stale 버그로 상위 수정됐다.
   재발 시 `/sandbox-add-read-dir`로 읽기 디렉토리를 추가하거나 `[windows] sandbox="unelevated"`,
   또는 bypass를 쓰며, 내용을 brief에 **발췌 동봉**하는 방법은 안전 폴백으로 유지한다
 
-(이 블록의 커맨드는 SKILL.md 코어 fast-path 티저와 동일 문자열이어야 한다 — 코어 수정 시 여기도 동기화)
+정본은 `scripts/vendor-policy.mjs`이며 아래 커맨드는 비정본 설명이다.
 
 > **Codex Desktop / Windows 호스트 참고** (실측 2026-07-08):
 > SKILL.md fast-path의 Bash 예시는 Bash (Git Bash / WSL) 문법이다. Codex Desktop의 `exec_command`는
@@ -48,9 +48,13 @@ codex exec -i frames/frame-001.png -i frames/frame-002.png - < brief.txt
 
 ### Codex (gpt-image-2)
 
-```bash
-echo "Use the built-in image_gen tool. Prompt: '<프롬프트>'. Size: 1024x1024 (또는 1024x1536/1536x1024/auto). Quality: auto (또는 low/medium/high). Count: 1 (여러 장이면 원하는 장수). 저장 파일명: 1장이면 '<타임스탬프 절대경로>.png', 2장 이상이면 '<타임스탬프 절대경로>-1.png'/'-2.png' 식 suffix (확장자 .png는 한 번만, 기존 파일 덮어쓰지 말 것). print the saved path(s)." | timeout 280 codex exec -s workspace-write --skip-git-repo-check -c 'model_reasoning_effort="medium"' -
+**brief 내용 (정본 — Claude가 brief에 담는다)**: 먼저 `references/image-craft.md`로 프롬프트를 채운 뒤, brief에 아래 image_gen 지시를 담는다:
+
+```text
+Use the built-in image_gen tool. Prompt: '<프롬프트>'. Size: 1024x1024 (또는 1024x1536/1536x1024/auto). Quality: auto (또는 low/medium/high). Count: 1 (여러 장이면 원하는 장수). 저장 파일명: 1장이면 '<타임스탬프 절대경로>.png', 2장 이상이면 '<타임스탬프 절대경로>-1.png'/'-2.png' 식 suffix (확장자 .png는 한 번만, 기존 파일 덮어쓰지 말 것). print the saved path(s).
 ```
+
+**실행 (정본 — 디스패처)**: `node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor codex --operation image-generate --brief brief.txt [--model <라벨> --effort <레벨>] --out out.txt --err err.txt` — 디스패처가 `-s workspace-write`를 자동 삽입한다. raw `echo … | codex exec -s workspace-write …`는 비정본이며 직접 실행 시 훅이 차단한다.
 
 - **`-s workspace-write` 필수** — 기본 샌드박스에선 이미지 과업을 수행하지 못한다 (실측:
   NO-IMAGE-CAPABILITY 회신)
@@ -66,7 +70,7 @@ echo "Use the built-in image_gen tool. Prompt: '<프롬프트>'. Size: 1024x1024
   생성 timeout(2분+) → `quality`를 낮춰(예: low) 재시도 · rate limit → 잠시 후 재시도.
 - **비용(대략, OpenAI 계정 청구)**: 1024x1024 low ~$0.02 · 1024x1024 high ~$0.04 · 1024x1536 high ~$0.06.
 
-## 설치·업데이트 (정본) + 불능 복구
+## 설치·업데이트·복구
 
 **정본 = 공식 standalone installer 하나로만 유지한다.** 여러 채널(npm·winget·수동 배치)을 섞지 않는다.
 - 설치·업데이트(같은 명령, Windows) — 공식 안내: <https://learn.chatgpt.com/docs/codex/cli#getting-started>

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0 — 2026-07-12
+
+- **기계적 벤더 라우팅**: 오케스트레이터가 매 호출 커맨드를 다시 조립하며 위험 플래그를
+  자의로 붙이던 문제(codex 불필요 -s 반복)를 코드로 닫는다. 이제 Claude는 operation
+  (text/image-analyze/image-generate)만 고르고, 실제 argv 조립·실행은 디스패처
+  (scripts/dispatch.mjs, 정본 scripts/vendor-policy.mjs)가 맡는다. 가변값은 허용하되
+  가변 argv는 불허 — -s는 이미지 생성에서만 자동, 비-git은 --skip-git-repo-check 자동.
+- **PreToolUse 훅**: codex exec·agy 직접 추론호출을 command-word 기준으로 탐지해 차단하고
+  디스패처 경로를 안내한다(관리 명령·오탐은 통과, 내부 오류는 fail-open).
+- **문서 정비**: fast-path를 디스패처 호출로, 이미지 brief 스펙 정본화, 어댑터 3종
+  카테고리 골격 통일.
+
 ## 0.4.0 — 2026-07-12
 
 - **실행 영수증**: 벤더 호출 후 한 줄로 관측을 보고한다 — 요청 벤더·모델 → 실제 응답 backend →

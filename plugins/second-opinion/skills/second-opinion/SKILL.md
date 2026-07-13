@@ -13,7 +13,7 @@ description: >
 
 # second-opinion — 외부 AI 어댑터
 
-**버전 0.4.0** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증. (정본 버전은 `plugin.json`.)
+**버전 0.5.0** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처+훅). (정본 버전은 `plugin.json`.)
 
 Claude Code 안에서 **다른 벤더의 AI**를 일상어로 부려 쓴다. Codex Desktop 등
 비-Claude 호스트에서도 동작한다 — 호스트별 상세·정확한 호출법은 아래 fast-path의
@@ -64,32 +64,30 @@ Claude Code 안에서 **다른 벤더의 AI**를 일상어로 부려 쓴다. Cod
 ### Codex
 
 ```bash
-cd <작업 repo 또는 임시 dir>
-timeout 280 codex exec - < brief.txt > out.txt 2>err.txt
+node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor codex --operation text --brief brief.txt --cwd <작업 repo 또는 임시 dir> --out out.txt --err err.txt
 ```
 
-```powershell
-Get-Content brief.txt | codex exec - > out.txt 2> err.txt
-```
+이미지 과업은 `--operation image-analyze`(입력 `--input <파일>`)·`--operation image-generate` — 상세는 `references/adapter-codex.md`.
 
-- 프롬프트는 stdin(`exec -`) — argv에 콘텐츠 넣지 말 것.
+정본은 `scripts/vendor-policy.mjs`다. 아래 raw 벤더 커맨드 언급은 비정본인 내부 동작 설명·수동 디버깅용이다.
+timeout은 직접 자식에 `child.kill()`만 수행하므로 벤더가 만든 자손 프로세스가 남을 수 있다.
+
+- brief 내용은 stdin으로 전달된다(디스패처가 처리) — argv에 콘텐츠를 넣지 않는다.
 - codex는 로컬 파일을 읽는다(전 sandbox 모드 실측). 큰 내용은 파일로 두고 경로를 지시할 수 있다.
   과거 CryptUnprotectData 오류는 elevated sandbox 계정의 DPAPI stale 버그로 상위 수정됐다 —
   재발 시 `references/adapter-codex.md`의 우회를 따르고, 내용 발췌 동봉은 안전 폴백으로 쓴다.
-- git repo가 아닌 cwd면 `codex exec --skip-git-repo-check -`.
+- 비-git cwd는 디스패처가 `--skip-git-repo-check`를 자동 판정·삽입한다(직접 `codex exec` 형태는 훅이 차단).
 → 호출 전 필수: `references/adapter-codex.md` 를 반드시 읽을 것 (Windows 호스트 주의·이미지 생성·복구·기타 함정)
 
 ### Antigravity (agy)
 
 ```bash
-AGY=$(command -v agy || echo "$LOCALAPPDATA/agy/bin/agy.exe")   # 신규 설치 세션은 PATH 미반영일 수 있음
-timeout 280 "$AGY" --model "Gemini 3.1 Pro (High)" < brief.txt > out.txt 2>err.txt
+node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor agy --operation text --brief brief.txt --model "Gemini 3.5 Flash (High)" --out out.txt --err err.txt
 ```
 
-```powershell
-$agy = if (Get-Command agy -ErrorAction SilentlyContinue) { "agy" } else { "$env:LOCALAPPDATA\agy\bin\agy.exe" }
-Get-Content brief.txt | & $agy --model "Gemini 3.1 Pro (High)" > out.txt 2> err.txt
-```
+이미지 분석은 `--operation image-analyze`(입력 `--input <파일>`) — 상세는 `references/adapter-antigravity.md`.
+
+정본은 `scripts/vendor-policy.mjs`다. 아래 raw 벤더 커맨드 언급은 비정본인 내부 동작 설명·수동 디버깅용이다.
 
 - brief는 무-플래그 stdin으로 넣는다. `-p -`는 agy 1.1.1에서 `-`가 리터럴 프롬프트로
   바뀌어 깨졌다. stdin은 미문서화(#525/#542)라 자동업데이트로 다시 깨질 수 있으므로,
