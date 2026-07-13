@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.0 — 2026-07-13
+
+- **전역 강제 훅 제거 — 중개자 정화**: 0.5.0에서 넣은 PreToolUse 훅은 모든 프로젝트의
+  codex/agy 직접호출을 차단해, 중개(relay) 스킬이 남의 벤더 호출까지 막는 스코프 위반이었다.
+  훅(`hooks/`)을 제거한다 — second-opinion은 이제 아무것도 차단하지 않는다. 커맨드 정합성은
+  디스패처(도구)가 계속 보장한다.
+- **강제는 caller 책임으로**: "디스패처를 반드시 거치게" 강제하려는 프로젝트는 자기 스코프에서
+  PreToolUse 훅을 건다 — 방법은 `references/enforcement.md`. 탐지 참조 구현 `detectDirectInference`는
+  `scripts/vendor-policy.mjs`에 export로 유지(단위테스트 보존).
+
 ## 0.5.1 — 2026-07-13
 
 - **정션/심링크 안전 메인모듈 가드**: 디스패처와 PreToolUse 훅을 정션·심링크 경로로

@@ -172,6 +172,7 @@ function detectSegment(tokens, depth) {
   if (vendor === "codex") return next === CODEX_INFERENCE_SUBCOMMAND ? vendor : null;
   return AGY_MANAGEMENT_COMMANDS.includes(next) ? null : vendor;
 }
+// Exported for caller-scoped enforcement (see references/enforcement.md). second-opinion itself never calls this — a broker does not block.
 export function detectDirectInference(command, depth = 0) {
   if (typeof command !== "string") return null;
   for (const segment of tokenizeShell(command)) {

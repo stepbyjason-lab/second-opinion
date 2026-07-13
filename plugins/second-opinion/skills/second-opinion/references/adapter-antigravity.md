@@ -75,7 +75,7 @@ timeout 280 "$AGY" --model "Gemini 3.5 Flash (High)" --add-dir "$(dirname "$FILE
 Generate an image: <프롬프트>. Save it as <파일명>.png.
 ```
 
-**실행 (정본 — 디스패처)**: `node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor agy --operation image-generate --brief brief.txt --model "Gemini 3.5 Flash (High)" --out out.txt --err err.txt` — raw `echo … | "$AGY"`는 비정본이며 직접 실행 시 훅이 차단한다.
+**실행 (정본 — 디스패처)**: `node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor agy --operation image-generate --brief brief.txt --model "Gemini 3.5 Flash (High)" --out out.txt --err err.txt` — raw `echo … | "$AGY"`는 비정본(내부 동작 설명용)이며 정본은 디스패처 호출이다.
 
 - 사진급 생성모델 실측 확인. 단 **저장 위치 지시를 무시**하고 자기 scratch 디렉토리
   `~/.gemini/antigravity-cli/scratch/`에 저장한다 (파일명은 지시대로 따름) — 거기서

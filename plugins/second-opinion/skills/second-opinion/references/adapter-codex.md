@@ -6,7 +6,7 @@
 
 ## 텍스트 과업 세부
 
-- 비-git cwd는 디스패처가 `--skip-git-repo-check`를 자동 판정·삽입한다(직접 `codex exec` 형태는 훅이 차단)
+- 비-git cwd는 디스패처가 `--skip-git-repo-check`를 자동 판정·삽입한다
 - 출력 머리에 taskkill 한글 잡음(프로세스 정리 메시지)이 섞일 수 있음 — 본문만 취하면 됨
 - codex는 로컬 파일을 읽는다(전 sandbox 모드 실측). 큰 내용은 파일로 두고 경로를 지시한다.
   과거 CryptUnprotectData 오류는 elevated sandbox 계정의 DPAPI stale 버그로 상위 수정됐다.
@@ -54,7 +54,7 @@ codex exec -i frames/frame-001.png -i frames/frame-002.png - < brief.txt
 Use the built-in image_gen tool. Prompt: '<프롬프트>'. Size: 1024x1024 (또는 1024x1536/1536x1024/auto). Quality: auto (또는 low/medium/high). Count: 1 (여러 장이면 원하는 장수). 저장 파일명: 1장이면 '<타임스탬프 절대경로>.png', 2장 이상이면 '<타임스탬프 절대경로>-1.png'/'-2.png' 식 suffix (확장자 .png는 한 번만, 기존 파일 덮어쓰지 말 것). print the saved path(s).
 ```
 
-**실행 (정본 — 디스패처)**: `node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor codex --operation image-generate --brief brief.txt [--model <라벨> --effort <레벨>] --out out.txt --err err.txt` — 디스패처가 `-s workspace-write`를 자동 삽입한다. raw `echo … | codex exec -s workspace-write …`는 비정본이며 직접 실행 시 훅이 차단한다.
+**실행 (정본 — 디스패처)**: `node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor codex --operation image-generate --brief brief.txt [--model <라벨> --effort <레벨>] --out out.txt --err err.txt` — 디스패처가 `-s workspace-write`를 자동 삽입한다. raw `echo … | codex exec -s workspace-write …`는 비정본(내부 동작 설명용)이며 정본은 디스패처 호출이다.
 
 - **`-s workspace-write` 필수** — 기본 샌드박스에선 이미지 과업을 수행하지 못한다 (실측:
   NO-IMAGE-CAPABILITY 회신)

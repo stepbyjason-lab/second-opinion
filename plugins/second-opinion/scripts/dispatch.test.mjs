@@ -6,9 +6,8 @@ import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { PassThrough, Writable } from "node:stream";
-import { PolicyError, buildVendorArgv, resolveExecutable } from "./vendor-policy.mjs";
+import { PolicyError, buildVendorArgv, detectDirectInference, resolveExecutable } from "./vendor-policy.mjs";
 import { executeCli, parseCli, run } from "./dispatch.mjs";
-import { evaluateHook, evaluateHookInput } from "../hooks/pretooluse.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "second-opinion-r030-"));
 const brief = join(root, "brief.txt");
@@ -43,18 +42,6 @@ test("dispatch runs its main module guard through a junction or symlink", (t) =>
   });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /"vendor":"codex"/);
-});
-
-test("hook blocks direct inference through a junction or symlink", (t) => {
-  const scripts = resolve("plugins/second-opinion/scripts");
-  const hooks = join(dirname(scripts), "hooks");
-  const link = join(root, "hooks-link");
-  if (!createDirectoryLink(t, hooks, link)) return;
-  const input = JSON.stringify({ tool_name: "Bash", tool_input: { command: "timeout 280 codex exec - < b.txt" } });
-  const result = spawnSync("node", [join(link, "pretooluse.mjs")], {
-    input, encoding: "utf8", shell: false, windowsHide: true,
-  });
-  assert.equal(result.status, 2, result.stderr);
 });
 
 // Hand-written literal fixtures copied from contract section 4. Never generate these from the builder.
@@ -153,26 +140,23 @@ test("run injection preserves literal argv, complete stdin, and shell:false boun
   assert.equal(stdin, "brief with spaces and quotes: \"complete\"\n");
 });
 
-function hook(command) {
-  const result = evaluateHook({ tool_name: "Bash", tool_input: { command } });
-  return { status: result.code, stderr: result.message };
-}
+// detectDirectInference is the caller-scoped enforcement API (second-opinion itself never calls it).
 const BLOCK = [
-  "timeout 280 codex exec - < brief.txt > out.txt 2>err.txt",
-  "codex.exe exec -",
-  "\"C:\\tools\\codex.exe\" exec --skip-git-repo-check -",
-  "Get-Content brief.txt | codex exec -",
-  "bash -lc 'codex exec -'",
-  "cmd /c codex exec -",
-  "node dispatch.mjs --vendor codex --operation text --brief b.txt ; codex exec - < b.txt",
-  "echo hi | agy --model \"Gemini 3.5 Flash (High)\"",
-  "agy < brief.txt",
-  "Get-Content b | agy",
-  "\"$AGY\" --model \"Gemini 3.5 Flash (High)\" < brief.txt",
-  "& $agy --model Gemini",
-  "agy --add-dir . -p \"analyze this\"",
-  "$CODEX exec -",
-  "${CODEX} exec -",
+  ["timeout 280 codex exec - < brief.txt > out.txt 2>err.txt", "codex"],
+  ["codex.exe exec -", "codex"],
+  ["\"C:\\tools\\codex.exe\" exec --skip-git-repo-check -", "codex"],
+  ["Get-Content brief.txt | codex exec -", "codex"],
+  ["bash -lc 'codex exec -'", "codex"],
+  ["cmd /c codex exec -", "codex"],
+  ["node dispatch.mjs --vendor codex --operation text --brief b.txt ; codex exec - < b.txt", "codex"],
+  ["echo hi | agy --model \"Gemini 3.5 Flash (High)\"", "agy"],
+  ["agy < brief.txt", "agy"],
+  ["Get-Content b | agy", "agy"],
+  ["\"$AGY\" --model \"Gemini 3.5 Flash (High)\" < brief.txt", "agy"],
+  ["& $agy --model Gemini", "agy"],
+  ["agy --add-dir . -p \"analyze this\"", "agy"],
+  ["$CODEX exec -", "codex"],
+  ["${CODEX} exec -", "codex"],
 ];
 const PASS = [
   "node ./dispatch.mjs --vendor codex --operation text --brief b.txt",
@@ -184,22 +168,15 @@ const PASS = [
   "grep \"codex exec\" file.js",
 ];
 
-test("hook blocks every direct-inference vector", () => {
-  for (const command of BLOCK) {
-    const result = hook(command);
-    assert.equal(result.status, 2, `${command}\n${result.stderr}`);
-    assert.match(result.stderr, /^Direct (codex|agy) inference call is blocked/);
-  }
+test("detectDirectInference flags every direct-inference vector with the exact vendor", () => {
+  for (const [command, vendor] of BLOCK) assert.equal(detectDirectInference(command), vendor, command);
 });
-test("hook passes dispatcher, management, install, reverse-channel, and prose vectors", () => {
-  for (const command of PASS) assert.equal(hook(command).status, 0, command);
+test("detectDirectInference returns null for dispatcher, management, install, reverse-channel, and prose vectors", () => {
+  for (const command of PASS) assert.equal(detectDirectInference(command), null, command);
 });
-test("hook fail-opens on malformed JSON", () => {
-  assert.deepEqual(evaluateHookInput("{broken"), { code: 0, message: "" });
-});
-test("adjacent pair: raw call blocks and dispatcher call passes", () => {
-  assert.equal(hook("timeout 280 codex exec - < brief.txt").status, 2);
-  assert.equal(hook("node dispatch.mjs --vendor codex --operation text --brief b.txt").status, 0);
+test("detectDirectInference: raw codex exec resolves to codex, dispatcher call to null", () => {
+  assert.equal(detectDirectInference("timeout 280 codex exec - < brief.txt"), "codex");
+  assert.equal(detectDirectInference("node dispatch.mjs --vendor codex --operation text --brief b.txt"), null);
 });
 
 test("spawn error becomes exit 3", async () => {
