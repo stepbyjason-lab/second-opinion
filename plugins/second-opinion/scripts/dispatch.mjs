@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, createWriteStream, openSync, readFileSync, statSync } from "node:fs";
+import { closeSync, createWriteStream, openSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { OPERATIONS, PolicyError, buildVendorArgv, executableName, normalizeVendor, resolveExecutable } from "./vendor-policy.mjs";
@@ -185,4 +185,17 @@ export async function executeCli(argv, deps = {}) {
   return await run(options, runDeps);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) await main();
+// Compare real paths so junction/symlink invocation still reaches main().
+function invokedAsMain() {
+  try {
+    return !!process.argv[1] &&
+      realpathSync(fileURLToPath(import.meta.url)) === realpathSync(resolve(process.argv[1]));
+  } catch {
+    try {
+      const a = fileURLToPath(import.meta.url), b = resolve(process.argv[1]);
+      const norm = (s) => (process.platform === "win32" || process.platform === "darwin") ? s.toLowerCase() : s;
+      return !!process.argv[1] && norm(a) === norm(b);
+    } catch { return false; }
+  }
+}
+if (invokedAsMain()) await main();

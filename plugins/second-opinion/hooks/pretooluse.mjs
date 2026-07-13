@@ -1,4 +1,5 @@
 import { detectDirectInference } from "../scripts/vendor-policy.mjs";
+import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -27,4 +28,17 @@ async function main() {
   process.exitCode = result.code;
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) await main();
+// Compare real paths so junction/symlink invocation still reaches main().
+function invokedAsMain() {
+  try {
+    return !!process.argv[1] &&
+      realpathSync(fileURLToPath(import.meta.url)) === realpathSync(resolve(process.argv[1]));
+  } catch {
+    try {
+      const a = fileURLToPath(import.meta.url), b = resolve(process.argv[1]);
+      const norm = (s) => (process.platform === "win32" || process.platform === "darwin") ? s.toLowerCase() : s;
+      return !!process.argv[1] && norm(a) === norm(b);
+    } catch { return false; }
+  }
+}
+if (invokedAsMain()) await main();

@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { PolicyError, buildVendorArgv, resolveExecutable } from "./vendor-policy.mjs";
 import { executeCli, parseCli, run } from "./dispatch.mjs";
@@ -18,6 +19,43 @@ mkdirSync(dirname(input1), { recursive: true });
 mkdirSync(dirname(input3), { recursive: true });
 writeFileSync(brief, "brief with spaces and quotes: \"complete\"\n");
 for (const input of [input1, input2, input3]) writeFileSync(input, "image");
+
+const LINK_SKIP_CODES = new Set(["EPERM", "EACCES", "ENOSYS", "ENOTSUP", "EOPNOTSUPP"]);
+function createDirectoryLink(t, target, link) {
+  try {
+    symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
+    return true;
+  } catch (error) {
+    if (LINK_SKIP_CODES.has(error?.code)) {
+      t.skip("directory links unavailable: " + error.code);
+      return false;
+    }
+    throw error;
+  }
+}
+
+test("dispatch runs its main module guard through a junction or symlink", (t) => {
+  const scripts = resolve("plugins/second-opinion/scripts");
+  const link = join(root, "scripts-link");
+  if (!createDirectoryLink(t, scripts, link)) return;
+  const result = spawnSync("node", [join(link, "dispatch.mjs"), "--vendor", "codex", "--operation", "text", "--brief", brief, "--dry-run"], {
+    encoding: "utf8", shell: false, windowsHide: true,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /"vendor":"codex"/);
+});
+
+test("hook blocks direct inference through a junction or symlink", (t) => {
+  const scripts = resolve("plugins/second-opinion/scripts");
+  const hooks = join(dirname(scripts), "hooks");
+  const link = join(root, "hooks-link");
+  if (!createDirectoryLink(t, hooks, link)) return;
+  const input = JSON.stringify({ tool_name: "Bash", tool_input: { command: "timeout 280 codex exec - < b.txt" } });
+  const result = spawnSync("node", [join(link, "pretooluse.mjs")], {
+    input, encoding: "utf8", shell: false, windowsHide: true,
+  });
+  assert.equal(result.status, 2, result.stderr);
+});
 
 // Hand-written literal fixtures copied from contract section 4. Never generate these from the builder.
 const FIXTURES = [
