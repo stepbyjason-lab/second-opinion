@@ -64,7 +64,12 @@ export function parseCli(argv, startCwd = process.cwd()) {
     if (inputs.length === 0) throw new CliError("image-analyze requires at least one --input");
     for (const input of inputs) assertRegularFile(input, "input");
   } else if (inputs.length > 0) throw new CliError("--input is supported only for image-analyze");
-  const timeout = raw.timeout === undefined ? 280 : Number(raw.timeout);
+  // Default is a large runaway-backstop, NOT a work limit. A short fixed timeout
+  // kills legitimate heavy reasoning (codex high/xhigh reading several files) and
+  // the child is SIGTERM'd before its final message reaches stdout — the recurring
+  // "exit 124, empty out, reasoning stranded in stderr" failure. 30min only catches
+  // a genuine hang; callers wanting a tighter bound pass --timeout explicitly.
+  const timeout = raw.timeout === undefined ? 1800 : Number(raw.timeout);
   if (!Number.isInteger(timeout) || timeout < 1 || timeout > 3600) throw new CliError("--timeout must be an integer from 1 to 3600");
   if ((out && samePath(out, brief)) || (err && samePath(err, brief))) throw new CliError("--out/--err must not equal --brief");
   return { vendor, operation: raw.operation, brief, cwd, model: raw.model, effort: raw.effort, inputs, timeout, out, err, dryRun: raw.dryRun ?? false };
@@ -82,6 +87,22 @@ function openOutput(path) {
   const fd = openSync(path, "w");
   try { return createWriteStream(path, { fd, autoClose: true }); }
   catch (error) { closeSync(fd); throw error; }
+}
+
+// Bounded, cross-platform termination of the child AND its descendants. child.kill()
+// signals only the direct process — on Windows it does not touch the tree at all — so
+// a vendor that ignores SIGTERM, or leaves a descendant holding a stdio pipe, would
+// keep the dispatcher waiting on `close` forever. With agy now running full-access,
+// that stranded descendant also keeps running. This is the forced-kill escalation.
+function defaultForceKill(child) {
+  const pid = child?.pid;
+  if (process.platform === "win32") {
+    if (Number.isInteger(pid) && pid > 0) {
+      try { spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { shell: false, windowsHide: true }); } catch { /* best effort */ }
+    }
+  } else {
+    try { child.kill("SIGKILL"); } catch { /* already gone */ }
+  }
 }
 
 export async function run(options, deps = { spawn }) {
@@ -127,11 +148,12 @@ export async function run(options, deps = { spawn }) {
     let settled = false;
     let timedOut = false;
     let child;
-    let timer;
+    let timer, escalateTimer, reapTimer;
+    const clearTimers = () => { for (const t of [timer, escalateTimer, reapTimer]) if (t) clearTimeout(t); };
     const finish = (code) => {
       if (settled) return;
       settled = true;
-      if (timer) clearTimeout(timer);
+      clearTimers();
       writeReceipt(parentStderr, options, code === 124 ? "timeout" : code, startedAt);
       resolveRun(code);
     };
@@ -144,7 +166,19 @@ export async function run(options, deps = { spawn }) {
       finish(3);
       return;
     }
-    timer = setTimeout(() => { timedOut = true; child.kill(); }, options.timeout * 1000);
+    const graceMs = options.killGraceMs ?? 5000;
+    const reapMs = options.reapMs ?? 3000;
+    const forceKill = options.forceKill ?? defaultForceKill;
+    timer = setTimeout(() => {
+      timedOut = true;
+      try { child.kill(); } catch { /* already gone */ }          // graceful SIGTERM first
+      escalateTimer = setTimeout(() => {                            // still not closed → force-kill the whole tree
+        try { forceKill(child); } catch { /* best effort */ }
+        reapTimer = setTimeout(() => finish(124), reapMs);         // bounded: resolve even if `close` never fires
+        reapTimer.unref?.();
+      }, graceMs);
+      escalateTimer.unref?.();
+    }, options.timeout * 1000);
     timer.unref?.();
     const streamError = (error) => {
       parentStderr.write(`dispatch internal error: stdio failed (${error.code ?? "stdio_failed"})\n`);

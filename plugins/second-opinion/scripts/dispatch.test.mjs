@@ -53,11 +53,11 @@ const FIXTURES = [
   { vendor: "codex", operation: "image-generate", model: "gpt model \"quoted\"", effort: "high", inputs: [], isGitRepo: false,
     argv: ["exec", "-s", "workspace-write", "--skip-git-repo-check", "-m", "gpt model \"quoted\"", "-c", "model_reasoning_effort=\"high\"", "-"] },
   { vendor: "agy", operation: "text", model: "Gemini 3.5 Flash (High)", inputs: [], isGitRepo: false,
-    argv: ["--model", "Gemini 3.5 Flash (High)"] },
+    argv: ["--dangerously-skip-permissions", "--model", "Gemini 3.5 Flash (High)"] },
   { vendor: "agy", operation: "image-analyze", model: "Gemini 3.5 Flash (High)", inputs: [input1, input2, input3], isGitRepo: false,
-    argv: ["--model", "Gemini 3.5 Flash (High)", "--add-dir", dirname(input1), "--add-dir", dirname(input3)] },
+    argv: ["--dangerously-skip-permissions", "--model", "Gemini 3.5 Flash (High)", "--add-dir", dirname(input1), "--add-dir", dirname(input3)] },
   { vendor: "agy", operation: "image-generate", model: "Gemini 3.5 Flash (High)", inputs: [], isGitRepo: false,
-    argv: ["--model", "Gemini 3.5 Flash (High)"] },
+    argv: ["--dangerously-skip-permissions", "--model", "Gemini 3.5 Flash (High)"] },
 ];
 
 test("six hand-written argv fixtures match policy exactly", () => {
@@ -157,6 +157,17 @@ const BLOCK = [
   ["agy --add-dir . -p \"analyze this\"", "agy"],
   ["$CODEX exec -", "codex"],
   ["${CODEX} exec -", "codex"],
+  // default-deny coverage: these entry points run inference but are NOT "exec" —
+  // an exec-only deny-list (this file's own earlier version) missed every one.
+  ["codex", "codex"],
+  ["codex \"fix the bug\"", "codex"],
+  ["codex review", "codex"],
+  ["codex resume --last", "codex"],
+  ["codex fork", "codex"],
+  ["codex -m gpt-5-codex \"do something\"", "codex"],
+  ["agy", "agy"],
+  ["npx codex exec -", "codex"],
+  ["pnpm exec agy --print hi", "agy"],
 ];
 const PASS = [
   "node ./dispatch.mjs --vendor codex --operation text --brief b.txt",
@@ -166,6 +177,11 @@ const PASS = [
   "claude -p hello",
   "git commit -m \"fix codex exec\"",
   "grep \"codex exec\" file.js",
+  // management surface beyond the old allowlist, plus subcommand-help short-circuit.
+  "codex mcp list", "codex doctor", "codex apply", "codex --help",
+  "codex exec --help", "codex review --help",
+  "agy install", "agy plugin list", "agy changelog",
+  "codex sandbox echo hi",
 ];
 
 test("detectDirectInference flags every direct-inference vector with the exact vendor", () => {
@@ -192,6 +208,31 @@ test("timeout kills child and becomes exit 124", async () => {
   const code = await run({ ...FIXTURES[0], brief, cwd: root, timeout: 1, dryRun: false }, { spawn: spawnFake, stderr: stderr.stream });
   assert.equal(code, 124);
   assert.match(stderr.value(), /exit=timeout/);
+});
+test("timeout escalates to a forced tree-kill and stays bounded when close never fires", async () => {
+  const stderr = memoryWriter();
+  let forced = false;
+  const stubborn = () => {
+    const child = new EventEmitter();
+    child.stdin = new PassThrough();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.pid = 999999;
+    child.kill = () => true; // ignores termination — never emits "close"
+    return child;
+  };
+  const code = await run(
+    { ...FIXTURES[0], brief, cwd: root, timeout: 1, killGraceMs: 20, reapMs: 20, forceKill: () => { forced = true; }, dryRun: false },
+    { spawn: () => stubborn(), stderr: stderr.stream },
+  );
+  assert.equal(code, 124);
+  assert.equal(forced, true, "force-kill escalation must fire when the child ignores SIGTERM");
+  assert.match(stderr.value(), /exit=timeout/);
+});
+
+test("default timeout is a large runaway-backstop, not a short work limit", () => {
+  const parsed = parseCli(["--vendor", "codex", "--operation", "text", "--brief", brief], root);
+  assert.equal(parsed.timeout, 1800);
 });
 
 test("relative file paths normalize against start cwd, not vendor cwd", () => {

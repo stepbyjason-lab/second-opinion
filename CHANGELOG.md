@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.6.1 — 2026-07-17
+
+- **디스패처 타임아웃을 "작업 제한"에서 "폭주 백스톱"으로**: 기본 타임아웃을 280초 →
+  1800초로 올린다. 짧은 고정 타임아웃이 codex high/xhigh 추론(파일 여러 개 정독)을
+  최종 출력 전에 SIGTERM으로 잘라 "exit 124, 출력 비어있음, 추론이 stderr에 갇힘"을
+  반복시켰다. 아울러 타임아웃 종료를 **SIGTERM → 유예 → 강제 트리킬(Windows
+  `taskkill /T /F`, POSIX SIGKILL) → 유한 대기 후 강제 해소**로 바꿔, 벤더가 종료를
+  무시하거나 자손이 stdio를 쥐어도 디스패처가 무한 대기하지 않고 자손도 트리째 정리한다.
+- **Antigravity 파일접근 복구**: agy 호출에 `--dangerously-skip-permissions`를 부여한다.
+  headless agy는 도구 권한 프롬프트를 못 띄워 자동 거부하므로, 이게 없으면 파일을 읽어야
+  하는 브리프가 빈 출력으로 끝난다(`jetski: no output produced`). codex가 config 기본으로
+  이미 도는 full-access 자세와 대칭이며, 플래그는 디스패처 내부에서 조립돼 오케스트레이터
+  셸 라인에 드러나지 않는다.
+- **탐지 참조 구현 하드닝**: caller-강제용 `detectDirectInference`를 exec-only deny-list에서
+  **default-deny**로 교체한다(codex bare·review·resume·fork·추론 플래그, agy 비-관리 호출까지
+  차단, 패키지 러너·heredoc·커맨드 캐리어 커버). 관리 allowlist는 설치 CLI(codex 0.144.1·
+  agy 1.1.3) 실측 기준. `references/enforcement.md`에 한계 공시 추가.
+- **Claude 어댑터 벤더 중립화**: "역방향 채널" 표현을 제거하고 codex·antigravity 어댑터와
+  같은 중립 명명(`adapter-claude — Claude Code`)으로 통일한다.
+
 ## 0.6.0 — 2026-07-13
 
 - **전역 강제 훅 제거 — 중개자 정화**: 0.5.0에서 넣은 PreToolUse 훅은 모든 프로젝트의

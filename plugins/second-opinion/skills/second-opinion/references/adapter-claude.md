@@ -1,15 +1,15 @@
-# Claude Code — 역방향 채널 (host가 Codex 등 비-Claude일 때만, 실측 2026-07-07)
+# adapter-claude — Claude Code (호출하는 쪽이 비-Claude일 때만, 실측 2026-07-07)
 
 ⚠️ **host guard (MUST NOT 위반)** — 이 채널은 **호출하는 쪽이 Claude가 아닐 때만**
 쓴다(Codex 등). **Claude Code host에서는 아래 세 변형을 절대 쓰지 않는다** — 의견
 렌즈로 쓰면 동일 벤더 자기검증이 되어 교차 검증 목적 자체가 무너진다. Claude Code
 host에서 다른 시각이 필요하면 멈추고 Codex나 Antigravity를 대신 쓸 것.
 
-기본 커맨드는 SKILL.md fast-path 참조. 단 Claude 역방향 채널은 SKILL.md 코어에 실행 커맨드가 없고, 이 파일의 host guard를 먼저 적용한다.
+기본 커맨드는 SKILL.md fast-path 참조. 단 Claude 채널은 SKILL.md 코어에 실행 커맨드가 없고, 이 파일의 host guard를 먼저 적용한다.
 
 ## 텍스트 과업 세부
 
-(역방향 채널은 텍스트 검토·견해 전용 — 이미지 분석·생성 카테고리는 없다.)
+(이 채널은 텍스트 검토·견해 전용 — 이미지 분석·생성 카테고리는 없다.)
 
 ```bash
 timeout 280 claude -p --model sonnet --effort high --output-format json \
@@ -86,9 +86,9 @@ timeout 280 claude -p --model sonnet --effort high --output-format json \
   진짜 결과처럼 출력). brief 본문에 검토 대상을 전부 포함하고 파일 참조를 요구하지 말 것
 - 이 모드도 `--model` 생략 시 위 opus 강등이 동일 적용되므로 예시처럼 항상 명시할 것
 
-(이 블록의 커맨드는 SKILL.md 코어 fast-path 티저와 동일 문자열이어야 한다 — 코어 수정 시 여기도 동기화. Claude 역방향 채널은 코어에 실행 커맨드가 없으므로 host guard와 이 파일 내부 변형만 대조한다)
+(이 블록의 커맨드는 SKILL.md 코어 fast-path 티저와 동일 문자열이어야 한다 — 코어 수정 시 여기도 동기화. Claude 채널은 코어에 실행 커맨드가 없으므로 host guard와 이 파일 내부 변형만 대조한다)
 
-> **Codex Desktop / Windows 호스트 참고** (Claude 역방향 채널):
+> **Codex Desktop / Windows 호스트 참고** (Claude 채널):
 > 위 세 변형의 `< brief.txt`는 Bash stdin 리다이렉트이다. PowerShell에서는
 > pipe로 대체한다:
 >
@@ -104,7 +104,7 @@ timeout 280 claude -p --model sonnet --effort high --output-format json \
 
 ## 설치·업데이트·복구
 
-이 역방향 채널은 host가 codex/antigravity 등 **비-Claude일 때** 쓰므로, 그 호스트에
+이 채널은 호출하는 쪽이 codex/antigravity 등 **비-Claude일 때** 쓰므로, 그 호스트에
 `claude` CLI가 없을 수 있다. 없으면 설치한다 — 공식 안내: <https://code.claude.com/docs/en/setup>
 
 - **설치(권장: native installer, 백그라운드 자동 업데이트)**:

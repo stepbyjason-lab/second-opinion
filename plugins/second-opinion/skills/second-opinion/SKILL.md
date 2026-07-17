@@ -97,13 +97,13 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor agy --operation text --
 - `--model`은 디스플레이 라벨 그대로(`"Gemini 3.1 Pro (High)"`). slug/ID 형식은 exit 0인 채 silent-ignore → 계정 기본값으로 조용히 강등될 수 있으니 정확한 라벨은 `agy models`로 확인해서 그대로 복사할 것.
 → 호출 전 필수: `references/adapter-antigravity.md` 를 반드시 읽을 것 (Windows 호스트 주의·모델 라벨·이미지 생성·복구·기타 함정)
 
-### Claude 역방향 채널
+### Claude 채널
 
 **host guard (MUST NOT 위반)** — 이 채널은 **호출하는 쪽이 Claude가 아닐 때만**
-쓴다(Codex 등). **Claude Code host에서는 역방향 채널 변형을 절대 쓰지 않는다** — 의견
+쓴다(Codex 등). **Claude Code host에서는 이 채널 변형을 절대 쓰지 않는다** — 의견
 렌즈로 쓰면 동일 벤더 자기검증이 되어 교차 검증 목적 자체가 무너진다.
 
-코어에는 Claude 역방향 실행 커맨드를 두지 않는다. 실행 커맨드·비용·도구경계·Windows
+코어에는 Claude 채널 실행 커맨드를 두지 않는다. 실행 커맨드·비용·도구경계·Windows
 함정은 전부 `references/adapter-claude.md`에 있다.
 → 호출 전 필수: `references/adapter-claude.md` 를 반드시 읽을 것 (host guard·비용·도구경계·Windows 함정)
 
