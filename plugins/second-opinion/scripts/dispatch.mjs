@@ -1,10 +1,13 @@
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, closeSync, createWriteStream, mkdirSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { appendFileSync, closeSync, createWriteStream, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { OPERATIONS, PolicyError, buildVendorArgv, executableName, normalizeVendor, resolveExecutable } from "./vendor-policy.mjs";
 
 const MAX_BRIEF_BYTES = 8 * 1024 * 1024;
+const MAX_VENDOR_USAGE_BYTES = 64 * 1024 * 1024;
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SINGLE_OPTIONS = new Set(["--vendor", "--operation", "--brief", "--cwd", "--model", "--effort", "--timeout", "--out", "--err", "--dry-run"]);
 
 export class CliError extends Error {
@@ -71,7 +74,11 @@ export function parseCli(argv, startCwd = process.cwd()) {
   // a genuine hang; callers wanting a tighter bound pass --timeout explicitly.
   const timeout = raw.timeout === undefined ? 1800 : Number(raw.timeout);
   if (!Number.isInteger(timeout) || timeout < 1 || timeout > 3600) throw new CliError("--timeout must be an integer from 1 to 3600");
-  if ((out && samePath(out, brief)) || (err && samePath(err, brief))) throw new CliError("--out/--err must not equal --brief");
+  const conflicts = outputConflicts({ brief, inputs, out, err });
+  if (conflicts.brief) throw new CliError("--out/--err must not equal --brief");
+  if (conflicts.input) throw new CliError("--out/--err must not equal --input");
+  if (conflicts.outputs) throw new CliError("--out and --err must not refer to the same file");
+  if (receiptConflicts({ brief, inputs, out, err }, process.env)) throw new CliError("--out/--err must not equal SECOND_OPINION_RECEIPT");
   return { vendor, operation: raw.operation, brief, cwd, model: raw.model, effort: raw.effort, inputs, timeout, out, err, dryRun: raw.dryRun ?? false };
 }
 
@@ -79,27 +86,140 @@ function isGitRepository(cwd) {
   const result = spawnSync("git", ["-C", cwd, "rev-parse", "--is-inside-work-tree"], { shell: false, encoding: "utf8", windowsHide: true });
   return result.status === 0 && typeof result.stdout === "string" && result.stdout.trim() === "true";
 }
-function receiptPath(env) { return env.SECOND_OPINION_RECEIPT?.trim(); }
+function receiptPath(env) {
+  const receipt = env.SECOND_OPINION_RECEIPT?.trim();
+  return receipt ? absoluteFrom(process.cwd(), receipt) : undefined;
+}
+function sameFile(left, right) {
+  try {
+    const leftInfo = statSync(left);
+    const rightInfo = statSync(right);
+    return leftInfo.dev === rightInfo.dev && leftInfo.ino === rightInfo.ino;
+  } catch {
+    return samePath(left, right);
+  }
+}
+function outputConflicts(options) {
+  const outputs = [options.out, options.err].filter(Boolean);
+  return {
+    brief: outputs.some((output) => sameFile(output, options.brief)),
+    input: (options.inputs ?? []).some((input) => outputs.some((output) => sameFile(output, input))),
+    outputs: Boolean(options.out && options.err && sameFile(options.out, options.err)),
+  };
+}
+function receiptConflicts(options, env) {
+  const receipt = receiptPath(env);
+  if (!receipt) return false;
+  return [options.brief, ...(options.inputs ?? []), options.out, options.err].filter(Boolean).some((value) => sameFile(receipt, value));
+}
+function readBoundedRegularFile(path, tooLargeStatus = "file-too-large") {
+  try {
+    const info = statSync(path);
+    if (!info.isFile()) return { status: "not-regular-file" };
+    if (info.size > MAX_VENDOR_USAGE_BYTES) return { status: tooLargeStatus };
+    return { data: readFileSync(path, "utf8") };
+  } catch { return { status: "read-failed" }; }
+}
+function lastSessionId(stderr) {
+  const matches = [...stderr.matchAll(/^session id:\s*(.*?)\s*$/gim)];
+  const value = matches.at(-1)?.[1];
+  return value && SESSION_ID.test(value) ? value : null;
+}
+function rolloutFiles(root, sessionId) {
+  const found = [];
+  const name = new RegExp(`^rollout-.*-${sessionId}\\.jsonl$`, "i");
+  const walk = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (name.test(entry.name)) found.push(path);
+        else walk(path);
+      } else if (name.test(entry.name)) found.push(path);
+    }
+  };
+  try { walk(join(root, "sessions")); return { files: found }; }
+  catch (error) { return error?.code === "ENOENT" ? { files: found } : { status: "read-failed" }; }
+}
+function lastTokenCount(data) {
+  let last = null;
+  for (const line of data.split(/\r?\n/)) {
+    try {
+      const event = JSON.parse(line);
+      if (event?.payload?.type === "token_count") last = event.payload;
+    } catch { /* A partially flushed JSONL line must not hide an earlier valid event. */ }
+  }
+  return last;
+}
+function usageFromTokenCount(payload) {
+  const usage = payload?.info?.total_token_usage;
+  const values = [usage?.input_tokens, usage?.cached_input_tokens, usage?.output_tokens, usage?.reasoning_output_tokens, usage?.total_tokens];
+  if (!values.every(Number.isFinite)) return null;
+  const optionalNumber = (value) => Number.isFinite(value) ? value : null;
+  return {
+    source: "codex-rollout",
+    inputTokens: usage.input_tokens,
+    cachedInputTokens: usage.cached_input_tokens,
+    outputTokens: usage.output_tokens,
+    reasoningOutputTokens: usage.reasoning_output_tokens,
+    totalTokens: usage.total_tokens,
+    contextWindow: optionalNumber(payload.info.model_context_window),
+    quotaUsedPercent: optionalNumber(payload.rate_limits?.primary?.used_percent),
+  };
+}
+function waitForRollout() { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50); }
+function collectVendorUsage(options, invoked, env) {
+  if (options.vendor !== "codex") return { usage: null, status: "unsupported-vendor" };
+  if (!invoked) return { usage: null, status: "not-invoked" };
+  if (!options.err) return { usage: null, status: "no-err-file" };
+  let result = { usage: null, status: "no-session-id", retry: true };
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const stderr = readBoundedRegularFile(options.err);
+    if (stderr.status) return { usage: null, status: stderr.status };
+    const sessionId = lastSessionId(stderr.data);
+    if (!sessionId) result = { usage: null, status: "no-session-id", retry: true };
+    else {
+      const root = env.CODEX_HOME?.trim() || join(homedir(), ".codex");
+      const matches = rolloutFiles(root, sessionId);
+      if (matches.status) return { usage: null, status: matches.status };
+      if (matches.files.length === 0) result = { usage: null, status: "no-rollout-file", retry: true };
+      else if (matches.files.length > 1) return { usage: null, status: "ambiguous-rollout-file" };
+      else {
+        const rollout = readBoundedRegularFile(matches.files[0]);
+        if (rollout.status) return { usage: null, status: rollout.status };
+        const tokenCount = lastTokenCount(rollout.data);
+        if (!tokenCount) result = { usage: null, status: "no-token-count", retry: true };
+        else {
+          const usage = usageFromTokenCount(tokenCount);
+          return usage ? { usage, status: "ok" } : { usage: null, status: "invalid-token-fields" };
+        }
+      }
+    }
+    if (attempt < 3) waitForRollout();
+  }
+  return { usage: null, status: result.status };
+}
 function writeReceipt(stderr, options, exit, startedAt, invoked, env = process.env) {
   const duration = ((Date.now() - startedAt) / 1000).toFixed(3);
   stderr.write(`[dispatch] vendor=${options.vendor} op=${options.operation} model=${options.model ?? "-"} exit=${exit} duration=${duration}s\n`);
   try {
     const receipt = receiptPath(env);
     if (!receipt) return;
-    const path = absoluteFrom(process.cwd(), receipt);
-    if ([options.brief, options.out, options.err].filter(Boolean).some((value) => samePath(path, value))) return;
-    mkdirSync(dirname(path), { recursive: true });
-    const existing = statSync(path, { throwIfNoEntry: false });
+    if ([options.brief, ...(options.inputs ?? []), options.out, options.err].filter(Boolean).some((value) => sameFile(receipt, value))) return;
+    mkdirSync(dirname(receipt), { recursive: true });
+    const existing = statSync(receipt, { throwIfNoEntry: false });
     let separator = "";
     if (existing?.size) {
-      const fd = openSync(path, "r");
+      const fd = openSync(receipt, "r");
       try {
         const lastByte = Buffer.alloc(1);
         readSync(fd, lastByte, 0, 1, existing.size - 1);
         if (lastByte[0] !== 0x0a) separator = "\n";
       } finally { closeSync(fd); }
     }
-    appendFileSync(path, `${separator}${JSON.stringify({ schemaVersion: 1, ts: new Date().toISOString(), vendor: options.vendor, operation: options.operation, model: options.model ?? null, effort: options.effort ?? null, exit, durationSec: Number(duration), invoked, cwd: options.cwd, outPath: options.out ?? null, errPath: options.err ?? null, pid: process.pid })}\n`);
+    let vendorUsage = { usage: null, status: "read-failed" };
+    try { vendorUsage = collectVendorUsage(options, invoked, env); }
+    catch { /* Usage is additive; its own failure must not suppress the receipt. */ }
+    appendFileSync(receipt, `${separator}${JSON.stringify({ schemaVersion: 1, ts: new Date().toISOString(), vendor: options.vendor, operation: options.operation, model: options.model ?? null, effort: options.effort ?? null, exit, durationSec: Number(duration), invoked, cwd: options.cwd, outPath: options.out ?? null, errPath: options.err ?? null, pid: process.pid, vendorUsage: vendorUsage.usage, vendorUsageStatus: vendorUsage.status })}\n`);
   } catch { /* Receipt recording must not affect dispatch. */ }
 }
 function openOutput(path) {
@@ -125,11 +245,35 @@ function defaultForceKill(child) {
 }
 
 export async function run(options, deps = { spawn }) {
+  options = {
+    ...options,
+    brief: absoluteFrom(process.cwd(), options.brief),
+    inputs: (options.inputs ?? []).map((input) => absoluteFrom(process.cwd(), input)),
+    out: options.out ? absoluteFrom(process.cwd(), options.out) : undefined,
+    err: options.err ? absoluteFrom(process.cwd(), options.err) : undefined,
+  };
   const spawnImpl = deps.spawn;
   const env = deps.env ?? process.env;
   const parentStdout = deps.stdout ?? process.stdout;
   const parentStderr = deps.stderr ?? process.stderr;
   const startedAt = Date.now();
+  const conflicts = outputConflicts(options);
+  if (conflicts.brief) {
+    parentStderr.write("dispatch validation error: --out/--err must not equal --brief\n");
+    return 2;
+  }
+  if (conflicts.input) {
+    parentStderr.write("dispatch validation error: --out/--err must not equal --input\n");
+    return 2;
+  }
+  if (conflicts.outputs) {
+    parentStderr.write("dispatch validation error: --out and --err must not refer to the same file\n");
+    return 2;
+  }
+  if (receiptConflicts(options, env)) {
+    parentStderr.write("dispatch validation error: --out/--err must not equal SECOND_OPINION_RECEIPT\n");
+    return 2;
+  }
   const isGitRepo = options.isGitRepo ?? isGitRepository(options.cwd);
   const argv = buildVendorArgv({ ...options, isGitRepo });
   if (options.dryRun) {

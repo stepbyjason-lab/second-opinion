@@ -2,7 +2,7 @@
 
 **English** | [한국어](./README.ko.md)
 
-![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.2.0-informational)
+![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.8.0-informational)
 
 **Use other AI vendors from inside Claude Code — in plain language.**
 Second opinions, task offloading, and vendor capabilities like image generation.
@@ -57,6 +57,21 @@ extracted from:
 | Codex sandbox **can't read files on Windows** | excerpts content into the brief instead of asking it to read files |
 | Image generation: agy **ignores where you asked it to save** (uses its own scratch dir), codex needs a **write-enabled sandbox** and its Windows copy step can fail | knows each vendor's real artifact location, verifies the file actually exists, and moves it where you wanted — a vendor saying "saved" is not treated as success |
 | "No issues found" is a weak signal (Gemini especially leans false-negative) | always relayed as "didn't find problems ≠ no problems" |
+
+- **Execution receipts** — after every vendor call the skill states what was
+  actually observed: the vendor and model requested, the real backend if known,
+  exit/timeout status, and any fallback or downgrade. Requesting a model is not
+  the same as running it, and a silently-ignored model label shows up here.
+
+  For callers that need this machine-readable, set `SECOND_OPINION_RECEIPT` to a
+  file path and each dispatch appends one JSON line — vendor, operation, model,
+  effort, exit code, duration, and whether the process actually spawned. Codex
+  calls also carry measured token usage read from Codex's own session log
+  (input, cached input, output, reasoning, total, context window, quota used).
+  Off by default; when unset, nothing is written.
+
+  Comparing model cost? Use `(inputTokens - cachedInputTokens) + outputTokens`.
+  Do not add `reasoningOutputTokens` — it is already part of `outputTokens`.
 
 ## Requirements
 

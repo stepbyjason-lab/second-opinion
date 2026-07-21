@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.0 — 2026-07-21
+
+- **P0: 영수증·`--out`/`--err` 경로 충돌 데이터 손실 차단**: 기존 영수증 파일을 벤더 출력이
+  truncate하던 0.7.0 설정을 CLI 단계에서 exit 2로 거부한다.
+- **Codex 실측 사용량 영수증**: opt-in JSONL 영수증에 `vendorUsage`·`vendorUsageStatus`를
+  추가한다. `--err`의 session id와 정확히 하나인 rollout 로그의 마지막 `token_count`에서
+  토큰·컨텍스트·quota를 동기식 fail-open으로 읽으며, 다른 벤더·수집 불가에는 `null`과 원인을 남긴다.
+
 ## 0.7.0 — 2026-07-20
 
 - **opt-in 디스패치 파일 영수증**: `SECOND_OPINION_RECEIPT`에 경로를 지정하면, 기존 stderr
