@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, createWriteStream, openSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { appendFileSync, closeSync, createWriteStream, mkdirSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { OPERATIONS, PolicyError, buildVendorArgv, executableName, normalizeVendor, resolveExecutable } from "./vendor-policy.mjs";
 
@@ -79,9 +79,28 @@ function isGitRepository(cwd) {
   const result = spawnSync("git", ["-C", cwd, "rev-parse", "--is-inside-work-tree"], { shell: false, encoding: "utf8", windowsHide: true });
   return result.status === 0 && typeof result.stdout === "string" && result.stdout.trim() === "true";
 }
-function writeReceipt(stderr, options, exit, startedAt) {
+function receiptPath(env) { return env.SECOND_OPINION_RECEIPT?.trim(); }
+function writeReceipt(stderr, options, exit, startedAt, invoked, env = process.env) {
   const duration = ((Date.now() - startedAt) / 1000).toFixed(3);
   stderr.write(`[dispatch] vendor=${options.vendor} op=${options.operation} model=${options.model ?? "-"} exit=${exit} duration=${duration}s\n`);
+  try {
+    const receipt = receiptPath(env);
+    if (!receipt) return;
+    const path = absoluteFrom(process.cwd(), receipt);
+    if ([options.brief, options.out, options.err].filter(Boolean).some((value) => samePath(path, value))) return;
+    mkdirSync(dirname(path), { recursive: true });
+    const existing = statSync(path, { throwIfNoEntry: false });
+    let separator = "";
+    if (existing?.size) {
+      const fd = openSync(path, "r");
+      try {
+        const lastByte = Buffer.alloc(1);
+        readSync(fd, lastByte, 0, 1, existing.size - 1);
+        if (lastByte[0] !== 0x0a) separator = "\n";
+      } finally { closeSync(fd); }
+    }
+    appendFileSync(path, `${separator}${JSON.stringify({ schemaVersion: 1, ts: new Date().toISOString(), vendor: options.vendor, operation: options.operation, model: options.model ?? null, effort: options.effort ?? null, exit, durationSec: Number(duration), invoked, cwd: options.cwd, outPath: options.out ?? null, errPath: options.err ?? null, pid: process.pid })}\n`);
+  } catch { /* Receipt recording must not affect dispatch. */ }
 }
 function openOutput(path) {
   const fd = openSync(path, "w");
@@ -107,6 +126,7 @@ function defaultForceKill(child) {
 
 export async function run(options, deps = { spawn }) {
   const spawnImpl = deps.spawn;
+  const env = deps.env ?? process.env;
   const parentStdout = deps.stdout ?? process.stdout;
   const parentStderr = deps.stderr ?? process.stderr;
   const startedAt = Date.now();
@@ -114,14 +134,14 @@ export async function run(options, deps = { spawn }) {
   const argv = buildVendorArgv({ ...options, isGitRepo });
   if (options.dryRun) {
     parentStdout.write(`${JSON.stringify({ vendor: options.vendor, operation: options.operation, executable: executableName(options.vendor), argv, stdinMode: "brief-file", cwd: options.cwd })}\n`);
-    writeReceipt(parentStderr, options, 0, startedAt);
+    writeReceipt(parentStderr, options, 0, startedAt, false, env);
     return 0;
   }
   let brief;
   try { brief = readFileSync(options.brief); }
   catch (error) {
     parentStderr.write(`dispatch internal error: unable to read brief (${error.code ?? "read_failed"})\n`);
-    writeReceipt(parentStderr, options, 3, startedAt);
+    writeReceipt(parentStderr, options, 3, startedAt, false, env);
     return 3;
   }
   let executable;
@@ -129,7 +149,7 @@ export async function run(options, deps = { spawn }) {
   catch (error) {
     const code = error instanceof PolicyError ? 2 : 3;
     parentStderr.write(`${error.message ?? "dispatch executable resolution failed"}\n`);
-    writeReceipt(parentStderr, options, code, startedAt);
+    writeReceipt(parentStderr, options, code, startedAt, false, env);
     return code;
   }
   let stdoutStream;
@@ -141,12 +161,13 @@ export async function run(options, deps = { spawn }) {
     stdoutStream?.destroy();
     stderrStream?.destroy();
     parentStderr.write(`dispatch internal error: unable to open output file (${error.code ?? "open_failed"})\n`);
-    writeReceipt(parentStderr, options, 3, startedAt);
+    writeReceipt(parentStderr, options, 3, startedAt, false, env);
     return 3;
   }
   return await new Promise((resolveRun) => {
     let settled = false;
     let timedOut = false;
+    let invoked = false;
     let child;
     let timer, escalateTimer, reapTimer;
     const clearTimers = () => { for (const t of [timer, escalateTimer, reapTimer]) if (t) clearTimeout(t); };
@@ -154,11 +175,18 @@ export async function run(options, deps = { spawn }) {
       if (settled) return;
       settled = true;
       clearTimers();
-      writeReceipt(parentStderr, options, code === 124 ? "timeout" : code, startedAt);
+      writeReceipt(parentStderr, options, code === 124 ? "timeout" : code, startedAt, invoked, env);
       resolveRun(code);
     };
     try {
-      child = spawnImpl(executable, argv, { cwd: options.cwd, shell: false, stdio: ["pipe", stdoutStream ? "pipe" : "inherit", stderrStream ? "pipe" : "inherit"], windowsHide: true });
+      const spawnOptions = { cwd: options.cwd, shell: false, stdio: ["pipe", stdoutStream ? "pipe" : "inherit", stderrStream ? "pipe" : "inherit"], windowsHide: true };
+      if (receiptPath(env)) {
+        spawnOptions.env = { ...env };
+        for (const key of Object.keys(spawnOptions.env)) {
+          if (key.toUpperCase() === "SECOND_OPINION_RECEIPT") delete spawnOptions.env[key];
+        }
+      }
+      child = spawnImpl(executable, argv, spawnOptions);
     } catch (error) {
       stdoutStream?.destroy();
       stderrStream?.destroy();
@@ -169,6 +197,7 @@ export async function run(options, deps = { spawn }) {
     const graceMs = options.killGraceMs ?? 5000;
     const reapMs = options.reapMs ?? 3000;
     const forceKill = options.forceKill ?? defaultForceKill;
+    child.once("spawn", () => { invoked = true; });
     timer = setTimeout(() => {
       timedOut = true;
       try { child.kill(); } catch { /* already gone */ }          // graceful SIGTERM first

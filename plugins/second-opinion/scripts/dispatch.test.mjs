@@ -2,9 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { PolicyError, buildVendorArgv, detectDirectInference, resolveExecutable } from "./vendor-policy.mjs";
 import { executeCli, parseCli, run } from "./dispatch.mjs";
@@ -110,18 +110,44 @@ function memoryWriter() {
   let value = "";
   return { stream: new Writable({ write(chunk, _encoding, callback) { value += chunk.toString(); callback(); } }), value: () => value };
 }
-function fakeChild(onStart) {
+function caseInsensitiveEnv(values) {
+  return new Proxy(values, {
+    get(target, property, receiver) {
+      if (typeof property === "string") {
+        const key = Object.keys(target).find((candidate) => candidate.toUpperCase() === property.toUpperCase());
+        if (key !== undefined) return target[key];
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
+}
+function fakeChild(onStart, { emitsSpawn = true } = {}) {
   const child = new EventEmitter();
   child.stdin = new PassThrough();
   child.stdout = new PassThrough();
   child.stderr = new PassThrough();
   child.kill = () => { queueMicrotask(() => child.emit("close", null, "SIGTERM")); return true; };
   onStart(child);
+  if (emitsSpawn) queueMicrotask(() => child.emit("spawn"));
   return child;
 }
 
-test("run injection preserves literal argv, complete stdin, and shell:false boundary", async () => {
+async function withReceipt(path, action) {
+  const previous = process.env.SECOND_OPINION_RECEIPT;
+  process.env.SECOND_OPINION_RECEIPT = path;
+  try { return await action(); }
+  finally {
+    if (previous === undefined) delete process.env.SECOND_OPINION_RECEIPT;
+    else process.env.SECOND_OPINION_RECEIPT = previous;
+  }
+}
+
+function receiptLines(path) { return readFileSync(path, "utf8").trimEnd().split("\n").map((line) => JSON.parse(line)); }
+
+test("run injection strips every receipt env spelling and respects trimmed receipt opt-in", async () => {
   const fixture = FIXTURES[0];
+  const receipt = join(root, "child-env-receipt.jsonl");
+  const preservedKey = "SECOND_OPINION_TEST_PRESERVED";
   let captured;
   let stdin = "";
   const spawnFake = (executable, argv, options) => {
@@ -132,12 +158,179 @@ test("run injection preserves literal argv, complete stdin, and shell:false boun
     });
   };
   const stderr = memoryWriter();
-  const code = await run({ ...fixture, brief, cwd: root, timeout: 2, dryRun: false }, { spawn: spawnFake, stderr: stderr.stream });
+  const env = caseInsensitiveEnv({ second_opinion_receipt: receipt, [preservedKey]: "preserved" });
+  const code = await run({ ...fixture, brief, cwd: root, timeout: 2, dryRun: false }, { spawn: spawnFake, stderr: stderr.stream, env });
   assert.equal(code, 0);
   assert.equal(captured.executable, "codex");
   assert.deepEqual(captured.argv, fixture.argv);
   assert.equal(captured.options.shell, false);
+  assert.deepEqual(Object.keys(captured.options.env).filter((key) => key.toUpperCase() === "SECOND_OPINION_RECEIPT"), []);
+  assert.equal(captured.options.env[preservedKey], "preserved");
   assert.equal(stdin, "brief with spaces and quotes: \"complete\"\n");
+
+  let blankReceiptOptions;
+  const blankReceiptSpawn = (_executable, _argv, options) => {
+    blankReceiptOptions = options;
+    return fakeChild((child) => {
+      child.stdin.on("end", () => queueMicrotask(() => child.emit("close", 0, null)));
+      child.stdin.resume();
+    });
+  };
+  assert.equal(await run({ ...fixture, brief, cwd: root, timeout: 2, dryRun: false }, {
+    spawn: blankReceiptSpawn, stderr: stderr.stream, env: { SECOND_OPINION_RECEIPT: "   " },
+  }), 0);
+  assert.equal(blankReceiptOptions.env, undefined);
+});
+
+test("opt-in receipt appends typed JSONL for dry-run and invoked children", async () => {
+  const receipt = join(root, "receipts", "dispatch.jsonl");
+  await withReceipt(`  ${receipt}  `, async () => {
+    const stderr = memoryWriter();
+    assert.equal(await run({ ...FIXTURES[0], brief, cwd: root, timeout: 2, dryRun: true }, { stderr: stderr.stream }), 0);
+    const spawnFake = () => fakeChild((child) => {
+      child.stdin.on("end", () => queueMicrotask(() => child.emit("close", 0, null)));
+      child.stdin.resume();
+    });
+    assert.equal(await run({ ...FIXTURES[0], brief, cwd: root, timeout: 2, dryRun: false }, { spawn: spawnFake, stderr: stderr.stream }), 0);
+  });
+  assert.equal(receiptLines(receipt).length, 2);
+  const [dryRun, completed] = receiptLines(receipt);
+  assert.equal(dryRun.invoked, false);
+  assert.equal(completed.invoked, true);
+  for (const row of [dryRun, completed]) {
+    assert.deepEqual(Object.keys(row).sort(), ["cwd", "durationSec", "effort", "errPath", "exit", "invoked", "model", "operation", "outPath", "pid", "schemaVersion", "ts", "vendor"].sort());
+    assert.equal(row.schemaVersion, 1);
+    assert.equal(row.vendor, "codex");
+    assert.equal(row.operation, "text");
+    assert.equal(row.model, FIXTURES[0].model);
+    assert.equal(typeof row.model, "string");
+    assert.equal(row.effort, FIXTURES[0].effort);
+    assert.equal(typeof row.effort, "string");
+    assert.equal(row.exit, 0);
+    assert.equal(typeof row.exit, "number");
+    assert.equal(typeof row.ts, "string");
+    assert.equal(typeof row.durationSec, "number");
+    assert.equal(row.cwd, root);
+    assert.equal(row.outPath, null);
+    assert.equal(row.errPath, null);
+    assert.equal(row.pid, process.pid);
+  }
+  assert.match(readFileSync(receipt, "utf8"), /\n$/);
+});
+
+test("receipt appends a new line after an existing file without a trailing newline", async () => {
+  const receipt = join(root, "existing-without-newline.jsonl");
+  writeFileSync(receipt, "existing content");
+  await withReceipt(receipt, async () => {
+    assert.equal(await run({ ...FIXTURES[0], brief, cwd: root, timeout: 2, dryRun: true }, { stderr: memoryWriter().stream }), 0);
+  });
+  const [existing, record] = readFileSync(receipt, "utf8").split("\n");
+  assert.equal(existing, "existing content");
+  assert.equal(JSON.parse(record).schemaVersion, 1);
+});
+
+test("receipt records null model for a normal invocation without --model", async () => {
+  const receipt = join(root, "no-model.jsonl");
+  await withReceipt(receipt, async () => {
+    assert.equal(await run({ ...FIXTURES[0], brief, cwd: root, model: undefined, timeout: 2, dryRun: true }, { stderr: memoryWriter().stream }), 0);
+  });
+  const [row] = receiptLines(receipt);
+  assert.equal(row.model, null);
+});
+
+test("receipt fail-opens and never prepares a conflicting output path", async () => {
+  const out = join(root, "missing-output-parent", "out.txt");
+  let spawned = false;
+  await withReceipt(out, async () => {
+    const code = await run({ ...FIXTURES[0], brief, cwd: root, timeout: 2, out, dryRun: false }, { spawn: () => { spawned = true; throw new Error("unexpected spawn"); }, stderr: memoryWriter().stream });
+    assert.equal(code, 3);
+  });
+  assert.equal(spawned, false);
+  assert.equal(existsSync(dirname(out)), false);
+  assert.equal(existsSync(out), false);
+});
+
+test("output open failure writes one uninvoked receipt", async () => {
+  const out = join(root, "missing-output-parent-with-receipt", "out.txt");
+  const receipt = join(root, "receipts", "output-open-failure.jsonl");
+  let spawned = false;
+  await withReceipt(receipt, async () => {
+    assert.equal(await run({ ...FIXTURES[0], brief, cwd: root, timeout: 2, out, dryRun: false }, { spawn: () => { spawned = true; throw new Error("unexpected spawn"); }, stderr: memoryWriter().stream }), 3);
+  });
+  assert.equal(spawned, false);
+  const rows = receiptLines(receipt);
+  assert.equal(rows.length, 1);
+  assert.deepEqual(rows.map((row) => ({ exit: row.exit, invoked: row.invoked })), [{ exit: 3, invoked: false }]);
+});
+
+test("relative receipt paths resolve from process.cwd(), not --cwd", async () => {
+  const cwd = join(root, "different-dispatch-cwd");
+  const receiptDir = mkdtempSync(join(process.cwd(), ".dispatch-receipt-"));
+  const receipt = join(receiptDir, "dispatch.jsonl");
+  const receiptEnv = relative(process.cwd(), receipt);
+  mkdirSync(cwd, { recursive: true });
+  assert.notEqual(resolve(cwd, receiptEnv), receipt);
+  assert.equal(resolve(process.cwd(), receiptEnv), receipt);
+  try {
+    await withReceipt(receiptEnv, async () => {
+      assert.equal(await run({ ...FIXTURES[0], brief, cwd, timeout: 2, dryRun: true }, { stderr: memoryWriter().stream }), 0);
+    });
+    assert.equal(existsSync(receipt), true);
+    assert.equal(receiptLines(receipt).length, 1);
+  } finally {
+    rmSync(receiptDir, { recursive: true, force: true });
+  }
+});
+
+test("unwritable receipt path fails open without changing dispatch", async () => {
+  const stderr = memoryWriter();
+  await withReceipt(root, async () => {
+    const spawnFake = () => fakeChild((child) => {
+      child.stdin.on("end", () => queueMicrotask(() => child.emit("close", 0, null)));
+      child.stdin.resume();
+    });
+    assert.equal(await run({ ...FIXTURES[0], brief, cwd: root, timeout: 2, dryRun: false }, { spawn: spawnFake, stderr: stderr.stream }), 0);
+  });
+  assert.match(stderr.value(), /exit=0/);
+});
+
+test("pre-spawn failures write one uninvoked receipt despite duplicate events", async () => {
+  const receipt = join(root, "pre-spawn.jsonl");
+  await withReceipt(receipt, async () => {
+    const spawnFake = () => fakeChild((child) => queueMicrotask(() => {
+      child.emit("error", Object.assign(new Error("missing"), { code: "ENOENT" }));
+      child.emit("close", 3, null);
+    }), { emitsSpawn: false });
+    assert.equal(await run({ ...FIXTURES[0], brief, cwd: root, timeout: 2, dryRun: false }, { spawn: spawnFake, stderr: memoryWriter().stream }), 3);
+  });
+  const rows = receiptLines(receipt);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].invoked, false);
+  assert.equal(rows[0].exit, 3);
+});
+
+test("brief and synchronous spawn failures write uninvoked receipts", async () => {
+  const receipt = join(root, "other-pre-spawn.jsonl");
+  await withReceipt(receipt, async () => {
+    assert.equal(await run({ ...FIXTURES[0], brief: join(root, "not-found.txt"), cwd: root, timeout: 2, dryRun: false }, { spawn: () => { throw new Error("unexpected spawn"); }, stderr: memoryWriter().stream }), 3);
+    assert.equal(await run({ ...FIXTURES[0], brief, cwd: root, timeout: 2, dryRun: false }, { spawn: () => { throw Object.assign(new Error("missing"), { code: "ENOENT" }); }, stderr: memoryWriter().stream }), 3);
+  });
+  const rows = receiptLines(receipt);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map((row) => [row.exit, row.invoked]), [[3, false], [3, false]]);
+});
+
+test("executable resolution failure writes an uninvoked receipt", () => {
+  const receipt = join(root, "executable-resolution.jsonl");
+  const result = spawnSync(process.execPath, [resolve("plugins/second-opinion/scripts/dispatch.mjs"), "--vendor", "codex", "--operation", "text", "--brief", brief], {
+    cwd: root,
+    encoding: "utf8",
+    env: { ...process.env, PATH: "", SECOND_OPINION_RECEIPT: receipt },
+    shell: false,
+    windowsHide: true,
+  });
+  assert.equal(result.status, 2, result.stderr);
+  assert.deepEqual(receiptLines(receipt).map((row) => [row.exit, row.invoked]), [[2, false]]);
 });
 
 // detectDirectInference is the caller-scoped enforcement API (second-opinion itself never calls it).
@@ -197,20 +390,26 @@ test("detectDirectInference: raw codex exec resolves to codex, dispatcher call t
 
 test("spawn error becomes exit 3", async () => {
   const stderr = memoryWriter();
-  const spawnFake = () => fakeChild((child) => queueMicrotask(() => child.emit("error", Object.assign(new Error("missing"), { code: "ENOENT" }))));
+  const spawnFake = () => fakeChild((child) => queueMicrotask(() => child.emit("error", Object.assign(new Error("missing"), { code: "ENOENT" }))), { emitsSpawn: false });
   const code = await run({ ...FIXTURES[0], brief, cwd: root, timeout: 2, dryRun: false }, { spawn: spawnFake, stderr: stderr.stream });
   assert.equal(code, 3);
   assert.match(stderr.value(), /spawn failed \(ENOENT\)/);
 });
 test("timeout kills child and becomes exit 124", async () => {
   const stderr = memoryWriter();
+  const receipt = join(root, "timeout.jsonl");
   const spawnFake = () => fakeChild(() => {});
-  const code = await run({ ...FIXTURES[0], brief, cwd: root, timeout: 1, dryRun: false }, { spawn: spawnFake, stderr: stderr.stream });
+  let code;
+  await withReceipt(receipt, async () => {
+    code = await run({ ...FIXTURES[0], brief, cwd: root, timeout: 1, dryRun: false }, { spawn: spawnFake, stderr: stderr.stream });
+  });
   assert.equal(code, 124);
   assert.match(stderr.value(), /exit=timeout/);
+  assert.equal(receiptLines(receipt)[0].exit, "timeout");
 });
 test("timeout escalates to a forced tree-kill and stays bounded when close never fires", async () => {
   const stderr = memoryWriter();
+  const receipt = join(root, "forced-timeout.jsonl");
   let forced = false;
   const stubborn = () => {
     const child = new EventEmitter();
@@ -221,13 +420,17 @@ test("timeout escalates to a forced tree-kill and stays bounded when close never
     child.kill = () => true; // ignores termination — never emits "close"
     return child;
   };
-  const code = await run(
-    { ...FIXTURES[0], brief, cwd: root, timeout: 1, killGraceMs: 20, reapMs: 20, forceKill: () => { forced = true; }, dryRun: false },
-    { spawn: () => stubborn(), stderr: stderr.stream },
-  );
+  let code;
+  await withReceipt(receipt, async () => {
+    code = await run(
+      { ...FIXTURES[0], brief, cwd: root, timeout: 1, killGraceMs: 20, reapMs: 20, forceKill: () => { forced = true; }, dryRun: false },
+      { spawn: () => stubborn(), stderr: stderr.stream },
+    );
+  });
   assert.equal(code, 124);
   assert.equal(forced, true, "force-kill escalation must fire when the child ignores SIGTERM");
   assert.match(stderr.value(), /exit=timeout/);
+  assert.equal(receiptLines(receipt)[0].exit, "timeout");
 });
 
 test("default timeout is a large runaway-backstop, not a short work limit", () => {
@@ -256,20 +459,29 @@ test("resolved Windows executable is absolute and cmd-only discovery is classifi
 });
 
 test("vendor stderr file excludes the parent receipt", async () => {
+  const outFile = join(root, "vendor-only.out");
   const errFile = join(root, "vendor-only.err");
+  const receipt = join(root, "output-paths.jsonl");
   const parent = memoryWriter();
   const spawnFake = () => fakeChild((child) => {
     child.stdin.on("end", () => {
       child.stderr.end("vendor-only\n");
-      child.stdout.end();
+      child.stdout.end("vendor-out\n");
       queueMicrotask(() => child.emit("close", 0, null));
     });
     child.stdin.resume();
   });
-  const code = await run({ ...FIXTURES[0], brief, cwd: root, timeout: 2, err: errFile, dryRun: false }, { spawn: spawnFake, stderr: parent.stream });
+  let code;
+  await withReceipt(receipt, async () => {
+    code = await run({ ...FIXTURES[0], brief, cwd: root, timeout: 2, out: outFile, err: errFile, dryRun: false }, { spawn: spawnFake, stderr: parent.stream });
+  });
   assert.equal(code, 0);
   await new Promise((done) => setTimeout(done, 10));
+  assert.equal(readFileSync(outFile, "utf8"), "vendor-out\n");
   assert.equal(readFileSync(errFile, "utf8"), "vendor-only\n");
   assert.match(parent.value(), /^\[dispatch\]/);
   assert.doesNotMatch(readFileSync(errFile, "utf8"), /\[dispatch\]/);
+  const [row] = receiptLines(receipt);
+  assert.equal(row.outPath, outFile);
+  assert.equal(row.errPath, errFile);
 });
