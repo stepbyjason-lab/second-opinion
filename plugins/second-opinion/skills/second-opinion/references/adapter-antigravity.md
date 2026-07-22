@@ -14,10 +14,12 @@
 - ⚠️ argv로 줄 때(`-p "$(cat brief.txt)"`)만 적용되는 함정 둘: **`</dev/null` 필수**
   (stdin 안 닫으면 무한 hang) + **30,000자 한계** (Windows CreateProcess) — 특별한
   이유가 없으면 stdin 경로를 기본으로 쓸 것
-- ⚠️ `--model`은 **디스플레이 라벨 그대로**(`"Gemini 3.5 Flash (High)"`). slug/ID 형식(`gemini-3-1-pro-high` 등)은 **exit 0인 채 silent-ignore → 계정 기본값(저급 모델)으로 조용히 강등** (실측). **정확한 라벨은 `agy models`로 확인**해서 그대로 복사할 것
-- 모델 메뉴 (`agy models` 실측, 2026-07-03 기준 — 라벨은 벤더가 바꿀 수 있으니 실행해
-  재확인): Gemini 3.1 Pro (High/Low) · Gemini 3.5 Flash (High/Medium/Low) ·
-  GPT-OSS 120B (Medium) · Claude Opus/Sonnet 4.6 (Thinking)
+- ⚠️ `--model` 형식 (agy 1.1.5 실측, 2026-07-22): **디스플레이 라벨**(`"Gemini 3.5 Flash (High)"`)과 **`agy models`가 출력하는 정규 slug**(`gemini-3.5-flash-medium`) **둘 다 그대로 받는다** — 어느 쪽을 복사해도 된다. **주의: `agy models`는 이제 라벨이 아니라 slug를 출력한다**(모델 피커 화면은 라벨을 보여줌 — 두 출처 형식이 다르다). 모르는·형식이 깨진 이름(옛 예시 `gemini-3-1-pro-high`처럼 버전에 하이픈, 또는 effort 빠진 `gemini-3.5-flash`)은 **exit 1로 거부**되고 available 목록을 stderr로 준다 — **조용히 강등하지 않는다.** (구버전 agy는 slug를 silent-ignore→계정 기본값 강등했으나 1.1.5는 loud reject로 바뀜. 그래도 호출 후 exit code는 확인할 것.)
+- 모델 메뉴 (`agy models` 실측, 2026-07-22 — 벤더가 바꿀 수 있으니 실행해 재확인).
+  slug / (라벨): `gemini-3.6-flash-{high,medium,low}` (Gemini 3.6 Flash) ·
+  `gemini-3.5-flash-{high,medium,low}` (Gemini 3.5 Flash) ·
+  `gemini-3.1-pro-{high,low}` (Gemini 3.1 Pro) · `claude-sonnet-4-6` ·
+  `claude-opus-4-6-thinking` · `gpt-oss-120b-medium`
 - ⚠️ `antigravity chat`은 이 스킬의 headless 채널이 아니다 — IDE 채팅 디스패치이며
   `--model` 표면이 `agy`와 다르다. headless second-opinion에는 반드시 `agy`를 쓸 것
 - ⚠️ quota: 사용량이 여러 모델에서 **동일 %로 동반 상승**하는 것이 관측됨 (2026-07-03

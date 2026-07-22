@@ -13,7 +13,7 @@ description: >
 
 # second-opinion — 외부 AI 어댑터
 
-**버전 0.8.1** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
+**버전 0.8.2** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
 
 이 스킬은 **아무것도 차단하지 않는다** — 중개(relay)만 한다. 디스패처는 커맨드 정합성을 위한 도구일 뿐이다. "Claude가 디스패처를 반드시 거치게" 강제하는 것은 **부르는 쪽(caller)의 책임**이다 → [references/enforcement.md](references/enforcement.md).
 
@@ -94,7 +94,8 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor agy --operation text --
 - brief는 무-플래그 stdin으로 넣는다. `-p -`는 agy 1.1.1에서 `-`가 리터럴 프롬프트로
   바뀌어 깨졌다. stdin은 미문서화(#525/#542)라 자동업데이트로 다시 깨질 수 있으므로,
   대형 입력이나 재파손 시 `--add-dir`로 디렉토리를 허용하고 파일 경로를 읽게 하는 폴백을 쓴다.
-- `--model`은 디스플레이 라벨 그대로(`"Gemini 3.1 Pro (High)"`). slug/ID 형식은 exit 0인 채 silent-ignore → 계정 기본값으로 조용히 강등될 수 있으니 정확한 라벨은 `agy models`로 확인해서 그대로 복사할 것.
+- `--model`은 디스플레이 라벨(`"Gemini 3.1 Pro (High)"`)이나 `agy models`가 출력하는 정규 slug(`gemini-3.1-pro-high`) 둘 다 유효(agy 1.1.5 실측). `agy models`는 이제 slug를, 모델 피커 화면은 라벨을 보여주니 어느 쪽이든 그대로 복사해 쓰면 된다. 형식이 깨졌거나 모르는 이름은 exit 1로 거부되니(구버전의 silent-downgrade 아님) 호출 후 exit code를 확인할 것.
+- **agy 영수증 한계**: 영수증의 `model`·`invoked`는 agy에도 기록되지만(요청 모델·실행 여부), 실측 토큰(`vendorUsage`)과 실제 응답 backend 확인은 **Codex 전용**이다. agy는 응답에 모델·session id를 안 실어(헤더 없음) 요청과 실제 실행 모델을 묶을 앵커가 없다. 대신 unknown 모델을 loud reject하므로 강등 위험은 낮다.
 → 호출 전 필수: `references/adapter-antigravity.md` 를 반드시 읽을 것 (Windows 호스트 주의·모델 라벨·이미지 생성·복구·기타 함정)
 
 ### Claude 채널

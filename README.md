@@ -2,7 +2,7 @@
 
 **English** | [한국어](./README.ko.md)
 
-![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.8.1-informational)
+![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.8.2-informational)
 
 **Use other AI vendors from inside Claude Code — in plain language.**
 Second opinions, task offloading, and vendor capabilities like image generation.
@@ -53,7 +53,7 @@ extracted from:
 | Gotcha (all observed in the field) | How the skill handles it |
 |---|---|
 | `agy -p "<text>"` **hangs forever** if stdin isn't closed, and argv caps the brief at **30,000 chars** | feeds the brief via stdin (`-p - < brief.txt`) — no hang, 105KB verified |
-| Passing a slug/ID to `--model` is **silently ignored** — exit 0, quietly downgraded to your account's default model | uses display labels only (`"Gemini 3.1 Pro (High)"`) |
+| `--model` accepts both the display label (`"Gemini 3.1 Pro (High)"`) and the canonical slug from `agy models` (`gemini-3.1-pro-high`); `agy models` prints slugs while the picker shows labels. An unknown/malformed name is **rejected loudly (exit 1)** with an available-models list — not silently downgraded (older agy versions did downgrade) | copies the exact string from either source and checks the exit code |
 | Codex sandbox **can't read files on Windows** | excerpts content into the brief instead of asking it to read files |
 | Image generation: agy **ignores where you asked it to save** (uses its own scratch dir), codex needs a **write-enabled sandbox** and its Windows copy step can fail | knows each vendor's real artifact location, verifies the file actually exists, and moves it where you wanted — a vendor saying "saved" is not treated as success |
 | "No issues found" is a weak signal (Gemini especially leans false-negative) | always relayed as "didn't find problems ≠ no problems" |

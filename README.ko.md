@@ -33,7 +33,7 @@ Claude가 만든 것을 Claude가 검토하면 결함을 과소보고한다 — 
 | 함정 (전부 실측) | 스킬의 처리 |
 |---|---|
 | `agy -p "<텍스트>"`는 stdin을 안 닫으면 **무한 hang** + argv라 **30,000자 한계** | brief를 stdin으로 전달(`-p - < brief.txt`) — hang 없음, 105KB 실측 통과 |
-| `--model`에 slug/ID를 주면 **silent-ignore → 계정 기본값(저급 모델)으로 조용히 강등** (exit 0이라 탐지 불가) | 디스플레이 라벨(`"Gemini 3.1 Pro (High)"`)만 사용 |
+| `--model`은 디스플레이 라벨(`"Gemini 3.1 Pro (High)"`)과 `agy models`의 정규 slug(`gemini-3.1-pro-high`) 둘 다 유효(agy 1.1.5). `agy models`는 slug를, 피커는 라벨을 보여줌. 모르는·깨진 이름은 **exit 1로 loud reject**(구버전은 조용히 강등) | 어느 출처든 그대로 복사하고 exit code 확인 |
 | Windows에서 codex sandbox의 **파일 읽기 불능** | "파일 읽어봐" 대신 내용을 brief에 발췌 동봉 |
 | 이미지 생성: agy는 **지정 저장 위치를 무시**(자기 scratch 폴더에 저장), codex는 **쓰기 샌드박스 필요** + Windows 복사 실패 가능 | 벤더별 실제 산출물 위치를 알고, 파일 존재를 직접 확인 후 원한 위치로 옮김 — 벤더의 "저장했다"를 성공으로 안 침 |
 | "이상 없음"은 약한 신호(특히 Gemini의 false-negative 편향) | "문제를 못 찾음 ≠ 문제 없음" 명시 전달 |
