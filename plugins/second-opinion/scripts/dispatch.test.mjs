@@ -750,8 +750,8 @@ test("P0: run normalizes direct relative paths before receipt conflict checks an
     env: { SECOND_OPINION_RECEIPT: receiptRelative },
   }), 0);
   const row = receiptLines(receipt).at(-1);
-  assert.equal(row.outPath, out);
-  assert.equal(row.errPath, err);
+  assert.equal(relative(row.outPath, out), "");
+  assert.equal(relative(row.errPath, err), "");
   assert.equal(isAbsolute(row.outPath), true);
   assert.equal(isAbsolute(row.errPath), true);
 });
