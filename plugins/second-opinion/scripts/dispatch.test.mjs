@@ -64,12 +64,16 @@ const FIXTURES = [
     argv: ["exec", "--skip-git-repo-check", "-m", "gpt model \"quoted\"", "-c", "model_reasoning_effort=\"high\"", "-i", input1, "-i", input2, "-"] },
   { vendor: "codex", operation: "image-generate", model: "gpt model \"quoted\"", effort: "high", inputs: [], isGitRepo: false,
     argv: ["exec", "-s", "workspace-write", "--skip-git-repo-check", "-m", "gpt model \"quoted\"", "-c", "model_reasoning_effort=\"high\"", "-"] },
-  { vendor: "agy", operation: "text", model: "Gemini 3.5 Flash (High)", inputs: [], isGitRepo: false,
-    argv: ["--dangerously-skip-permissions", "--model", "Gemini 3.5 Flash (High)"] },
-  { vendor: "agy", operation: "image-analyze", model: "Gemini 3.5 Flash (High)", inputs: [input1, input2, input3], isGitRepo: false,
-    argv: ["--dangerously-skip-permissions", "--model", "Gemini 3.5 Flash (High)", "--add-dir", dirname(input1), "--add-dir", dirname(input3)] },
-  { vendor: "agy", operation: "image-generate", model: "Gemini 3.5 Flash (High)", inputs: [], isGitRepo: false,
-    argv: ["--dangerously-skip-permissions", "--model", "Gemini 3.5 Flash (High)"] },
+  // agy carries our timeout into its own --print-timeout (default 5m0s would
+  // otherwise kill long jobs with exit 1 before the dispatcher acts). 1234 is
+  // deliberately not the dispatcher default, so a passing fixture proves the
+  // value is propagated rather than coincidentally matching.
+  { vendor: "agy", operation: "text", model: "Gemini 3.5 Flash (High)", inputs: [], isGitRepo: false, timeout: 1234,
+    argv: ["--dangerously-skip-permissions", "--print-timeout", "1234s", "--model", "Gemini 3.5 Flash (High)"] },
+  { vendor: "agy", operation: "image-analyze", model: "Gemini 3.5 Flash (High)", inputs: [input1, input2, input3], isGitRepo: false, timeout: 1234,
+    argv: ["--dangerously-skip-permissions", "--print-timeout", "1234s", "--model", "Gemini 3.5 Flash (High)", "--add-dir", dirname(input1), "--add-dir", dirname(input3)] },
+  { vendor: "agy", operation: "image-generate", model: "Gemini 3.5 Flash (High)", inputs: [], isGitRepo: false, timeout: 1234,
+    argv: ["--dangerously-skip-permissions", "--print-timeout", "1234s", "--model", "Gemini 3.5 Flash (High)"] },
 ];
 
 test("six hand-written argv fixtures match policy exactly", () => {
@@ -88,6 +92,7 @@ test("six CLI dry-runs match literal fixtures and use bare executable names", as
   for (const fixture of FIXTURES) {
     const args = ["--vendor", fixture.vendor, "--operation", fixture.operation, "--brief", brief, "--cwd", root, "--model", fixture.model, "--dry-run"];
     if (fixture.effort) args.push("--effort", fixture.effort);
+    if (fixture.timeout) args.push("--timeout", String(fixture.timeout));
     for (const input of fixture.inputs) args.push("--input", input);
     const stdout = memoryWriter();
     const stderr = memoryWriter();

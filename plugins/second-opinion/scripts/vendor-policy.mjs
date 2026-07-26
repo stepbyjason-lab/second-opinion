@@ -81,7 +81,20 @@ export function buildVendorArgv(options) {
   // the accepted policy for a single-user dev machine. The flag is assembled
   // here, never exposed on the orchestrator's shell line, so a host command
   // classifier never sees it (that is the point of mechanical dispatch).
+  // --print-timeout: agy's print mode has its OWN timeout, default 5m0s
+  // (`agy --help`). The dispatcher's own default is 1800s, so any job longer
+  // than 5 minutes is killed by agy itself long before the dispatcher would
+  // act — and it exits 1, not 124, so it does not even look like a timeout.
+  // Measured: a review lens died 4x in a row at 304-306s with exit 1 and zero
+  // output, while lighter slots in the same window finished at 111s; shrinking
+  // the brief changed nothing because the brief was never the variable.
+  // Propagating our own timeout keeps the two bounds coherent instead of
+  // letting the shorter, invisible one win. A fixed constant would drift apart
+  // again, so it is derived, not hardcoded.
   const argv = ["--dangerously-skip-permissions"];
+  if (Number.isInteger(options.timeout) && options.timeout > 0) {
+    argv.push("--print-timeout", `${options.timeout}s`);
+  }
   if (model) argv.push("--model", model);
   if (operation === "image-analyze") {
     const seen = new Set();
