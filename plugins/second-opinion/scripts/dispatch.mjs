@@ -44,7 +44,7 @@ export function parseCli(argv, startCwd = process.cwd()) {
       raw[flag.slice(2)] = argv[++index];
     }
   }
-  if (!raw.vendor || !["codex", "agy", "antigravity"].includes(raw.vendor)) throw new CliError("--vendor must be codex or agy");
+  if (!raw.vendor || !["codex", "agy", "antigravity", "claude"].includes(raw.vendor)) throw new CliError("--vendor must be codex, agy, or claude");
   const vendor = normalizeVendor(raw.vendor);
   if (!OPERATIONS.includes(raw.operation)) throw new CliError("--operation must be text, image-analyze, or image-generate");
   if (!raw.brief) throw new CliError("--brief is required");
@@ -61,8 +61,11 @@ export function parseCli(argv, startCwd = process.cwd()) {
     throw new CliError("--model must be non-empty, must not start with '-', and must not contain control characters");
   }
   if (raw.effort !== undefined) {
-    if (vendor !== "codex") throw new CliError("--effort is supported only for codex");
-    if (!["low", "medium", "high", "xhigh"].includes(raw.effort)) throw new CliError("invalid --effort");
+    if (!["codex", "claude"].includes(vendor)) throw new CliError("--effort is supported only for codex or claude");
+    const allowedEffort = vendor === "claude"
+      ? ["low", "medium", "high", "xhigh", "max"]
+      : ["low", "medium", "high", "xhigh"];
+    if (!allowedEffort.includes(raw.effort)) throw new CliError("invalid --effort");
   }
   if (raw.operation === "image-analyze") {
     if (inputs.length === 0) throw new CliError("image-analyze requires at least one --input");
@@ -71,6 +74,13 @@ export function parseCli(argv, startCwd = process.cwd()) {
   if (expectOutput !== undefined) {
     if (!out) throw new CliError("--expect-output requires --out");
     if (!/^[\x21-\x7e]+$/.test(expectOutput)) throw new CliError("--expect-output must be a non-empty ASCII token without whitespace");
+  }
+  if (vendor === "claude") {
+    if (raw.operation !== "text") throw new CliError("claude supports only --operation text");
+    if (!raw.model) throw new CliError("claude requires --model");
+    if (!raw.effort) throw new CliError("claude requires --effort");
+    if (!out) throw new CliError("claude requires --out to preserve and validate the result JSON");
+    if (!err) throw new CliError("claude requires --err to preserve vendor stderr");
   }
   // Default is a large runaway-backstop, NOT a work limit. A short fixed timeout
   // kills legitimate heavy reasoning (codex high/xhigh reading several files) and
@@ -171,10 +181,79 @@ function usageFromTokenCount(payload) {
     quotaUsedPercent: optionalNumber(payload.rate_limits?.primary?.used_percent),
   };
 }
+function normalizeClaudeModel(value) {
+  return String(value).replace(/(?:\x1b\[[0-9;]*m|\[[0-9;]*m\])/g, "");
+}
+function claudeModelMatches(requested, actualModels) {
+  const expected = normalizeClaudeModel(requested ?? "").toLowerCase();
+  if (!expected || actualModels.length === 0) return false;
+  const family = ["opus", "sonnet", "haiku"].find((name) => expected === name);
+  if (family) return actualModels.every((model) => model.toLowerCase().includes(`-${family}-`));
+  return actualModels.every((model) => model.toLowerCase() === expected);
+}
+function inspectClaudeOutput(options, capturedOutput) {
+  if (capturedOutput?.tooLarge) return { usage: null, status: "output-too-large", valid: false };
+  const data = capturedOutput?.data;
+  if (!Buffer.isBuffer(data) || data.length === 0) return { usage: null, status: "empty-output", valid: false };
+  let payload;
+  try { payload = JSON.parse(data.toString("utf8")); }
+  catch { return { usage: null, status: "invalid-json", valid: false }; }
+  if (payload?.type !== "result" || payload?.subtype !== "success" || payload?.is_error === true) {
+    return { usage: null, status: "vendor-reported-error", valid: false };
+  }
+  if (typeof payload.result !== "string" || payload.result.trim() === "") {
+    return { usage: null, status: "empty-result", valid: false };
+  }
+  if (!payload.modelUsage || typeof payload.modelUsage !== "object" || Array.isArray(payload.modelUsage)) {
+    return { usage: null, status: "missing-model-usage", valid: false };
+  }
+  const modelEntries = Object.entries(payload.modelUsage).map(([model, row]) => ({
+    model: normalizeClaudeModel(model),
+    outputTokens: row?.outputTokens,
+  }));
+  const actualModels = modelEntries.map((entry) => entry.model);
+  const outputModels = modelEntries.filter((entry) => Number.isFinite(entry.outputTokens) && entry.outputTokens > 0);
+  const modelsToBind = outputModels.length > 0 ? outputModels.map((entry) => entry.model) : actualModels;
+  if (!claudeModelMatches(options.model, modelsToBind)) {
+    return { usage: null, status: "model-mismatch", valid: false };
+  }
+  const usage = payload.usage;
+  const modelRows = Object.values(payload.modelUsage);
+  const contextWindows = modelRows.map((row) => row?.contextWindow).filter(Number.isFinite);
+  const optionalNumber = (value) => value === undefined || value === null ? 0 : (Number.isFinite(value) ? value : null);
+  const cacheCreationInputTokens = optionalNumber(usage?.cache_creation_input_tokens);
+  const cacheReadInputTokens = optionalNumber(usage?.cache_read_input_tokens);
+  const required = [
+    usage?.input_tokens,
+    usage?.output_tokens,
+    payload.total_cost_usd,
+  ];
+  if (!required.every(Number.isFinite) || cacheCreationInputTokens === null || cacheReadInputTokens === null) {
+    return { usage: null, status: "invalid-token-fields", valid: false };
+  }
+  return {
+    valid: true,
+    status: "ok",
+    usage: {
+      source: "claude-result-json",
+      actualModels,
+      inputTokens: usage.input_tokens,
+      cacheCreationInputTokens,
+      cacheReadInputTokens,
+      outputTokens: usage.output_tokens,
+      totalCostUsd: payload.total_cost_usd,
+      contextWindow: contextWindows.length > 0 ? Math.max(...contextWindows) : null,
+    },
+  };
+}
 function waitForRollout() { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50); }
-function collectVendorUsage(options, invoked, env) {
-  if (options.vendor !== "codex") return { usage: null, status: "unsupported-vendor" };
+function collectVendorUsage(options, invoked, env, observation) {
   if (!invoked) return { usage: null, status: "not-invoked" };
+  if (options.vendor === "claude") {
+    const inspected = observation ?? inspectClaudeOutput(options, null);
+    return { usage: inspected.usage, status: inspected.status };
+  }
+  if (options.vendor !== "codex") return { usage: null, status: "unsupported-vendor" };
   if (!options.err) return { usage: null, status: "no-err-file" };
   let result = { usage: null, status: "no-session-id", retry: true };
   for (let attempt = 0; attempt < 4; attempt += 1) {
@@ -203,7 +282,7 @@ function collectVendorUsage(options, invoked, env) {
   }
   return { usage: null, status: result.status };
 }
-function writeReceipt(stderr, options, exit, startedAt, invoked, outputCheckStatus, env = process.env) {
+function writeReceipt(stderr, options, exit, startedAt, invoked, outputCheckStatus, env = process.env, vendorObservation = null) {
   const duration = ((Date.now() - startedAt) / 1000).toFixed(3);
   stderr.write(`[dispatch] vendor=${options.vendor} op=${options.operation} model=${options.model ?? "-"} exit=${exit} duration=${duration}s\n`);
   try {
@@ -222,7 +301,7 @@ function writeReceipt(stderr, options, exit, startedAt, invoked, outputCheckStat
       } finally { closeSync(fd); }
     }
     let vendorUsage = { usage: null, status: "read-failed" };
-    try { vendorUsage = collectVendorUsage(options, invoked, env); }
+    try { vendorUsage = collectVendorUsage(options, invoked, env, vendorObservation); }
     catch { /* Usage is additive; its own failure must not suppress the receipt. */ }
     appendFileSync(receipt, `${separator}${JSON.stringify({ schemaVersion: 1, ts: new Date().toISOString(), vendor: options.vendor, operation: options.operation, model: options.model ?? null, effort: options.effort ?? null, exit, durationSec: Number(duration), invoked, cwd: options.cwd, outPath: options.out ?? null, errPath: options.err ?? null, pid: process.pid, vendorUsage: vendorUsage.usage, vendorUsageStatus: vendorUsage.status, outputCheckStatus })}\n`);
   } catch { /* Receipt recording must not affect dispatch. */ }
@@ -248,6 +327,14 @@ function defaultForceKill(child) {
     try { child.kill("SIGKILL"); } catch { /* already gone */ }
   }
 }
+function envValue(env, expected) {
+  const key = Object.keys(env ?? {}).find((candidate) => candidate.toUpperCase() === expected);
+  return key === undefined ? undefined : env[key];
+}
+function isClaudeHost(env) {
+  const value = String(envValue(env, "CLAUDECODE") ?? "").trim();
+  return value !== "" && !/^(0|false)$/i.test(value);
+}
 
 export async function run(options, deps = { spawn }) {
   options = {
@@ -262,6 +349,7 @@ export async function run(options, deps = { spawn }) {
   const parentStdout = deps.stdout ?? process.stdout;
   const parentStderr = deps.stderr ?? process.stderr;
   const startedAt = Date.now();
+  let vendorObservation = null;
   let outputCheckStatus = options.expectOutput ? "not-evaluated" : "not-requested";
   const conflicts = outputConflicts(options);
   if (conflicts.brief) {
@@ -280,12 +368,22 @@ export async function run(options, deps = { spawn }) {
     parentStderr.write("dispatch validation error: --out/--err must not equal SECOND_OPINION_RECEIPT\n");
     return 2;
   }
+  if (options.vendor === "claude" && (!options.model || !options.effort || !options.out || !options.err)) {
+    parentStderr.write("dispatch validation error: Claude requires model, effort, out, and err\n");
+    writeReceipt(parentStderr, options, 2, startedAt, false, outputCheckStatus, env);
+    return 2;
+  }
   const isGitRepo = options.isGitRepo ?? isGitRepository(options.cwd);
   const argv = buildVendorArgv({ ...options, isGitRepo });
   if (options.dryRun) {
     parentStdout.write(`${JSON.stringify({ vendor: options.vendor, operation: options.operation, executable: executableName(options.vendor), argv, stdinMode: "brief-file", cwd: options.cwd })}\n`);
     writeReceipt(parentStderr, options, 0, startedAt, false, outputCheckStatus, env);
     return 0;
+  }
+  if (options.vendor === "claude" && isClaudeHost(env)) {
+    parentStderr.write("dispatch validation error: Claude host must not dispatch Claude for self-consultation\n");
+    writeReceipt(parentStderr, options, 2, startedAt, false, outputCheckStatus, env);
+    return 2;
   }
   let brief;
   try { brief = readFileSync(options.brief); }
@@ -320,12 +418,21 @@ export async function run(options, deps = { spawn }) {
     let invoked = false;
     let child;
     let timer, escalateTimer, reapTimer;
+    const claudeOutputChunks = [];
+    let claudeOutputBytes = 0;
+    let claudeOutputTooLarge = false;
     const clearTimers = () => { for (const t of [timer, escalateTimer, reapTimer]) if (t) clearTimeout(t); };
     const finish = (code) => {
       if (settled) return;
       settled = true;
       clearTimers();
-      writeReceipt(parentStderr, options, code === 124 ? "timeout" : code, startedAt, invoked, outputCheckStatus, env);
+      if (options.vendor === "claude" && !vendorObservation) {
+        vendorObservation = inspectClaudeOutput(options, {
+          data: Buffer.concat(claudeOutputChunks),
+          tooLarge: claudeOutputTooLarge,
+        });
+      }
+      writeReceipt(parentStderr, options, code === 124 ? "timeout" : code, startedAt, invoked, outputCheckStatus, env, vendorObservation);
       resolveRun(code);
     };
     try {
@@ -374,6 +481,20 @@ export async function run(options, deps = { spawn }) {
     child.once("close", (code, signal) => {
       if (timedOut) finish(124);
       else if (signal || code === null) finish(3);
+      else if (code === 0 && options.vendor === "claude") {
+        vendorObservation = inspectClaudeOutput(options, {
+          data: Buffer.concat(claudeOutputChunks),
+          tooLarge: claudeOutputTooLarge,
+        });
+        if (!vendorObservation.valid) {
+          parentStderr.write(`dispatch Claude output validation failed: ${vendorObservation.status}\n`);
+          finish(4);
+        } else if (expected) {
+          outputCheckStatus = outputMatched ? "matched" : "missing";
+          if (!outputMatched) parentStderr.write("dispatch output check failed: expected token missing\n");
+          finish(outputMatched ? 0 : 4);
+        } else finish(0);
+      }
       else if (code === 0 && expected) {
         outputCheckStatus = outputMatched ? "matched" : "missing";
         if (!outputMatched) parentStderr.write("dispatch output check failed: expected token missing\n");
@@ -389,6 +510,17 @@ export async function run(options, deps = { spawn }) {
         const combined = Buffer.concat([outputTail, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
         outputMatched = combined.includes(expected);
         if (!outputMatched) outputTail = combined.subarray(Math.max(0, combined.length - expected.length + 1));
+      });
+    }
+    if (options.vendor === "claude") {
+      child.stdout.on("data", (chunk) => {
+        if (claudeOutputTooLarge) return;
+        const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        claudeOutputBytes += data.length;
+        if (claudeOutputBytes > MAX_VENDOR_USAGE_BYTES) {
+          claudeOutputTooLarge = true;
+          claudeOutputChunks.length = 0;
+        } else claudeOutputChunks.push(data);
       });
     }
     if (stdoutStream) child.stdout.pipe(stdoutStream);

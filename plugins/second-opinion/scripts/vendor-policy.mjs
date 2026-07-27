@@ -1,7 +1,7 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 
-export const VENDORS = Object.freeze(["codex", "agy"]);
+export const VENDORS = Object.freeze(["codex", "agy", "claude"]);
 export const OPERATIONS = Object.freeze(["text", "image-analyze", "image-generate"]);
 
 export class PolicyError extends Error {
@@ -13,7 +13,12 @@ export class PolicyError extends Error {
 }
 
 export function normalizeVendor(value) { return value === "antigravity" ? "agy" : value; }
-export function executableName(vendor) { return normalizeVendor(vendor) === "agy" ? "agy" : "codex"; }
+export function executableName(vendor) {
+  const normalized = normalizeVendor(vendor);
+  if (normalized === "agy") return "agy";
+  if (normalized === "claude") return "claude";
+  return "codex";
+}
 function regularFile(path) { try { return statSync(path).isFile(); } catch { return false; } }
 function posixExecutable(path) {
   if (!regularFile(path)) return false;
@@ -51,7 +56,11 @@ export function resolveExecutable(vendor, options = {}) {
     if (regularFile(fallback)) return fallback;
   }
   if (foundChannelMixing) {
-    const installer = normalized === "codex" ? "official Codex install.ps1" : "official Antigravity install.ps1/sh";
+    const installer = {
+      codex: "official Codex install.ps1",
+      agy: "official Antigravity install.ps1/sh",
+      claude: "official Claude native installer",
+    }[normalized];
     throw new PolicyError("channel_mixing", `channel_mixing: only .cmd/.bat was found for ${name}; reinstall with the ${installer}`);
   }
   if (foundNonExecutable) throw new PolicyError("not_executable", `not_executable: ${name} exists but is not executable`);
@@ -72,6 +81,17 @@ export function buildVendorArgv(options) {
     if (operation === "image-analyze") for (const input of inputs) argv.push("-i", input);
     argv.push("-");
     return argv;
+  }
+  if (vendor === "claude") {
+    return [
+      "-p",
+      "--model", model,
+      "--effort", effort,
+      "--output-format", "json",
+      "--no-session-persistence",
+      "--disable-slash-commands",
+      "--tools=",
+    ];
   }
   // --dangerously-skip-permissions: headless agy cannot prompt for tool
   // permissions, so it auto-DENIES them ("jetski: no output produced — a tool

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.5 — 2026-07-28
+
+- **Claude reverse channel을 정식 dispatcher에 연결**. 비-Claude host는
+  `--vendor claude --operation text`로 model·effort·out·err를 명시하고, raw
+  `claude -p`나 280초 셸 timeout을 쓰지 않는다. 공통 1800초 runaway backstop과
+  프로세스 트리 회수·stdin·raw output·stderr·JSONL receipt를 그대로 사용한다.
+- **Claude 결과·모델 결속을 fail-closed로 검증**. exit 0이어도 빈/깨진 result JSON,
+  `is_error`, modelUsage 부재, 요청과 다른 실제 model family는 raw output을 보존한 채
+  exit 4다. receipt `vendorUsage`에는 ANSI 표시 아티팩트를 제거한 실제 모델과
+  token usage·cost를 기록한다.
+- **동일 벤더 자기검증 차단**. `CLAUDECODE`가 활성인 Claude Code host에서는 Claude
+  dispatch를 spawn 전에 exit 2로 거부하고 uninvoked receipt를 남긴다. R033-H2는
+  tool-less text bridge만 소유하며 read-only/tool-enabled registry는 R034에 남긴다.
+
 ## 0.8.4 — 2026-07-27
 
 - **AGY를 요청 workspace에 결속**. 디스패처의 `--cwd`를 모든 AGY operation의

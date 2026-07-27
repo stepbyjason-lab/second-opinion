@@ -13,7 +13,7 @@ description: >
 
 # second-opinion — 외부 AI 어댑터
 
-**버전 0.8.4** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
+**버전 0.8.5** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
 
 이 스킬은 **아무것도 차단하지 않는다** — 중개(relay)만 한다. 디스패처는 커맨드 정합성을 위한 도구일 뿐이다. "Claude가 디스패처를 반드시 거치게" 강제하는 것은 **부르는 쪽(caller)의 책임**이다 → [references/enforcement.md](references/enforcement.md).
 
@@ -109,8 +109,19 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor agy --operation text --
 쓴다(Codex 등). **Claude Code host에서는 이 채널 변형을 절대 쓰지 않는다** — 의견
 렌즈로 쓰면 동일 벤더 자기검증이 되어 교차 검증 목적 자체가 무너진다.
 
-코어에는 Claude 채널 실행 커맨드를 두지 않는다. 실행 커맨드·비용·도구경계·Windows
-함정은 전부 `references/adapter-claude.md`에 있다.
+비-Claude 호스트에서는 raw `claude -p`를 직접 실행하지 않고 같은 디스패처를 쓴다.
+Claude 채널은 text/tool-less 전용이며 model·effort·out·err를 모두 명시해야 한다.
+
+```bash
+node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor claude --operation text \
+  --brief brief.txt --cwd <작업 repo 또는 임시 dir> --model opus --effort high \
+  --out claude-result.json --err claude-stderr.txt
+```
+
+- 짧은 raw timeout은 없다. 공통 1800초 값은 정상 작업 한계가 아니라 runaway backstop이다.
+- exit 0이어도 result JSON이 비었거나 실제 model family가 요청과 다르면 exit 4다.
+- brief 본문에 검토 대상을 포함한다. 이 최소 bridge는 도구를 끄므로 파일 경로만 주지 않는다.
+- `CLAUDECODE`가 활성인 Claude Code host에서는 자기호출을 spawn 전에 거부한다.
 → 호출 전 필수: `references/adapter-claude.md` 를 반드시 읽을 것 (host guard·비용·도구경계·Windows 함정)
 
 ## 오래 걸리는 호출 (60초+ 예상: 큰 brief, 병렬 다건)
@@ -163,7 +174,8 @@ ffmpeg로 프레임을 추출한 뒤 그 프레임들을 `-i`로 전달한다(�
 4. 실패(timeout·auth·빈 응답)는 그대로 보고 — 성공한 척 금지.
 5. 벤더 stderr/에러를 사용자에게 relay할 때만 32자 이상 연속 토큰을 `[REDACTED]`로 마스킹한다 — 정상 산출물·벤더 입력·로컬 파일 접근에는 적용하지 않는다(해시·ID 오탐 주의).
 6. **실행 영수증** — 벤더를 부른 뒤 한 줄로 관측을 남긴다: **요청 벤더·모델 → (알면) 실제 응답 backend → exit/timeout 상태 → 폴백·강등이 있었으면 그 사실**. "요청 = 실행"을 가정하지 말고 실제 벌어진 것을 적는다 — 라벨 오형식 silent-ignore(모델이 조용히 계정 기본값으로 강등)를 이 영수증이 드러낸다. 순서는 위대로 고정하되 사람이 읽는 한 줄이면 된다(엄격 `Key: Value` 스키마는 불필요). 부르는 쪽(madi 등)이 지정 모델이 실제로 불렸는지 확인할 유일한 신뢰 근거다. 파일 영수증은 opt-in이며 `SECOND_OPINION_RECEIPT`에 JSONL 경로를 설정한다. Codex 호출은 `vendorUsage`과 `vendorUsageStatus`에 rollout 실측을 남기며, `null`은 호출하지 않았다는 뜻이 아니라 수집 불가일 수도 있다. **동시 dispatch 호출마다 서로 다른 `--err` 경로를 사용한다** — 경로를 재사용하면 뒤 호출의 truncate와 앞 호출의 append가 `session id:`를 섞어 사용량을 잘못 귀속시킬 수 있다.
-   선택적 `--expect-output` 호출은 영수증의 `outputCheckStatus`에 `matched`·`missing`·
+   Claude 호출은 result JSON의 실제 model family·token usage·cost를 `vendorUsage`에 남기며
+   요청 model과 실제 family가 다르면 exit 4다. 선택적 `--expect-output` 호출은 영수증의 `outputCheckStatus`에 `matched`·`missing`·
    `not-requested`·`not-evaluated` 중 하나를 남긴다. challenge token 자체는 남기지 않는다.
 
 ## 사용량 (선택)

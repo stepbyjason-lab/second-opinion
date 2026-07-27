@@ -50,6 +50,10 @@ Claude가 만든 것을 Claude가 검토하면 결함을 과소보고한다 — 
   실측 토큰(입력·캐시된 입력·출력·추론·총계·컨텍스트창·쿼터 소진율)도 함께 남는다.
   선택적 `--expect-output <ASCII token>` 호출은 token 자체를 기록·전송하지 않고
   `outputCheckStatus`만 남긴다. token이 없으면 raw output을 보존하고 exit 4다.
+  비-Claude 호스트의 `--vendor claude`도 같은 dispatcher를 사용하며, 폐기된 280초
+  셸 timeout을 쓰지 않는다. Claude result JSON의 실제 model family·token usage·cost를
+  `vendorUsage`에 결속하고 빈/깨진/다른 모델 출력은 exit 4로 거부한다. Claude host의
+  자기호출은 spawn 전에 차단한다.
   기본값은 꺼짐이며, 설정 안 하면 아무것도 쓰지 않는다.
 
   모델 비용을 비교한다면 `(inputTokens - cachedInputTokens) + outputTokens`로 계산한다.

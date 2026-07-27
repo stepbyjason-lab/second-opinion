@@ -74,12 +74,15 @@ const FIXTURES = [
     argv: ["--dangerously-skip-permissions", "--print-timeout", "1234s", "--model", "Gemini 3.5 Flash (High)", "--add-dir", dirname(input1), "--add-dir", dirname(input3)] },
   { vendor: "agy", operation: "image-generate", model: "Gemini 3.5 Flash (High)", inputs: [], isGitRepo: false, timeout: 1234, cwd: root,
     argv: ["--dangerously-skip-permissions", "--print-timeout", "1234s", "--model", "Gemini 3.5 Flash (High)", "--add-dir", root] },
+  { vendor: "claude", operation: "text", model: "opus", effort: "high", inputs: [], isGitRepo: false, cwd: root,
+    argv: ["-p", "--model", "opus", "--effort", "high", "--output-format", "json", "--no-session-persistence", "--disable-slash-commands", "--tools="] },
 ];
 
-test("six hand-written argv fixtures match policy exactly", () => {
+test("seven hand-written argv fixtures match policy exactly", () => {
   for (const fixture of FIXTURES) assert.deepEqual(buildVendorArgv(fixture), fixture.argv, `${fixture.vendor}/${fixture.operation}`);
   assert.deepEqual(FIXTURES.filter((fixture) => fixture.argv.includes("-s")).map((fixture) => `${fixture.vendor}/${fixture.operation}`), ["codex/image-generate"]);
   for (const fixture of FIXTURES.filter((fixture) => fixture.operation !== "image-generate")) assert.equal(fixture.argv.includes("-s"), false);
+  assert.equal(FIXTURES.at(-1).argv.some((value) => /^timeout$/i.test(value)), false);
 });
 
 test("codex omits --skip-git-repo-check inside a git work tree", () => {
@@ -88,11 +91,12 @@ test("codex omits --skip-git-repo-check inside a git work tree", () => {
   assert.deepEqual(inTree, ["exec", "-m", "m", "-c", "model_reasoning_effort=\"high\"", "-"]);
 });
 
-test("six CLI dry-runs match literal fixtures and use bare executable names", async () => {
+test("seven CLI dry-runs match literal fixtures and use bare executable names", async () => {
   for (const fixture of FIXTURES) {
     const args = ["--vendor", fixture.vendor, "--operation", fixture.operation, "--brief", brief, "--cwd", fixture.cwd, "--model", fixture.model, "--dry-run"];
     if (fixture.effort) args.push("--effort", fixture.effort);
     if (fixture.timeout) args.push("--timeout", String(fixture.timeout));
+    if (fixture.vendor === "claude") args.push("--out", join(root, "claude-dry.out"), "--err", join(root, "claude-dry.err"));
     for (const input of fixture.inputs) args.push("--input", input);
     const stdout = memoryWriter();
     const stderr = memoryWriter();
@@ -117,6 +121,11 @@ test("unsupported and ambiguous CLI inputs exit 2", async () => {
     ["--vendor", "codex", "--operation", "text", "--brief", brief, "--out", brief],
     ["--vendor", "agy", "--operation", "text", "--brief", brief, "--expect-output", "TOKEN"],
     ["--vendor", "agy", "--operation", "text", "--brief", brief, "--out", join(root, "expect.out"), "--expect-output", "bad token"],
+    ["--vendor", "claude", "--operation", "text", "--brief", brief, "--effort", "high", "--out", join(root, "c.out"), "--err", join(root, "c.err")],
+    ["--vendor", "claude", "--operation", "text", "--brief", brief, "--model", "opus", "--out", join(root, "c.out"), "--err", join(root, "c.err")],
+    ["--vendor", "claude", "--operation", "text", "--brief", brief, "--model", "opus", "--effort", "high", "--err", join(root, "c.err")],
+    ["--vendor", "claude", "--operation", "text", "--brief", brief, "--model", "opus", "--effort", "high", "--out", join(root, "c.out")],
+    ["--vendor", "claude", "--operation", "image-generate", "--brief", brief, "--model", "opus", "--effort", "high", "--out", join(root, "c.out"), "--err", join(root, "c.err")],
   ];
   for (const args of cases) {
     const stderr = memoryWriter();
@@ -124,6 +133,51 @@ test("unsupported and ambiguous CLI inputs exit 2", async () => {
     assert.equal(status, 2, `${JSON.stringify(args)}\n${stderr.value()}`);
   }
 });
+
+function claudeResult({
+  model = "claude-opus-4-8[1m]",
+  result = "P0/P1: NONE",
+  isError = false,
+  auxiliaryModel = null,
+  omitOptionalUsage = false,
+  omitContextWindow = false,
+} = {}) {
+  return JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: isError,
+    result,
+    session_id: "12345678-1234-1234-1234-123456789abc",
+    duration_ms: 1234,
+    duration_api_ms: 1200,
+    total_cost_usd: 0.25,
+    usage: {
+      input_tokens: 2,
+      ...(!omitOptionalUsage ? { cache_creation_input_tokens: 100, cache_read_input_tokens: 30 } : {}),
+      output_tokens: 40,
+    },
+    modelUsage: {
+      [model]: {
+        inputTokens: 2,
+        outputTokens: 40,
+        cacheReadInputTokens: 30,
+        cacheCreationInputTokens: 100,
+        costUSD: 0.25,
+        ...(!omitContextWindow ? { contextWindow: 1000000 } : {}),
+      },
+      ...(auxiliaryModel ? {
+        [auxiliaryModel]: {
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          costUSD: 0,
+          contextWindow: 200000,
+        },
+      } : {}),
+    },
+  });
+}
 
 function memoryWriter() {
   let value = "";
@@ -162,6 +216,160 @@ async function withReceipt(path, action) {
 }
 
 function receiptLines(path) { return readFileSync(path, "utf8").trimEnd().split("\n").map((line) => JSON.parse(line)); }
+
+test("direct Claude run requires model, effort, and evidence paths before spawn", async () => {
+  const complete = {
+    ...FIXTURES.at(-1),
+    brief,
+    cwd: root,
+    out: join(root, "direct-claude.out"),
+    err: join(root, "direct-claude.err"),
+    timeout: 2,
+    dryRun: false,
+  };
+  for (const missing of ["model", "effort", "out", "err"]) {
+    let spawned = false;
+    const stderr = memoryWriter();
+    const options = { ...complete };
+    delete options[missing];
+    const code = await run(options, {
+      spawn: () => { spawned = true; throw new Error("must not spawn"); },
+      stderr: stderr.stream,
+      env: {},
+    });
+    assert.equal(code, 2, missing);
+    assert.equal(spawned, false, missing);
+    assert.match(stderr.value(), /requires model, effort, out, and err/, missing);
+  }
+});
+
+test("Claude host guard rejects self-consultation before spawn and records uninvoked receipt", async () => {
+  const receipt = join(root, "claude-host-guard.jsonl");
+  let spawned = false;
+  const stderr = memoryWriter();
+  const fixture = {
+    ...FIXTURES.at(-1),
+    brief,
+    cwd: root,
+    out: join(root, "claude-host.out"),
+    err: join(root, "claude-host.err"),
+    timeout: 2,
+    dryRun: false,
+  };
+  const code = await run(fixture, {
+    spawn: () => { spawned = true; throw new Error("must not spawn"); },
+    stderr: stderr.stream,
+    env: { SECOND_OPINION_RECEIPT: receipt, CLAUDECODE: "1" },
+  });
+  assert.equal(code, 2);
+  assert.equal(spawned, false);
+  assert.match(stderr.value(), /Claude host must not dispatch Claude/);
+  const [row] = receiptLines(receipt);
+  assert.equal(row.vendor, "claude");
+  assert.equal(row.invoked, false);
+  assert.equal(row.exit, 2);
+});
+
+test("Claude result binds the observed model and usage into the existing receipt", async () => {
+  const receipt = join(root, "claude-valid.jsonl");
+  const out = join(root, "claude-valid.out");
+  const err = join(root, "claude-valid.err");
+  const spawnFake = () => fakeChild((child) => {
+    child.stdin.on("end", () => {
+      child.stdout.end(claudeResult({ auxiliaryModel: "claude-haiku-4-5" }));
+      child.stderr.end();
+      queueMicrotask(() => child.emit("close", 0, null));
+    });
+    child.stdin.resume();
+  });
+  let code;
+  await withReceipt(receipt, async () => {
+    code = await run({ ...FIXTURES.at(-1), brief, cwd: root, out, err, expectOutput: "NONE", timeout: 2, dryRun: false }, {
+      spawn: spawnFake, stderr: memoryWriter().stream,
+    });
+  });
+  assert.equal(code, 0);
+  const [row] = receiptLines(receipt);
+  assert.equal(row.exit, 0);
+  assert.equal(row.outputCheckStatus, "matched");
+  assert.equal(row.vendorUsageStatus, "ok");
+  assert.deepEqual(row.vendorUsage, {
+    source: "claude-result-json",
+    actualModels: ["claude-opus-4-8", "claude-haiku-4-5"],
+    inputTokens: 2,
+    cacheCreationInputTokens: 100,
+    cacheReadInputTokens: 30,
+    outputTokens: 40,
+    totalCostUsd: 0.25,
+    contextWindow: 1000000,
+  });
+});
+
+test("Claude receipt tolerates absent optional cache and context fields without weakening model binding", async () => {
+  const receipt = join(root, "claude-optional-usage.jsonl");
+  const out = join(root, "claude-optional-usage.out");
+  const err = join(root, "claude-optional-usage.err");
+  const spawnFake = () => fakeChild((child) => {
+    child.stdin.on("end", () => {
+      child.stdout.end(claudeResult({
+        model: "\u001b[1mclaude-opus-4-8[0m]",
+        omitOptionalUsage: true,
+        omitContextWindow: true,
+      }));
+      child.stderr.end();
+      queueMicrotask(() => child.emit("close", 0, null));
+    });
+    child.stdin.resume();
+  });
+  let code;
+  await withReceipt(receipt, async () => {
+    code = await run({ ...FIXTURES.at(-1), brief, cwd: root, out, err, timeout: 2, dryRun: false }, {
+      spawn: spawnFake, stderr: memoryWriter().stream,
+    });
+  });
+  assert.equal(code, 0);
+  const [row] = receiptLines(receipt);
+  assert.deepEqual(row.vendorUsage.actualModels, ["claude-opus-4-8"]);
+  assert.equal(row.vendorUsage.cacheCreationInputTokens, 0);
+  assert.equal(row.vendorUsage.cacheReadInputTokens, 0);
+  assert.equal(row.vendorUsage.contextWindow, null);
+});
+
+test("Claude empty, invalid, errored, or wrong-model output fails closed with raw output preserved", async () => {
+  const cases = [
+    ["empty", ""],
+    ["invalid-json", "not json"],
+    ["empty-result", claudeResult({ result: "" })],
+    ["vendor-error", claudeResult({ isError: true })],
+    ["wrong-model", claudeResult({ model: "claude-sonnet-5" })],
+  ];
+  for (const [name, raw] of cases) {
+    const receipt = join(root, `claude-${name}.jsonl`);
+    const out = join(root, `claude-${name}.out`);
+    const err = join(root, `claude-${name}.err`);
+    const parent = memoryWriter();
+    const spawnFake = () => fakeChild((child) => {
+      child.stdin.on("end", () => {
+        child.stdout.end(raw);
+        child.stderr.end();
+        queueMicrotask(() => child.emit("close", 0, null));
+      });
+      child.stdin.resume();
+    });
+    let code;
+    await withReceipt(receipt, async () => {
+      code = await run({ ...FIXTURES.at(-1), brief, cwd: root, out, err, timeout: 2, dryRun: false }, {
+        spawn: spawnFake, stderr: parent.stream,
+      });
+    });
+    assert.equal(code, 4, name);
+    await new Promise((done) => setTimeout(done, 10));
+    assert.equal(readFileSync(out, "utf8"), raw, name);
+    assert.match(parent.value(), /Claude output validation failed/, name);
+    assert.equal(receiptLines(receipt)[0].exit, 4, name);
+    assert.notEqual(receiptLines(receipt)[0].vendorUsageStatus, "ok", name);
+  }
+});
 
 test("run injection strips every receipt env spelling and respects trimmed receipt opt-in", async () => {
   const fixture = FIXTURES[0];
