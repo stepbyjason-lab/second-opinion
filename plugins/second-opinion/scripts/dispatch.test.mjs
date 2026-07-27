@@ -58,22 +58,22 @@ test("dispatch runs its main module guard through a junction or symlink", (t) =>
 
 // Hand-written literal fixtures copied from contract section 4. Never generate these from the builder.
 const FIXTURES = [
-  { vendor: "codex", operation: "text", model: "gpt model \"quoted\"", effort: "high", inputs: [], isGitRepo: false,
+  { vendor: "codex", operation: "text", model: "gpt model \"quoted\"", effort: "high", inputs: [], isGitRepo: false, cwd: root,
     argv: ["exec", "--skip-git-repo-check", "-m", "gpt model \"quoted\"", "-c", "model_reasoning_effort=\"high\"", "-"] },
-  { vendor: "codex", operation: "image-analyze", model: "gpt model \"quoted\"", effort: "high", inputs: [input1, input2], isGitRepo: false,
+  { vendor: "codex", operation: "image-analyze", model: "gpt model \"quoted\"", effort: "high", inputs: [input1, input2], isGitRepo: false, cwd: root,
     argv: ["exec", "--skip-git-repo-check", "-m", "gpt model \"quoted\"", "-c", "model_reasoning_effort=\"high\"", "-i", input1, "-i", input2, "-"] },
-  { vendor: "codex", operation: "image-generate", model: "gpt model \"quoted\"", effort: "high", inputs: [], isGitRepo: false,
+  { vendor: "codex", operation: "image-generate", model: "gpt model \"quoted\"", effort: "high", inputs: [], isGitRepo: false, cwd: root,
     argv: ["exec", "-s", "workspace-write", "--skip-git-repo-check", "-m", "gpt model \"quoted\"", "-c", "model_reasoning_effort=\"high\"", "-"] },
   // agy carries our timeout into its own --print-timeout (default 5m0s would
   // otherwise kill long jobs with exit 1 before the dispatcher acts). 1234 is
   // deliberately not the dispatcher default, so a passing fixture proves the
   // value is propagated rather than coincidentally matching.
-  { vendor: "agy", operation: "text", model: "Gemini 3.5 Flash (High)", inputs: [], isGitRepo: false, timeout: 1234,
-    argv: ["--dangerously-skip-permissions", "--print-timeout", "1234s", "--model", "Gemini 3.5 Flash (High)"] },
-  { vendor: "agy", operation: "image-analyze", model: "Gemini 3.5 Flash (High)", inputs: [input1, input2, input3], isGitRepo: false, timeout: 1234,
+  { vendor: "agy", operation: "text", model: "Gemini 3.5 Flash (High)", inputs: [], isGitRepo: false, timeout: 1234, cwd: root,
+    argv: ["--dangerously-skip-permissions", "--print-timeout", "1234s", "--model", "Gemini 3.5 Flash (High)", "--add-dir", root] },
+  { vendor: "agy", operation: "image-analyze", model: "Gemini 3.5 Flash (High)", inputs: [input1, input2, input3], isGitRepo: false, timeout: 1234, cwd: dirname(input1),
     argv: ["--dangerously-skip-permissions", "--print-timeout", "1234s", "--model", "Gemini 3.5 Flash (High)", "--add-dir", dirname(input1), "--add-dir", dirname(input3)] },
-  { vendor: "agy", operation: "image-generate", model: "Gemini 3.5 Flash (High)", inputs: [], isGitRepo: false, timeout: 1234,
-    argv: ["--dangerously-skip-permissions", "--print-timeout", "1234s", "--model", "Gemini 3.5 Flash (High)"] },
+  { vendor: "agy", operation: "image-generate", model: "Gemini 3.5 Flash (High)", inputs: [], isGitRepo: false, timeout: 1234, cwd: root,
+    argv: ["--dangerously-skip-permissions", "--print-timeout", "1234s", "--model", "Gemini 3.5 Flash (High)", "--add-dir", root] },
 ];
 
 test("six hand-written argv fixtures match policy exactly", () => {
@@ -90,7 +90,7 @@ test("codex omits --skip-git-repo-check inside a git work tree", () => {
 
 test("six CLI dry-runs match literal fixtures and use bare executable names", async () => {
   for (const fixture of FIXTURES) {
-    const args = ["--vendor", fixture.vendor, "--operation", fixture.operation, "--brief", brief, "--cwd", root, "--model", fixture.model, "--dry-run"];
+    const args = ["--vendor", fixture.vendor, "--operation", fixture.operation, "--brief", brief, "--cwd", fixture.cwd, "--model", fixture.model, "--dry-run"];
     if (fixture.effort) args.push("--effort", fixture.effort);
     if (fixture.timeout) args.push("--timeout", String(fixture.timeout));
     for (const input of fixture.inputs) args.push("--input", input);
@@ -115,6 +115,8 @@ test("unsupported and ambiguous CLI inputs exit 2", async () => {
     ["--vendor", "codex", "--operation", "text", "--brief", brief, "--model", "-unsafe"],
     ["--vendor", "codex", "--operation", "text", "--brief", brief, "--model", "bad\nmodel"],
     ["--vendor", "codex", "--operation", "text", "--brief", brief, "--out", brief],
+    ["--vendor", "agy", "--operation", "text", "--brief", brief, "--expect-output", "TOKEN"],
+    ["--vendor", "agy", "--operation", "text", "--brief", brief, "--out", join(root, "expect.out"), "--expect-output", "bad token"],
   ];
   for (const args of cases) {
     const stderr = memoryWriter();
@@ -215,7 +217,7 @@ test("opt-in receipt appends typed JSONL for dry-run and invoked children", asyn
   assert.equal(dryRun.invoked, false);
   assert.equal(completed.invoked, true);
   for (const row of [dryRun, completed]) {
-    assert.deepEqual(Object.keys(row).sort(), ["cwd", "durationSec", "effort", "errPath", "exit", "invoked", "model", "operation", "outPath", "pid", "schemaVersion", "ts", "vendor", "vendorUsage", "vendorUsageStatus"].sort());
+    assert.deepEqual(Object.keys(row).sort(), ["cwd", "durationSec", "effort", "errPath", "exit", "invoked", "model", "operation", "outPath", "outputCheckStatus", "pid", "schemaVersion", "ts", "vendor", "vendorUsage", "vendorUsageStatus"].sort());
     assert.equal(row.schemaVersion, 1);
     assert.equal(row.vendor, "codex");
     assert.equal(row.operation, "text");
@@ -233,6 +235,7 @@ test("opt-in receipt appends typed JSONL for dry-run and invoked children", asyn
     assert.equal(row.pid, process.pid);
     assert.equal(row.vendorUsage, null);
     assert.equal(row.vendorUsageStatus, row.invoked ? "no-err-file" : "not-invoked");
+    assert.equal(row.outputCheckStatus, "not-requested");
   }
   assert.match(readFileSync(receipt, "utf8"), /\n$/);
 });
@@ -503,6 +506,45 @@ test("vendor stderr file excludes the parent receipt", async () => {
   const [row] = receiptLines(receipt);
   assert.equal(row.outPath, outFile);
   assert.equal(row.errPath, errFile);
+});
+
+test("--expect-output matches across chunks and fails closed without changing raw output", async () => {
+  const token = "TOKEN_0123456789abcdef";
+  const matchedOut = join(root, "expect-matched.out");
+  const missingOut = join(root, "expect-missing.out");
+  const receipt = join(root, "expect-output.jsonl");
+  const seen = [];
+  const matchedSpawn = (_executable, argv) => {
+    seen.push(argv);
+    return fakeChild((child) => {
+      child.stdin.on("data", (chunk) => seen.push(chunk.toString()));
+      child.stdin.on("end", () => {
+        child.stdout.write("prefix TOKEN_0123");
+        child.stdout.end("456789abcdef suffix");
+        queueMicrotask(() => child.emit("close", 0, null));
+      });
+    });
+  };
+  const missingSpawn = () => fakeChild((child) => {
+    child.stdin.on("end", () => {
+      child.stdout.end("raw vendor output without challenge\n");
+      queueMicrotask(() => child.emit("close", 0, null));
+    });
+    child.stdin.resume();
+  });
+  await withReceipt(receipt, async () => {
+    assert.equal(await run({ ...FIXTURES[3], brief, cwd: root, timeout: 2, out: matchedOut, expectOutput: token, dryRun: false }, {
+      spawn: matchedSpawn, stderr: memoryWriter().stream,
+    }), 0);
+    assert.equal(await run({ ...FIXTURES[3], brief, cwd: root, timeout: 2, out: missingOut, expectOutput: token, dryRun: false }, {
+      spawn: missingSpawn, stderr: memoryWriter().stream,
+    }), 4);
+  });
+  await new Promise((done) => setTimeout(done, 10));
+  assert.deepEqual(receiptLines(receipt).map((row) => [row.exit, row.outputCheckStatus]), [[0, "matched"], [4, "missing"]]);
+  assert.equal(readFileSync(missingOut, "utf8"), "raw vendor output without challenge\n");
+  assert.equal(JSON.stringify(seen).includes(token), false);
+  assert.equal(readFileSync(receipt, "utf8").includes(token), false);
 });
 
 const USAGE_SESSION = "12345678-1234-1234-1234-123456789abc";

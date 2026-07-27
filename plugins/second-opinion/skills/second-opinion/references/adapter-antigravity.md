@@ -11,6 +11,13 @@
   `-p -`는 1.1.1에서 `-`가 리터럴 프롬프트로 바뀌어 깨졌다. stdin은 미문서화
   (#525/#542)라 자동업데이트로 다시 깨질 수 있으므로, 대형 입력이나 재파손 시
   `--add-dir`로 디렉토리를 허용하고 파일 경로를 읽게 하는 폴백을 쓴다
+- 디스패처는 `--cwd`를 모든 AGY operation의 `--add-dir`로 전달한다. AGY가 process
+  cwd와 무관하게 이전 host project를 선택할 수 있어, spawn cwd와 영수증 cwd만으로는
+  파일 접근 대상을 결속하지 못했던 0.8.3 결함의 최소 수정이다.
+- hidden sentinel을 읽었는지 기계적으로 확인해야 하면 `--out <path>`와
+  `--expect-output <ASCII-token>`을 추가한다. token은 대상 파일에만 두고 brief에는
+  exact 파일 경로와 읽기 지시만 쓴다. token은 AGY argv·stdin·receipt에 전달되지 않으며,
+  stdout에 없으면 raw `--out`은 보존한 채 exit 4 / `outputCheckStatus=missing`이다.
 - ⚠️ argv로 줄 때(`-p "$(cat brief.txt)"`)만 적용되는 함정 둘: **`</dev/null` 필수**
   (stdin 안 닫으면 무한 hang) + **30,000자 한계** (Windows CreateProcess) — 특별한
   이유가 없으면 stdin 경로를 기본으로 쓸 것

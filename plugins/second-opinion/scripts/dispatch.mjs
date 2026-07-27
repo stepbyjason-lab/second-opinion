@@ -8,7 +8,7 @@ import { OPERATIONS, PolicyError, buildVendorArgv, executableName, normalizeVend
 const MAX_BRIEF_BYTES = 8 * 1024 * 1024;
 const MAX_VENDOR_USAGE_BYTES = 64 * 1024 * 1024;
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const SINGLE_OPTIONS = new Set(["--vendor", "--operation", "--brief", "--cwd", "--model", "--effort", "--timeout", "--out", "--err", "--dry-run"]);
+const SINGLE_OPTIONS = new Set(["--vendor", "--operation", "--brief", "--cwd", "--model", "--effort", "--timeout", "--out", "--err", "--expect-output", "--dry-run"]);
 
 export class CliError extends Error {
   constructor(message) { super(message); this.name = "CliError"; }
@@ -53,6 +53,7 @@ export function parseCli(argv, startCwd = process.cwd()) {
   const inputs = raw.inputs.map((value) => absoluteFrom(startCwd, value));
   const out = raw.out ? absoluteFrom(startCwd, raw.out) : undefined;
   const err = raw.err ? absoluteFrom(startCwd, raw.err) : undefined;
+  const expectOutput = raw["expect-output"];
   assertRegularFile(brief, "brief");
   if (statSync(brief).size > MAX_BRIEF_BYTES) throw new CliError("brief exceeds 8MB");
   assertDirectory(cwd, "cwd");
@@ -67,6 +68,10 @@ export function parseCli(argv, startCwd = process.cwd()) {
     if (inputs.length === 0) throw new CliError("image-analyze requires at least one --input");
     for (const input of inputs) assertRegularFile(input, "input");
   } else if (inputs.length > 0) throw new CliError("--input is supported only for image-analyze");
+  if (expectOutput !== undefined) {
+    if (!out) throw new CliError("--expect-output requires --out");
+    if (!/^[\x21-\x7e]+$/.test(expectOutput)) throw new CliError("--expect-output must be a non-empty ASCII token without whitespace");
+  }
   // Default is a large runaway-backstop, NOT a work limit. A short fixed timeout
   // kills legitimate heavy reasoning (codex high/xhigh reading several files) and
   // the child is SIGTERM'd before its final message reaches stdout — the recurring
@@ -79,7 +84,7 @@ export function parseCli(argv, startCwd = process.cwd()) {
   if (conflicts.input) throw new CliError("--out/--err must not equal --input");
   if (conflicts.outputs) throw new CliError("--out and --err must not refer to the same file");
   if (receiptConflicts({ brief, inputs, out, err }, process.env)) throw new CliError("--out/--err must not equal SECOND_OPINION_RECEIPT");
-  return { vendor, operation: raw.operation, brief, cwd, model: raw.model, effort: raw.effort, inputs, timeout, out, err, dryRun: raw.dryRun ?? false };
+  return { vendor, operation: raw.operation, brief, cwd, model: raw.model, effort: raw.effort, inputs, timeout, out, err, expectOutput, dryRun: raw.dryRun ?? false };
 }
 
 function isGitRepository(cwd) {
@@ -198,7 +203,7 @@ function collectVendorUsage(options, invoked, env) {
   }
   return { usage: null, status: result.status };
 }
-function writeReceipt(stderr, options, exit, startedAt, invoked, env = process.env) {
+function writeReceipt(stderr, options, exit, startedAt, invoked, outputCheckStatus, env = process.env) {
   const duration = ((Date.now() - startedAt) / 1000).toFixed(3);
   stderr.write(`[dispatch] vendor=${options.vendor} op=${options.operation} model=${options.model ?? "-"} exit=${exit} duration=${duration}s\n`);
   try {
@@ -219,7 +224,7 @@ function writeReceipt(stderr, options, exit, startedAt, invoked, env = process.e
     let vendorUsage = { usage: null, status: "read-failed" };
     try { vendorUsage = collectVendorUsage(options, invoked, env); }
     catch { /* Usage is additive; its own failure must not suppress the receipt. */ }
-    appendFileSync(receipt, `${separator}${JSON.stringify({ schemaVersion: 1, ts: new Date().toISOString(), vendor: options.vendor, operation: options.operation, model: options.model ?? null, effort: options.effort ?? null, exit, durationSec: Number(duration), invoked, cwd: options.cwd, outPath: options.out ?? null, errPath: options.err ?? null, pid: process.pid, vendorUsage: vendorUsage.usage, vendorUsageStatus: vendorUsage.status })}\n`);
+    appendFileSync(receipt, `${separator}${JSON.stringify({ schemaVersion: 1, ts: new Date().toISOString(), vendor: options.vendor, operation: options.operation, model: options.model ?? null, effort: options.effort ?? null, exit, durationSec: Number(duration), invoked, cwd: options.cwd, outPath: options.out ?? null, errPath: options.err ?? null, pid: process.pid, vendorUsage: vendorUsage.usage, vendorUsageStatus: vendorUsage.status, outputCheckStatus })}\n`);
   } catch { /* Receipt recording must not affect dispatch. */ }
 }
 function openOutput(path) {
@@ -257,6 +262,7 @@ export async function run(options, deps = { spawn }) {
   const parentStdout = deps.stdout ?? process.stdout;
   const parentStderr = deps.stderr ?? process.stderr;
   const startedAt = Date.now();
+  let outputCheckStatus = options.expectOutput ? "not-evaluated" : "not-requested";
   const conflicts = outputConflicts(options);
   if (conflicts.brief) {
     parentStderr.write("dispatch validation error: --out/--err must not equal --brief\n");
@@ -278,14 +284,14 @@ export async function run(options, deps = { spawn }) {
   const argv = buildVendorArgv({ ...options, isGitRepo });
   if (options.dryRun) {
     parentStdout.write(`${JSON.stringify({ vendor: options.vendor, operation: options.operation, executable: executableName(options.vendor), argv, stdinMode: "brief-file", cwd: options.cwd })}\n`);
-    writeReceipt(parentStderr, options, 0, startedAt, false, env);
+    writeReceipt(parentStderr, options, 0, startedAt, false, outputCheckStatus, env);
     return 0;
   }
   let brief;
   try { brief = readFileSync(options.brief); }
   catch (error) {
     parentStderr.write(`dispatch internal error: unable to read brief (${error.code ?? "read_failed"})\n`);
-    writeReceipt(parentStderr, options, 3, startedAt, false, env);
+    writeReceipt(parentStderr, options, 3, startedAt, false, outputCheckStatus, env);
     return 3;
   }
   let executable;
@@ -293,7 +299,7 @@ export async function run(options, deps = { spawn }) {
   catch (error) {
     const code = error instanceof PolicyError ? 2 : 3;
     parentStderr.write(`${error.message ?? "dispatch executable resolution failed"}\n`);
-    writeReceipt(parentStderr, options, code, startedAt, false, env);
+    writeReceipt(parentStderr, options, code, startedAt, false, outputCheckStatus, env);
     return code;
   }
   let stdoutStream;
@@ -305,7 +311,7 @@ export async function run(options, deps = { spawn }) {
     stdoutStream?.destroy();
     stderrStream?.destroy();
     parentStderr.write(`dispatch internal error: unable to open output file (${error.code ?? "open_failed"})\n`);
-    writeReceipt(parentStderr, options, 3, startedAt, false, env);
+    writeReceipt(parentStderr, options, 3, startedAt, false, outputCheckStatus, env);
     return 3;
   }
   return await new Promise((resolveRun) => {
@@ -319,7 +325,7 @@ export async function run(options, deps = { spawn }) {
       if (settled) return;
       settled = true;
       clearTimers();
-      writeReceipt(parentStderr, options, code === 124 ? "timeout" : code, startedAt, invoked, env);
+      writeReceipt(parentStderr, options, code === 124 ? "timeout" : code, startedAt, invoked, outputCheckStatus, env);
       resolveRun(code);
     };
     try {
@@ -341,6 +347,9 @@ export async function run(options, deps = { spawn }) {
     const graceMs = options.killGraceMs ?? 5000;
     const reapMs = options.reapMs ?? 3000;
     const forceKill = options.forceKill ?? defaultForceKill;
+    const expected = options.expectOutput ? Buffer.from(options.expectOutput, "ascii") : null;
+    let outputTail = Buffer.alloc(0);
+    let outputMatched = false;
     child.once("spawn", () => { invoked = true; });
     timer = setTimeout(() => {
       timedOut = true;
@@ -365,11 +374,23 @@ export async function run(options, deps = { spawn }) {
     child.once("close", (code, signal) => {
       if (timedOut) finish(124);
       else if (signal || code === null) finish(3);
-      else finish(code);
+      else if (code === 0 && expected) {
+        outputCheckStatus = outputMatched ? "matched" : "missing";
+        if (!outputMatched) parentStderr.write("dispatch output check failed: expected token missing\n");
+        finish(outputMatched ? 0 : 4);
+      } else finish(code);
     });
     child.stdin.once("error", streamError);
     stdoutStream?.once("error", streamError);
     stderrStream?.once("error", streamError);
+    if (expected) {
+      child.stdout.on("data", (chunk) => {
+        if (outputMatched) return;
+        const combined = Buffer.concat([outputTail, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
+        outputMatched = combined.includes(expected);
+        if (!outputMatched) outputTail = combined.subarray(Math.max(0, combined.length - expected.length + 1));
+      });
+    }
     if (stdoutStream) child.stdout.pipe(stdoutStream);
     if (stderrStream) child.stderr.pipe(stderrStream);
     try { child.stdin.end(brief); } catch (error) { streamError(error); }

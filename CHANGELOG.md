@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.4 — 2026-07-27
+
+- **AGY를 요청 workspace에 결속**. 디스패처의 `--cwd`를 모든 AGY operation의
+  `--add-dir`로 전달하고 image input directory와 중복 제거한다. host와 temp에 같은
+  상대경로·다른 hidden token을 둔 실측에서 target token만 반환했다.
+- **선택적 hidden output check**. `--expect-output <ASCII token>`은 `--out`과 함께
+  child stdout을 chunk 경계까지 literal 검사한다. child exit 0이어도 token이 없으면
+  raw output은 보존하고 dispatcher/receipt exit 4, 있으면 exit 0이다. token 자체는
+  vendor argv·brief·receipt에 전달하지 않으며 receipt에는 `outputCheckStatus`만 남긴다.
+
 ## 0.8.3 — 2026-07-25
 
 - **agy 내부 타임아웃과 디스패처 타임아웃을 정합**. agy의 print 모드는 자체

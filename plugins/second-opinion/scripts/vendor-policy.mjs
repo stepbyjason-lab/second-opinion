@@ -96,12 +96,11 @@ export function buildVendorArgv(options) {
     argv.push("--print-timeout", `${options.timeout}s`);
   }
   if (model) argv.push("--model", model);
-  if (operation === "image-analyze") {
-    const seen = new Set();
-    for (const input of inputs) {
-      const directory = dirname(input);
-      if (!seen.has(directory)) { seen.add(directory); argv.push("--add-dir", directory); }
-    }
+  const directories = [options.cwd, ...(operation === "image-analyze" ? inputs.map((input) => dirname(input)) : [])].filter(Boolean);
+  const seen = new Set();
+  for (const directory of directories) {
+    const key = process.platform === "win32" ? resolve(directory).toLowerCase() : resolve(directory);
+    if (!seen.has(key)) { seen.add(key); argv.push("--add-dir", directory); }
   }
   return argv;
 }
