@@ -13,7 +13,7 @@ description: >
 
 # second-opinion — 외부 AI 어댑터
 
-**버전 0.8.9** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
+**버전 0.8.10** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
 
 이 스킬은 **아무것도 차단하지 않는다** — 중개(relay)만 한다. 디스패처는 커맨드 정합성을 위한 도구일 뿐이다. "Claude가 디스패처를 반드시 거치게" 강제하는 것은 **부르는 쪽(caller)의 책임**이다 → [references/enforcement.md](references/enforcement.md).
 
@@ -36,8 +36,8 @@ plan/review 권한을 자동 적용하지 않는다.
 | 호출 | 의미 | provider translation |
 |---|---|---|
 | mode 생략 | 기존 범용 호출 | 기존 argv 불변 |
-| `--mode plan` | 같은 실제 project cwd를 전체 탐색하는 읽기 전용 계획 | AGY/Claude native plan; Codex는 지원하지 않아 호출 전 실패 |
-| `--mode review` | 같은 실제 project cwd를 전체 탐색하는 읽기 전용 리뷰 | AGY/Claude native plan, Codex native `exec review` |
+| `--mode plan` | 같은 실제 project cwd를 전체 탐색하는 읽기 전용 계획 | AGY native plan; Claude는 plan identity를 유지한 closed `Read,Glob,Grep`; Codex는 지원하지 않아 호출 전 실패 |
+| `--mode review` | 같은 실제 project cwd를 전체 탐색하는 읽기 전용 리뷰 | AGY native plan; Claude는 review identity를 유지한 closed `Read,Glob,Grep`; Codex native `exec review` |
 
 - 이번 mode는 text operation 전용이다.
 - sandbox·worktree·snapshot·packet·분리 cwd를 만들지 않는다.
@@ -142,7 +142,7 @@ AGY headless는 command permission을 물을 수 없으므로 dispatcher가 expl
 
 raw `claude -p`를 직접 실행하지 않고 같은 디스패처를 쓴다. Claude default 채널은
 text/tool-less이며 model·effort·out·err를 모두 명시해야 한다. `--mode plan|review`를
-명시하면 native plan mode에서 `Read,Glob,Grep`만 사용해 같은 project cwd를 읽는다.
+명시하면 requested/effective identity를 plan 또는 review로 보존하고, native plan workflow를 켜지 않은 채 `Read,Glob,Grep`만으로 같은 project cwd를 읽는다.
 
 ```bash
 node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor claude --operation text \

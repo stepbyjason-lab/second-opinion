@@ -50,6 +50,7 @@ export function effectiveVendorMode(options) {
     if (mode === "plan") throw new PolicyError("mode_unsupported", "mode_unsupported: codex plan has no approved non-sandbox CLI mapping");
     return "review";
   }
+  if (vendor === "claude") return mode;
   return "plan";
 }
 export function effectiveInputProfile(options) {
@@ -145,7 +146,7 @@ export function buildVendorArgv(options) {
       "--safe-mode",
       "--disable-slash-commands",
     ];
-    if (effectiveMode === "plan") argv.push("--permission-mode", "plan", "--tools=Read,Glob,Grep");
+    if (effectiveMode !== "default") argv.push("--tools=Read,Glob,Grep");
     else argv.push("--tools=");
     return argv;
   }

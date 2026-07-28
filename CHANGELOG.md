@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.10 — 2026-07-29
+
+- **Claude explicit plan/review mode hotfix**. `--mode plan|review` now preserves
+  the matching `effectiveMode` in dry-runs and receipts. Both modes retain
+  `--safe-mode` and use only `--tools=Read,Glob,Grep`; neither enables
+  `--permission-mode plan` or Claude's native plan workflow. The tool-less default
+  Claude argv and AGY/Codex mappings are unchanged.
+
 ## 0.8.9 — 2026-07-28
 
 - **`--help` 신설**. 인자 없이 실행하거나 첫 인자가 `--help`/`-h`/`help`면 사용법을

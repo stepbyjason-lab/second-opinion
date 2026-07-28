@@ -2,7 +2,7 @@
 
 **English** | [한국어](./README.ko.md)
 
-![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.8.9-informational)
+![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.8.10-informational)
 
 **Use other AI vendors from inside Claude Code — in plain language.**
 Second opinions, task offloading, and vendor capabilities like image generation.
@@ -85,9 +85,11 @@ extracted from:
   Off by default; when unset, nothing is written.
 
   Callers may explicitly add `--mode plan` or `--mode review` to text dispatches.
-  These modes keep the same real project cwd and use provider-native read-only
-  planning/review behavior; they do not create a sandbox, worktree, snapshot, or
-  reduced review packet. Omitting `--mode` preserves the existing default call.
+  These modes keep the same real project cwd and use provider-specific read-only
+  behavior; they do not create a sandbox, worktree, snapshot, or reduced review
+  packet. For Claude, plan/review identities remain distinct in the receipt but both
+  use only the closed `Read,Glob,Grep` tool allowlist—without native plan workflow.
+  Omitting `--mode` preserves the existing default call.
   Receipts record `requestedMode`, `effectiveMode`, and `inputProfile`. Explicit modes
   fail closed with exit 4 on empty output. AGY explicit plan/review automatically
   applies the `agy-native-readonly/v1` input profile so an ordinary brief that mentions

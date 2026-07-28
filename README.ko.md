@@ -5,6 +5,8 @@
 Claude Code 안에서 **다른 벤더의 AI**(Codex/GPT, Antigravity/Gemini)를 일상어로 부려 쓰는
 어댑터 스킬 — 점검·리뷰·의견부터 작업 오프로드, 이미지 생성까지.
 
+**버전 0.8.10**
+
 > "이 설계 코덱스로 점검받고 싶어" / "안티그래비티한테 물어봐" / "교차 검증해줘"
 > "코덱스한테 로고 시안 이미지 만들어달라고 해줘" / "클로드 사용량 아끼게 이 번역은 제미나이로"
 > — 이렇게 말하면 발동한다. 슬래시 커맨드를 외울 필요가 없다.
@@ -61,10 +63,12 @@ Claude가 만든 것을 Claude가 검토하면 결함을 과소보고한다 — 
   기본값은 꺼짐이며, 설정 안 하면 아무것도 쓰지 않는다.
 
   text 호출에는 caller가 `--mode plan` 또는 `--mode review`를 명시할 수 있다. 두 mode는
-  같은 실제 project cwd 전체를 유지하고 provider native 읽기 전용 plan/review 동작을
-  사용한다. sandbox·worktree·snapshot·축약 packet을 만들지 않는다. `--mode`를 생략하면
-  기존 default 호출이며, receipt에는 `requestedMode`·`effectiveMode`·`inputProfile`이
-  기록된다. 명시 mode의 출력이 비면 exit 4로 실패한다. AGY explicit plan/review는
+  같은 실제 project cwd 전체를 유지하고 provider별 읽기 전용 동작을 사용한다.
+  Claude는 plan/review identity를 receipt에 각각 보존하되 native plan workflow 없이 closed
+  `Read,Glob,Grep` allowlist만 사용한다. sandbox·worktree·snapshot·축약 packet을 만들지
+  않는다. `--mode`를 생략하면 기존 default 호출이며, receipt에는
+  `requestedMode`·`effectiveMode`·`inputProfile`이 기록된다. 명시 mode의 출력이 비면 exit
+  4로 실패한다. AGY explicit plan/review는
   `agy-native-readonly/v1` 입력 profile을 자동 적용한다. 따라서 평범한 brief에
   `git diff`가 있어도 headless shell 대신 native 읽기·목록·검색으로 처리한다.
 

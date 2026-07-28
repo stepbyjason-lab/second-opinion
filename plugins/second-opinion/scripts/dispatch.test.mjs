@@ -114,14 +114,14 @@ const MODE_FIXTURES = [
     inputs: [], cwd: root,
     effectiveMode: "plan",
     inputProfile: "none",
-    argv: ["-p", "--model", "opus", "--effort", "high", "--output-format", "json", "--no-session-persistence", "--safe-mode", "--disable-slash-commands", "--permission-mode", "plan", "--tools=Read,Glob,Grep"],
+    argv: ["-p", "--model", "opus", "--effort", "high", "--output-format", "json", "--no-session-persistence", "--safe-mode", "--disable-slash-commands", "--tools=Read,Glob,Grep"],
   },
   {
     vendor: "claude", operation: "text", mode: "review", model: "opus", effort: "high",
     inputs: [], cwd: root,
-    effectiveMode: "plan",
+    effectiveMode: "review",
     inputProfile: "none",
-    argv: ["-p", "--model", "opus", "--effort", "high", "--output-format", "json", "--no-session-persistence", "--safe-mode", "--disable-slash-commands", "--permission-mode", "plan", "--tools=Read,Glob,Grep"],
+    argv: ["-p", "--model", "opus", "--effort", "high", "--output-format", "json", "--no-session-persistence", "--safe-mode", "--disable-slash-commands", "--tools=Read,Glob,Grep"],
   },
   {
     vendor: "codex", operation: "text", mode: "review", model: "gpt model \"quoted\"",
@@ -137,6 +137,11 @@ test("explicit plan and review modes map to closed provider-native argv", () => 
     assert.equal(effectiveVendorMode(fixture), fixture.effectiveMode, `${fixture.vendor}/${fixture.mode}`);
     assert.equal(effectiveInputProfile(fixture), fixture.inputProfile, `${fixture.vendor}/${fixture.mode}`);
     assert.deepEqual(buildVendorArgv(fixture), fixture.argv, `${fixture.vendor}/${fixture.mode}`);
+    if (fixture.vendor === "claude") {
+      assert.equal(fixture.argv.includes("--permission-mode"), false, `${fixture.vendor}/${fixture.mode} must not enable a permission workflow`);
+      assert.equal(fixture.argv.some((value) => /(?:Write|Edit|Bash|Agent)/.test(value)), false, `${fixture.vendor}/${fixture.mode} must not expose write or process tools`);
+      assert.deepEqual(fixture.argv.filter((value) => value.startsWith("--tools=")), ["--tools=Read,Glob,Grep"], `${fixture.vendor}/${fixture.mode} closed tool allowlist`);
+    }
   }
   assert.throws(
     () => buildVendorArgv({ ...FIXTURES[0], mode: "plan" }),
@@ -1063,6 +1068,24 @@ test("--expect-output matches across chunks and fails closed without changing ra
   assert.equal(JSON.stringify(seen).includes(token), false);
   assert.equal(readFileSync(matchedReceipt, "utf8").includes(token), false);
   assert.equal(readFileSync(missingReceipt, "utf8").includes(token), false);
+
+  const planWorkflowOut = join(root, "claude-plan-workflow.out");
+  const planWorkflowErr = join(root, "claude-plan-workflow.err");
+  const planWorkflowReceipt = join(root, "claude-plan-workflow.jsonl");
+  const planWorkflowSpawn = () => fakeChild((child) => {
+    child.stdin.on("end", () => {
+      child.stdout.end(claudeResult({ result: "Plan workflow is ready; use ExitPlanMode to continue." }));
+      child.stderr.end();
+      queueMicrotask(() => child.emit("close", 0, null));
+    });
+    child.stdin.resume();
+  });
+  assert.equal(await run({ ...MODE_FIXTURES[2], brief, cwd: root, out: planWorkflowOut, err: planWorkflowErr, expectOutput: token, timeout: 2, dryRun: false }, {
+    spawn: planWorkflowSpawn, stderr: memoryWriter().stream,
+    env: { SECOND_OPINION_RECEIPT: planWorkflowReceipt },
+  }), 4);
+  assert.equal(readFileSync(planWorkflowOut, "utf8").includes("ExitPlanMode"), true);
+  assert.deepEqual(receiptLines(planWorkflowReceipt).map((row) => [row.requestedMode, row.effectiveMode, row.exit, row.outputCheckStatus]), [["plan", "plan", 4, "missing"]]);
 });
 
 const USAGE_SESSION = "12345678-1234-1234-1234-123456789abc";

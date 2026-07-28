@@ -23,8 +23,9 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor claude --operation text
 ```
 
 같은 실제 project cwd를 읽는 plan/review는 각각 `--mode plan|review`를 추가한다. 둘 다
-Claude native `--permission-mode plan`과 `Read,Glob,Grep` 도구로 번역된다. mode 생략은
-아래 tool-less default 호출이며 자동으로 plan/review가 되지 않는다.
+native plan workflow를 켜지 않고 closed `Read,Glob,Grep` 도구로 번역되며, receipt의
+`requestedMode`·`effectiveMode`는 각각 plan/review로 보존된다. mode 생략은 아래 tool-less
+default 호출이며 자동으로 plan/review가 되지 않는다.
 
 PowerShell도 동일한 `node ... dispatch.mjs` argv를 사용한다. brief 내용은 dispatcher가
 바이트 그대로 stdin으로 전달하므로 `Get-Content | claude`를 조립하지 않는다.
@@ -59,8 +60,9 @@ default Claude child는 `--safe-mode --disable-slash-commands --tools=`인 tool-
 호출이다. brief 본문에 대상을 포함해야 하며 파일 경로만 주면 안 된다.
 
 명시적 `--mode plan|review`에서는 같은 `--safe-mode`를 유지하되
-`--permission-mode plan --tools=Read,Glob,Grep`로 실제 project cwd 전체를 읽는다.
-Write·Edit·Bash는 제공하지 않는다. sandbox·worktree·snapshot·packet 분리는 사용하지 않는다.
+`--tools=Read,Glob,Grep`로 실제 project cwd 전체를 읽는다. `--permission-mode`와 native
+plan workflow는 사용하지 않는다. Write·Edit·Bash·Agent는 제공하지 않는다.
+sandbox·worktree·snapshot·packet 분리는 사용하지 않는다.
 
 ## 비용
 
