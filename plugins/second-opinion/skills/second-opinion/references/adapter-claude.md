@@ -30,6 +30,9 @@ PowerShell도 동일한 `node ... dispatch.mjs` argv를 사용한다. brief 내�
   usage·cost·exit·duration·invoked 여부를 한 행으로 묶는다.
 - Claude 결과가 exit 0이어도 빈 결과, 깨진 JSON, `is_error`, modelUsage 부재, 요청과 다른
   실제 model family는 exit 4로 fail-closed한다. raw output은 그대로 보존한다.
+- safe mode의 보조 Haiku classifier도 `modelUsage`에 남을 수 있다. 요청 모델 검증은
+  최대 output token을 낸 dominant model에 결속하며, 최대값이 다른 model family 사이에서
+  동률이면 fail-closed한다. receipt의 `actualModels`에는 보조 모델까지 모두 보존한다.
 - `modelUsage` key 끝의 `[1m]`은 Claude CLI의 ANSI 표시 아티팩트다. receipt에는 이를
   제거한 모델명을 기록한다.
 
@@ -46,8 +49,12 @@ dispatcher 규율에서는 303.92초에 exit 0·실제 `claude-opus-4-8`·유효
 
 ## 도구 경계
 
-R033-H2 최소 bridge는 `--disable-slash-commands --tools=`를 고정한 **tool-less text
-review**다. 따라서 brief 본문에 검토 대상을 모두 포함해야 하며 파일 경로만 주면 안 된다.
+Claude child는 `--safe-mode --disable-slash-commands --tools=`를 고정한 **격리된
+tool-less text review**다. `--safe-mode`는 대상 프로젝트의 CLAUDE.md·skills·plugins·
+hooks·MCP·auto-memory를 끄되 OAuth·명시 model·effort는 유지한다. 따라서 프로젝트 Stop
+hook나 project instruction이 brief를 덮어쓰지 않는다.
+
+brief 본문에 검토 대상을 모두 포함해야 하며 파일 경로만 주면 안 된다.
 도구가 없어도 모델이 가짜 tool-call을 서술할 수 있으므로 brief 끝에 “도구 호출·파일 접근을
 서술하지 말고 inline 대상만으로 최종 답을 직접 출력하라”고 명시한다.
 

@@ -213,7 +213,12 @@ function inspectClaudeOutput(options, capturedOutput) {
   }));
   const actualModels = modelEntries.map((entry) => entry.model);
   const outputModels = modelEntries.filter((entry) => Number.isFinite(entry.outputTokens) && entry.outputTokens > 0);
-  const modelsToBind = outputModels.length > 0 ? outputModels.map((entry) => entry.model) : actualModels;
+  const maxOutputTokens = outputModels.length > 0
+    ? Math.max(...outputModels.map((entry) => entry.outputTokens))
+    : null;
+  const modelsToBind = maxOutputTokens === null
+    ? actualModels
+    : outputModels.filter((entry) => entry.outputTokens === maxOutputTokens).map((entry) => entry.model);
   if (!claudeModelMatches(options.model, modelsToBind)) {
     return { usage: null, status: "model-mismatch", valid: false };
   }

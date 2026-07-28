@@ -53,7 +53,8 @@ Claude가 만든 것을 Claude가 검토하면 결함을 과소보고한다 — 
   비-Claude 호스트의 `--vendor claude`도 같은 dispatcher를 사용하며, 폐기된 280초
   셸 timeout을 쓰지 않는다. Claude result JSON의 실제 model family·token usage·cost를
   `vendorUsage`에 결속하고 빈/깨진/다른 모델 출력은 exit 4로 거부한다. Claude host의
-  자기호출은 spawn 전에 차단한다.
+  자기호출은 spawn 전에 차단한다. Claude child는 `--safe-mode`로 실행해 대상 프로젝트의
+  CLAUDE.md·훅·플러그인·메모리가 inline review brief를 덮어쓰지 못하게 한다.
   기본값은 꺼짐이며, 설정 안 하면 아무것도 쓰지 않는다.
 
   모델 비용을 비교한다면 `(inputTokens - cachedInputTokens) + outputTokens`로 계산한다.

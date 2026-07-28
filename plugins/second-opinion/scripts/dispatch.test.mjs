@@ -75,7 +75,7 @@ const FIXTURES = [
   { vendor: "agy", operation: "image-generate", model: "Gemini 3.5 Flash (High)", inputs: [], isGitRepo: false, timeout: 1234, cwd: root,
     argv: ["--dangerously-skip-permissions", "--print-timeout", "1234s", "--model", "Gemini 3.5 Flash (High)", "--add-dir", root] },
   { vendor: "claude", operation: "text", model: "opus", effort: "high", inputs: [], isGitRepo: false, cwd: root,
-    argv: ["-p", "--model", "opus", "--effort", "high", "--output-format", "json", "--no-session-persistence", "--disable-slash-commands", "--tools="] },
+    argv: ["-p", "--model", "opus", "--effort", "high", "--output-format", "json", "--no-session-persistence", "--safe-mode", "--disable-slash-commands", "--tools="] },
 ];
 
 test("seven hand-written argv fixtures match policy exactly", () => {
@@ -139,6 +139,7 @@ function claudeResult({
   result = "P0/P1: NONE",
   isError = false,
   auxiliaryModel = null,
+  auxiliaryOutputTokens = 0,
   omitOptionalUsage = false,
   omitContextWindow = false,
 } = {}) {
@@ -168,7 +169,7 @@ function claudeResult({
       ...(auxiliaryModel ? {
         [auxiliaryModel]: {
           inputTokens: 0,
-          outputTokens: 0,
+          outputTokens: auxiliaryOutputTokens,
           cacheReadInputTokens: 0,
           cacheCreationInputTokens: 0,
           costUSD: 0,
@@ -303,6 +304,46 @@ test("Claude result binds the observed model and usage into the existing receipt
     totalCostUsd: 0.25,
     contextWindow: 1000000,
   });
+});
+
+test("Claude model binding accepts a lower-output safe-mode classifier but rejects an unexpected dominant model", async () => {
+  const validReceipt = join(root, "claude-safe-mode-classifier-valid.jsonl");
+  const invalidReceipt = join(root, "claude-safe-mode-classifier-invalid.jsonl");
+  const validOut = join(root, "claude-safe-mode-classifier-valid.out");
+  const invalidOut = join(root, "claude-safe-mode-classifier-invalid.out");
+  const validErr = join(root, "claude-safe-mode-classifier-valid.err");
+  const invalidErr = join(root, "claude-safe-mode-classifier-invalid.err");
+  const spawnResult = (result) => () => fakeChild((child) => {
+    child.stdin.on("end", () => {
+      child.stdout.end(result);
+      child.stderr.end();
+      queueMicrotask(() => child.emit("close", 0, null));
+    });
+    child.stdin.resume();
+  });
+  const base = {
+    vendor: "claude", operation: "text", brief, cwd: root, model: "opus", effort: "high",
+    timeout: 2, killGraceMs: 10, reapGraceMs: 10,
+  };
+  const valid = await run({ ...base, out: validOut, err: validErr }, {
+    spawn: spawnResult(claudeResult({ auxiliaryModel: "claude-haiku-4-5", auxiliaryOutputTokens: 18 })),
+    stderr: memoryWriter().stream,
+    env: { SECOND_OPINION_RECEIPT: validReceipt },
+  });
+  assert.equal(valid, 0);
+  assert.equal(receiptLines(validReceipt).at(-1).vendorUsageStatus, "ok");
+
+  const invalid = await run({ ...base, out: invalidOut, err: invalidErr }, {
+    spawn: spawnResult(claudeResult({
+      model: "claude-opus-4-8",
+      auxiliaryModel: "claude-haiku-4-5",
+      auxiliaryOutputTokens: 80,
+    })),
+    stderr: memoryWriter().stream,
+    env: { SECOND_OPINION_RECEIPT: invalidReceipt },
+  });
+  assert.equal(invalid, 4);
+  assert.equal(receiptLines(invalidReceipt).at(-1).vendorUsageStatus, "model-mismatch");
 });
 
 test("Claude receipt tolerates absent optional cache and context fields without weakening model binding", async () => {

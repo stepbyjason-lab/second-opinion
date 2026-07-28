@@ -89,6 +89,7 @@ export function buildVendorArgv(options) {
       "--effort", effort,
       "--output-format", "json",
       "--no-session-persistence",
+      "--safe-mode",
       "--disable-slash-commands",
       "--tools=",
     ];

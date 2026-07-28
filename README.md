@@ -2,7 +2,7 @@
 
 **English** | [한국어](./README.ko.md)
 
-![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.8.5-informational)
+![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.8.6-informational)
 
 **Use other AI vendors from inside Claude Code — in plain language.**
 Second opinions, task offloading, and vendor capabilities like image generation.
@@ -75,7 +75,9 @@ extracted from:
   From a non-Claude host, `--vendor claude` uses the same dispatcher without the
   obsolete 280-second shell timeout. Claude result JSON binds the observed model
   family, token usage, and cost into `vendorUsage`; empty, malformed, or
-  wrong-model output returns exit 4. Claude-host self-consultation is rejected.
+  wrong-model output returns exit 4. The Claude child runs in `--safe-mode`, so
+  project instructions, hooks, plugins, and memory cannot override the inline
+  review brief. Claude-host self-consultation is rejected.
   Off by default; when unset, nothing is written.
 
   Comparing model cost? Use `(inputTokens - cachedInputTokens) + outputTokens`.

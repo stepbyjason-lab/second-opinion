@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.6 — 2026-07-28
+
+- **Claude child customization 격리**. reverse channel argv에 `--safe-mode`를 고정해
+  대상 프로젝트의 CLAUDE.md·skills·plugins·hooks·MCP·auto-memory가 inline review
+  brief를 덮어쓰지 못하게 한다. OAuth·명시 model/effort와 기존 tool-less
+  `--tools=` 경계는 유지한다. Madi cwd 실측에서 Dashboard Stop hook가 요청 결과를
+  바꾸던 2-turn 오염을 재현했고, safe mode에서는 한 턴에 요청 토큰을 반환했다.
+- safe mode가 보조 Haiku classifier를 함께 기록하므로 receipt의 요청 모델 검증은
+  최대 output token을 낸 dominant model에 결속한다. 최대값이 다른 model family 사이에서
+  동률이면 fail-closed한다.
+
 ## 0.8.5 — 2026-07-28
 
 - **Claude reverse channel을 정식 dispatcher에 연결**. 비-Claude host는
