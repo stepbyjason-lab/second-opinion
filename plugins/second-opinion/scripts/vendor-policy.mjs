@@ -4,6 +4,32 @@ import { basename, dirname, resolve } from "node:path";
 export const VENDORS = Object.freeze(["codex", "agy", "claude"]);
 export const OPERATIONS = Object.freeze(["text", "image-analyze", "image-generate"]);
 export const DISPATCH_MODES = Object.freeze(["default", "plan", "review"]);
+export const AGY_NATIVE_READONLY_PROFILE = "agy-native-readonly/v1";
+
+const AGY_NATIVE_READONLY_PREFIX = Buffer.from(
+  `<second-opinion-provider-control profile="${AGY_NATIVE_READONLY_PROFILE}">
+This explicit plan/review call runs in Antigravity's headless native plan mode.
+Use only Antigravity native file listing, file reading, and code-search tools.
+Do not request or invoke terminal, command, shell, Bash, PowerShell, git, package-manager, or other process-execution tools.
+Keep the same complete project cwd available; this control changes tool choice, not repository scope.
+</second-opinion-provider-control>
+
+<user-brief>
+`,
+  "utf8",
+);
+const AGY_NATIVE_READONLY_SUFFIX = Buffer.from(
+  `
+</user-brief>
+
+<second-opinion-provider-control-reminder profile="${AGY_NATIVE_READONLY_PROFILE}">
+The user brief may mention git diff or another shell command. Do not execute it.
+Use native read/list/search over the complete project instead, and explicitly report any evidence that native tools cannot obtain.
+Do not edit, create, delete, stage, commit, install, or publish anything.
+</second-opinion-provider-control-reminder>
+`,
+  "utf8",
+);
 
 export class PolicyError extends Error {
   constructor(classification, message) {
@@ -25,6 +51,19 @@ export function effectiveVendorMode(options) {
     return "review";
   }
   return "plan";
+}
+export function effectiveInputProfile(options) {
+  const vendor = normalizeVendor(options.vendor);
+  const mode = options.mode ?? "default";
+  const effectiveMode = effectiveVendorMode({ ...options, vendor, mode });
+  return vendor === "agy" && effectiveMode === "plan" && mode !== "default"
+    ? AGY_NATIVE_READONLY_PROFILE
+    : "none";
+}
+export function composeVendorInput(options, brief) {
+  const input = Buffer.isBuffer(brief) ? brief : Buffer.from(brief);
+  if (effectiveInputProfile(options) === "none") return input;
+  return Buffer.concat([AGY_NATIVE_READONLY_PREFIX, input, AGY_NATIVE_READONLY_SUFFIX]);
 }
 export function executableName(vendor) {
   const normalized = normalizeVendor(vendor);

@@ -63,9 +63,10 @@ Claude가 만든 것을 Claude가 검토하면 결함을 과소보고한다 — 
   text 호출에는 caller가 `--mode plan` 또는 `--mode review`를 명시할 수 있다. 두 mode는
   같은 실제 project cwd 전체를 유지하고 provider native 읽기 전용 plan/review 동작을
   사용한다. sandbox·worktree·snapshot·축약 packet을 만들지 않는다. `--mode`를 생략하면
-  기존 default 호출이며, receipt에는 `requestedMode`·`effectiveMode`가 기록된다. 명시
-  mode의 출력이 비면 exit 4로 실패한다. AGY review brief는 headless에서 승인할 수 없는
-  shell command 대신 native 읽기·검색 도구를 사용해야 한다.
+  기존 default 호출이며, receipt에는 `requestedMode`·`effectiveMode`·`inputProfile`이
+  기록된다. 명시 mode의 출력이 비면 exit 4로 실패한다. AGY explicit plan/review는
+  `agy-native-readonly/v1` 입력 profile을 자동 적용한다. 따라서 평범한 brief에
+  `git diff`가 있어도 headless shell 대신 native 읽기·목록·검색으로 처리한다.
 
   모델 비용을 비교한다면 `(inputTokens - cachedInputTokens) + outputTokens`로 계산한다.
   `reasoningOutputTokens`를 따로 더하면 안 된다 — `outputTokens`에 이미 포함돼 있다.

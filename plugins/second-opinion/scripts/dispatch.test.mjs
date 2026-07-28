@@ -6,7 +6,16 @@ import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, sym
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { PassThrough, Writable } from "node:stream";
-import { PolicyError, buildVendorArgv, detectDirectInference, effectiveVendorMode, resolveExecutable } from "./vendor-policy.mjs";
+import {
+  AGY_NATIVE_READONLY_PROFILE,
+  PolicyError,
+  buildVendorArgv,
+  composeVendorInput,
+  detectDirectInference,
+  effectiveInputProfile,
+  effectiveVendorMode,
+  resolveExecutable,
+} from "./vendor-policy.mjs";
 import { executeCli, parseCli, run } from "./dispatch.mjs";
 
 const tempDirs = [];
@@ -90,30 +99,35 @@ const MODE_FIXTURES = [
     vendor: "agy", operation: "text", mode: "plan", model: "Gemini 3.5 Flash (High)",
     inputs: [], timeout: 1234, cwd: root,
     effectiveMode: "plan",
+    inputProfile: AGY_NATIVE_READONLY_PROFILE,
     argv: ["--mode", "plan", "--print-timeout", "1234s", "--model", "Gemini 3.5 Flash (High)", "--add-dir", root],
   },
   {
     vendor: "agy", operation: "text", mode: "review", model: "Gemini 3.5 Flash (High)",
     inputs: [], timeout: 1234, cwd: root,
     effectiveMode: "plan",
+    inputProfile: AGY_NATIVE_READONLY_PROFILE,
     argv: ["--mode", "plan", "--print-timeout", "1234s", "--model", "Gemini 3.5 Flash (High)", "--add-dir", root],
   },
   {
     vendor: "claude", operation: "text", mode: "plan", model: "opus", effort: "high",
     inputs: [], cwd: root,
     effectiveMode: "plan",
+    inputProfile: "none",
     argv: ["-p", "--model", "opus", "--effort", "high", "--output-format", "json", "--no-session-persistence", "--safe-mode", "--disable-slash-commands", "--permission-mode", "plan", "--tools=Read,Glob,Grep"],
   },
   {
     vendor: "claude", operation: "text", mode: "review", model: "opus", effort: "high",
     inputs: [], cwd: root,
     effectiveMode: "plan",
+    inputProfile: "none",
     argv: ["-p", "--model", "opus", "--effort", "high", "--output-format", "json", "--no-session-persistence", "--safe-mode", "--disable-slash-commands", "--permission-mode", "plan", "--tools=Read,Glob,Grep"],
   },
   {
     vendor: "codex", operation: "text", mode: "review", model: "gpt model \"quoted\"",
     effort: "high", inputs: [], isGitRepo: false, cwd: root,
     effectiveMode: "review",
+    inputProfile: "none",
     argv: ["exec", "review", "--skip-git-repo-check", "-m", "gpt model \"quoted\"", "-c", "model_reasoning_effort=\"high\"", "-"],
   },
 ];
@@ -121,12 +135,35 @@ const MODE_FIXTURES = [
 test("explicit plan and review modes map to closed provider-native argv", () => {
   for (const fixture of MODE_FIXTURES) {
     assert.equal(effectiveVendorMode(fixture), fixture.effectiveMode, `${fixture.vendor}/${fixture.mode}`);
+    assert.equal(effectiveInputProfile(fixture), fixture.inputProfile, `${fixture.vendor}/${fixture.mode}`);
     assert.deepEqual(buildVendorArgv(fixture), fixture.argv, `${fixture.vendor}/${fixture.mode}`);
   }
   assert.throws(
     () => buildVendorArgv({ ...FIXTURES[0], mode: "plan" }),
     (error) => error instanceof PolicyError && error.classification === "mode_unsupported",
   );
+});
+
+test("AGY explicit modes compose the native-readonly profile while every other input stays byte-identical", () => {
+  const original = Buffer.from("inspect git diff origin/main, then review 현재 파일\n", "utf8");
+  for (const mode of ["plan", "review"]) {
+    const composed = composeVendorInput({ vendor: "agy", operation: "text", mode }, original);
+    assert.notStrictEqual(composed, original);
+    assert.match(composed.toString("utf8"), /profile="agy-native-readonly\/v1"/);
+    assert.match(composed.toString("utf8"), /Use only Antigravity native file listing, file reading, and code-search tools/);
+    assert.match(composed.toString("utf8"), /Do not request or invoke terminal, command, shell/);
+    const offset = composed.indexOf(original);
+    assert.notEqual(offset, -1);
+    assert.deepEqual(composed.subarray(offset, offset + original.length), original);
+  }
+  for (const options of [
+    { vendor: "agy", operation: "text", mode: "default" },
+    { vendor: "codex", operation: "text", mode: "review" },
+    { vendor: "claude", operation: "text", mode: "review" },
+  ]) {
+    assert.strictEqual(composeVendorInput(options, original), original);
+    assert.equal(effectiveInputProfile(options), "none");
+  }
 });
 
 test("codex omits --skip-git-repo-check inside a git work tree", () => {
@@ -148,6 +185,7 @@ test("seven CLI dry-runs match literal fixtures and use bare executable names", 
     assert.equal(status, 0, stderr.value());
     const value = JSON.parse(stdout.value());
     assert.equal(value.executable, fixture.vendor);
+    assert.equal(value.inputProfile, "none");
     assert.deepEqual(value.argv, fixture.argv);
   }
 });
@@ -173,6 +211,7 @@ test("explicit mode CLI dry-runs expose requested and effective modes", async ()
     const value = JSON.parse(stdout.value());
     assert.equal(value.requestedMode, fixture.mode);
     assert.equal(value.effectiveMode, fixture.effectiveMode);
+    assert.equal(value.inputProfile, fixture.inputProfile);
     assert.deepEqual(value.argv, fixture.argv);
   }
 });
@@ -535,9 +574,41 @@ test("explicit mode empty output fails closed without changing default empty-out
     });
     assert.equal(code, expectedCode, mode);
     assert.equal(receiptLines(receipt)[0].exit, expectedCode, mode);
+    assert.equal(receiptLines(receipt)[0].inputProfile, mode === "default" ? "none" : AGY_NATIVE_READONLY_PROFILE, mode);
     if (expectedError) assert.match(parent.value(), expectedError, mode);
     else assert.equal(parent.value().includes("explicit mode returned empty output"), false, mode);
   }
+});
+
+test("run sends the AGY native-readonly profile plus the unmodified original brief in explicit review mode", async () => {
+  let stdin = Buffer.alloc(0);
+  const spawnFake = () => fakeChild((child) => {
+    const chunks = [];
+    child.stdin.on("data", (chunk) => { chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+    child.stdin.on("end", () => {
+      stdin = Buffer.concat(chunks);
+      child.stdout.end("READY\n");
+      child.stderr.end();
+      queueMicrotask(() => child.emit("close", 0, null));
+    });
+  });
+  const code = await run({
+    ...MODE_FIXTURES[1],
+    brief,
+    cwd: root,
+    timeout: 2,
+    dryRun: false,
+  }, {
+    spawn: spawnFake,
+    stdout: memoryWriter().stream,
+    stderr: memoryWriter().stream,
+  });
+  assert.equal(code, 0);
+  const original = readFileSync(brief);
+  assert.match(stdin.toString("utf8"), /agy-native-readonly\/v1/);
+  const offset = stdin.indexOf(original);
+  assert.notEqual(offset, -1);
+  assert.deepEqual(stdin.subarray(offset, offset + original.length), original);
 });
 
 test("run injection strips every receipt env spelling and respects trimmed receipt opt-in", async () => {
@@ -594,12 +665,13 @@ test("opt-in receipt appends typed JSONL for dry-run and invoked children", asyn
   assert.equal(dryRun.invoked, false);
   assert.equal(completed.invoked, true);
   for (const row of [dryRun, completed]) {
-    assert.deepEqual(Object.keys(row).sort(), ["cwd", "durationSec", "effectiveMode", "effort", "errPath", "exit", "invoked", "model", "operation", "outPath", "outputCheckStatus", "pid", "requestedMode", "schemaVersion", "ts", "vendor", "vendorUsage", "vendorUsageStatus"].sort());
+    assert.deepEqual(Object.keys(row).sort(), ["cwd", "durationSec", "effectiveMode", "effort", "errPath", "exit", "inputProfile", "invoked", "model", "operation", "outPath", "outputCheckStatus", "pid", "requestedMode", "schemaVersion", "ts", "vendor", "vendorUsage", "vendorUsageStatus"].sort());
     assert.equal(row.schemaVersion, 1);
     assert.equal(row.vendor, "codex");
     assert.equal(row.operation, "text");
     assert.equal(row.requestedMode, "default");
     assert.equal(row.effectiveMode, "default");
+    assert.equal(row.inputProfile, "none");
     assert.equal(row.model, FIXTURES[0].model);
     assert.equal(typeof row.model, "string");
     assert.equal(row.effort, FIXTURES[0].effort);

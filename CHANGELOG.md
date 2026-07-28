@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.8 — 2026-07-28
+
+- AGY explicit `--mode plan|review` 입력에 `agy-native-readonly/v1` control envelope를
+  자동 결합한다. headless plan이 승인할 수 없는 terminal·command·shell·`git diff`
+  대신 native read/list/search를 사용하게 해, R033-H4에서 수동 brief 교정으로만
+  성공했던 호출 조건을 provider translation의 기본 동작으로 만든다.
+- mode 생략과 Claude/Codex 입력은 byte-for-byte 보존한다. dry-run과 JSONL receipt에
+  additive `inputProfile`을 기록하며, explicit mode 0바이트 exit 4 안전망은 유지한다.
+
 ## 0.8.7 — 2026-07-28
 
 - **Broker Neutrality 복원**. dispatcher의 `CLAUDECODE` 기반 unconditional self-call hard block을 제거한다. dispatcher는 중립 broker로서 실행 규율(safe-mode, timeout, raw output, 모델 결속, 영수증)을 보장하며 동일 호스트/벤더 호출을 차단하지 않는다. 리뷰 독립성 검증 책임은 caller(Madi 등)가 영수증과 리뷰 역할을 대조해 판정하도록 본래 층으로 분리한다.

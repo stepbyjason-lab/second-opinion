@@ -2,7 +2,7 @@
 
 **English** | [한국어](./README.ko.md)
 
-![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.8.7-informational)
+![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.8.8-informational)
 
 **Use other AI vendors from inside Claude Code — in plain language.**
 Second opinions, task offloading, and vendor capabilities like image generation.
@@ -55,6 +55,7 @@ extracted from:
 | `agy -p "<text>"` **hangs forever** if stdin isn't closed, and argv caps the brief at **30,000 chars** | feeds the brief via stdin (`-p - < brief.txt`) — no hang, 105KB verified |
 | `--model` accepts both the display label (`"Gemini 3.1 Pro (High)"`) and the canonical slug from `agy models` (`gemini-3.1-pro-high`); `agy models` prints slugs while the picker shows labels. An unknown/malformed name is **rejected loudly (exit 1)** with an available-models list — not silently downgraded (older agy versions did downgrade) | copies the exact string from either source and checks the exit code |
 | AGY can keep using a previous host project even when the subprocess and receipt use a temporary `cwd` | binds every AGY call to the requested workspace with `--add-dir`; callers can add `--expect-output` for a hidden-token read check |
+| AGY headless plan auto-denies shell commands, so a review brief asking for `git diff` can return exit 0 with no review | explicit AGY plan/review automatically composes the `agy-native-readonly/v1` input profile, using native read/list/search; empty output still fails closed |
 | Codex sandbox **can't read files on Windows** | excerpts content into the brief instead of asking it to read files |
 | Image generation: agy **ignores where you asked it to save** (uses its own scratch dir), codex needs a **write-enabled sandbox** and its Windows copy step can fail | knows each vendor's real artifact location, verifies the file actually exists, and moves it where you wanted — a vendor saying "saved" is not treated as success |
 | "No issues found" is a weak signal (Gemini especially leans false-negative) | always relayed as "didn't find problems ≠ no problems" |
@@ -87,9 +88,10 @@ extracted from:
   These modes keep the same real project cwd and use provider-native read-only
   planning/review behavior; they do not create a sandbox, worktree, snapshot, or
   reduced review packet. Omitting `--mode` preserves the existing default call.
-  Receipts record both `requestedMode` and `effectiveMode`. Explicit modes fail
-  closed with exit 4 on empty output; AGY review briefs must use native read/search
-  tools rather than request a headless shell command that cannot be approved.
+  Receipts record `requestedMode`, `effectiveMode`, and `inputProfile`. Explicit modes
+  fail closed with exit 4 on empty output. AGY explicit plan/review automatically
+  applies the `agy-native-readonly/v1` input profile so an ordinary brief that mentions
+  `git diff` is handled with native read/list/search instead of a headless shell command.
 
   Comparing model cost? Use `(inputTokens - cachedInputTokens) + outputTokens`.
   Do not add `reasoningOutputTokens` — it is already part of `outputTokens`.

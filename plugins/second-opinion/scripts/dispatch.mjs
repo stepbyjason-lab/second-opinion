@@ -3,7 +3,7 @@ import { appendFileSync, closeSync, createWriteStream, mkdirSync, openSync, read
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DISPATCH_MODES, OPERATIONS, PolicyError, buildVendorArgv, effectiveVendorMode, executableName, normalizeVendor, resolveExecutable } from "./vendor-policy.mjs";
+import { DISPATCH_MODES, OPERATIONS, PolicyError, buildVendorArgv, composeVendorInput, effectiveInputProfile, effectiveVendorMode, executableName, normalizeVendor, resolveExecutable } from "./vendor-policy.mjs";
 
 const MAX_BRIEF_BYTES = 8 * 1024 * 1024;
 const MAX_VENDOR_USAGE_BYTES = 64 * 1024 * 1024;
@@ -300,8 +300,11 @@ function writeReceipt(stderr, options, exit, startedAt, invoked, outputCheckStat
   const duration = ((Date.now() - startedAt) / 1000).toFixed(3);
   const requestedMode = options.mode ?? "default";
   let effectiveMode = "invalid";
+  let inputProfile = "invalid";
   try { effectiveMode = effectiveVendorMode({ ...options, mode: requestedMode }); }
   catch { /* Validation errors still need a receipt with an explicit invalid mode. */ }
+  try { inputProfile = effectiveInputProfile({ ...options, mode: requestedMode }); }
+  catch { /* Validation errors still need a receipt with an explicit invalid profile. */ }
   stderr.write(`[dispatch] vendor=${options.vendor} op=${options.operation} mode=${requestedMode}/${effectiveMode} model=${options.model ?? "-"} exit=${exit} duration=${duration}s\n`);
   try {
     const receipt = receiptPath(env);
@@ -321,7 +324,7 @@ function writeReceipt(stderr, options, exit, startedAt, invoked, outputCheckStat
     let vendorUsage = { usage: null, status: "read-failed" };
     try { vendorUsage = collectVendorUsage(options, invoked, env, vendorObservation); }
     catch { /* Usage is additive; its own failure must not suppress the receipt. */ }
-    appendFileSync(receipt, `${separator}${JSON.stringify({ schemaVersion: 1, ts: new Date().toISOString(), vendor: options.vendor, operation: options.operation, requestedMode, effectiveMode, model: options.model ?? null, effort: options.effort ?? null, exit, durationSec: Number(duration), invoked, cwd: options.cwd, outPath: options.out ?? null, errPath: options.err ?? null, pid: process.pid, vendorUsage: vendorUsage.usage, vendorUsageStatus: vendorUsage.status, outputCheckStatus })}\n`);
+    appendFileSync(receipt, `${separator}${JSON.stringify({ schemaVersion: 1, ts: new Date().toISOString(), vendor: options.vendor, operation: options.operation, requestedMode, effectiveMode, inputProfile, model: options.model ?? null, effort: options.effort ?? null, exit, durationSec: Number(duration), invoked, cwd: options.cwd, outPath: options.out ?? null, errPath: options.err ?? null, pid: process.pid, vendorUsage: vendorUsage.usage, vendorUsageStatus: vendorUsage.status, outputCheckStatus })}\n`);
   } catch { /* Receipt recording must not affect dispatch. */ }
 }
 function openOutput(path) {
@@ -394,12 +397,12 @@ export async function run(options, deps = { spawn }) {
     return code;
   }
   if (options.dryRun) {
-    parentStdout.write(`${JSON.stringify({ vendor: options.vendor, operation: options.operation, requestedMode: options.mode, effectiveMode: effectiveVendorMode(options), executable: executableName(options.vendor), argv, stdinMode: "brief-file", cwd: options.cwd })}\n`);
+    parentStdout.write(`${JSON.stringify({ vendor: options.vendor, operation: options.operation, requestedMode: options.mode, effectiveMode: effectiveVendorMode(options), inputProfile: effectiveInputProfile(options), executable: executableName(options.vendor), argv, stdinMode: "brief-file", cwd: options.cwd })}\n`);
     writeReceipt(parentStderr, options, 0, startedAt, false, outputCheckStatus, env);
     return 0;
   }
   let brief;
-  try { brief = readFileSync(options.brief); }
+  try { brief = composeVendorInput(options, readFileSync(options.brief)); }
   catch (error) {
     parentStderr.write(`dispatch internal error: unable to read brief (${error.code ?? "read_failed"})\n`);
     writeReceipt(parentStderr, options, 3, startedAt, false, outputCheckStatus, env);

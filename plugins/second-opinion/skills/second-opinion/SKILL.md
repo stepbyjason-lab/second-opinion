@@ -13,7 +13,7 @@ description: >
 
 # second-opinion — 외부 AI 어댑터
 
-**버전 0.8.7** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
+**버전 0.8.8** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
 
 이 스킬은 **아무것도 차단하지 않는다** — 중개(relay)만 한다. 디스패처는 커맨드 정합성을 위한 도구일 뿐이다. "Claude가 디스패처를 반드시 거치게" 강제하는 것은 **부르는 쪽(caller)의 책임**이다 → [references/enforcement.md](references/enforcement.md).
 
@@ -43,7 +43,7 @@ plan/review 권한을 자동 적용하지 않는다.
 - sandbox·worktree·snapshot·packet·분리 cwd를 만들지 않는다.
 - Madi 같은 caller가 review panel을 소집할 때만 `--mode review`를 붙인다.
 - reviewer는 파일 수정·stage·commit·설치·공개를 하지 않는다.
-- receipt의 `requestedMode`·`effectiveMode`로 요청 mode와 provider translation을 확인한다.
+- receipt의 `requestedMode`·`effectiveMode`·`inputProfile`로 요청 mode와 provider translation을 확인한다.
 - 지원하지 않는 조합은 default로 조용히 폴백하지 않는다.
 - 명시적 plan/review가 0바이트를 반환하면 provider exit 0이어도 dispatcher exit 4다.
 
@@ -114,9 +114,11 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor agy --operation text --
 읽기 전용 plan/review는 같은 repo cwd에서 각각 `--mode plan|review`를 추가한다.
 둘 다 AGY native `--mode plan`으로 번역되며 default 호출에만 쓰는
 `--dangerously-skip-permissions`는 붙지 않는다.
-AGY headless는 command permission을 물을 수 없으므로 review brief는 native 읽기·검색
-도구를 사용하게 하고 shell command를 요구하지 않는다. command auto-denial로 출력이
-비면 dispatcher가 exit 4로 실패시킨다.
+AGY headless는 command permission을 물을 수 없으므로 dispatcher가 explicit mode 입력에
+`agy-native-readonly/v1` control envelope를 자동 결합한다. 이 profile은 native
+읽기·목록·검색 도구만 사용하고 terminal·command·shell·`git diff`를 실행하지 않게 한다.
+원 brief는 손실 없이 보존되고, 적용 사실은 receipt의 `inputProfile`에 기록된다.
+그래도 command auto-denial 뒤 출력이 비면 dispatcher가 exit 4로 실패시킨다.
 
 이미지 분석은 `--operation image-analyze`(입력 `--input <파일>`) — 상세는 `references/adapter-antigravity.md`.
 
