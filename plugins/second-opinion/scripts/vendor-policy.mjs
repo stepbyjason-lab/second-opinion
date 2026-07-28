@@ -3,6 +3,7 @@ import { basename, dirname, resolve } from "node:path";
 
 export const VENDORS = Object.freeze(["codex", "agy", "claude"]);
 export const OPERATIONS = Object.freeze(["text", "image-analyze", "image-generate"]);
+export const DISPATCH_MODES = Object.freeze(["default", "plan", "review"]);
 
 export class PolicyError extends Error {
   constructor(classification, message) {
@@ -13,6 +14,18 @@ export class PolicyError extends Error {
 }
 
 export function normalizeVendor(value) { return value === "antigravity" ? "agy" : value; }
+export function effectiveVendorMode(options) {
+  const vendor = normalizeVendor(options.vendor);
+  const mode = options.mode ?? "default";
+  if (!DISPATCH_MODES.includes(mode)) throw new PolicyError("invalid_mode", `invalid_mode: unsupported dispatch mode ${mode}`);
+  if (mode === "default") return "default";
+  if (options.operation !== "text") throw new PolicyError("mode_unsupported", `mode_unsupported: ${mode} requires text operation`);
+  if (vendor === "codex") {
+    if (mode === "plan") throw new PolicyError("mode_unsupported", "mode_unsupported: codex plan has no approved non-sandbox CLI mapping");
+    return "review";
+  }
+  return "plan";
+}
 export function executableName(vendor) {
   const normalized = normalizeVendor(vendor);
   if (normalized === "agy") return "agy";
@@ -70,10 +83,11 @@ export function resolveExecutable(vendor, options = {}) {
 export function buildVendorArgv(options) {
   const vendor = normalizeVendor(options.vendor);
   const { operation, model, effort } = options;
+  const effectiveMode = effectiveVendorMode({ ...options, vendor });
   const inputs = options.inputs ?? [];
   const isGitRepo = options.isGitRepo ?? true;
   if (vendor === "codex") {
-    const argv = ["exec"];
+    const argv = effectiveMode === "review" ? ["exec", "review"] : ["exec"];
     if (operation === "image-generate") argv.push("-s", "workspace-write");
     if (!isGitRepo) argv.push("--skip-git-repo-check");
     if (model) argv.push("-m", model);
@@ -83,7 +97,7 @@ export function buildVendorArgv(options) {
     return argv;
   }
   if (vendor === "claude") {
-    return [
+    const argv = [
       "-p",
       "--model", model,
       "--effort", effort,
@@ -91,8 +105,10 @@ export function buildVendorArgv(options) {
       "--no-session-persistence",
       "--safe-mode",
       "--disable-slash-commands",
-      "--tools=",
     ];
+    if (effectiveMode === "plan") argv.push("--permission-mode", "plan", "--tools=Read,Glob,Grep");
+    else argv.push("--tools=");
+    return argv;
   }
   // --dangerously-skip-permissions: headless agy cannot prompt for tool
   // permissions, so it auto-DENIES them ("jetski: no output produced — a tool
@@ -112,7 +128,9 @@ export function buildVendorArgv(options) {
   // Propagating our own timeout keeps the two bounds coherent instead of
   // letting the shorter, invisible one win. A fixed constant would drift apart
   // again, so it is derived, not hardcoded.
-  const argv = ["--dangerously-skip-permissions"];
+  const argv = effectiveMode === "plan"
+    ? ["--mode", "plan"]
+    : ["--dangerously-skip-permissions"];
   if (Number.isInteger(options.timeout) && options.timeout > 0) {
     argv.push("--print-timeout", `${options.timeout}s`);
   }

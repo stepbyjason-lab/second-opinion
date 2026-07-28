@@ -2,7 +2,7 @@
 
 **English** | [한국어](./README.ko.md)
 
-![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.8.6-informational)
+![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.8.7-informational)
 
 **Use other AI vendors from inside Claude Code — in plain language.**
 Second opinions, task offloading, and vendor capabilities like image generation.
@@ -72,13 +72,24 @@ extracted from:
   Optional `--expect-output <ASCII token>` calls also record `outputCheckStatus`
   without recording or sending the token itself; a missing token returns exit 4
   while preserving the raw output file.
-  From a non-Claude host, `--vendor claude` uses the same dispatcher without the
+  The `--vendor claude` channel uses the same dispatcher without the
   obsolete 280-second shell timeout. Claude result JSON binds the observed model
   family, token usage, and cost into `vendorUsage`; empty, malformed, or
   wrong-model output returns exit 4. The Claude child runs in `--safe-mode`, so
   project instructions, hooks, plugins, and memory cannot override the inline
-  review brief. Claude-host self-consultation is rejected.
+  review brief. The dispatcher operates as a neutral broker and does not
+  hard-block same-vendor calls; it removes the parent-only `CLAUDECODE` marker
+  from the child environment so an intentional nested invocation can start.
+  Review independence is evaluated by caller methodologies against recorded receipts.
   Off by default; when unset, nothing is written.
+
+  Callers may explicitly add `--mode plan` or `--mode review` to text dispatches.
+  These modes keep the same real project cwd and use provider-native read-only
+  planning/review behavior; they do not create a sandbox, worktree, snapshot, or
+  reduced review packet. Omitting `--mode` preserves the existing default call.
+  Receipts record both `requestedMode` and `effectiveMode`. Explicit modes fail
+  closed with exit 4 on empty output; AGY review briefs must use native read/search
+  tools rather than request a headless shell command that cannot be approved.
 
   Comparing model cost? Use `(inputTokens - cachedInputTokens) + outputTokens`.
   Do not add `reasoningOutputTokens` — it is already part of `outputTokens`.

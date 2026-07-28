@@ -6,6 +6,13 @@
 
 ## 텍스트 과업 세부
 
+### 명시적 review mode
+
+`--mode review`는 실제 repo cwd에서 native `codex exec review -`로 번역한다. sandbox,
+worktree, snapshot, packet 분리를 만들지 않는다. mode 생략은 기존 `codex exec -`다.
+Codex CLI에는 이 계약이 요구하는 non-sandbox native plan mapping이 없으므로
+`--mode plan`은 호출 전 `mode_unsupported`로 실패하며 default로 폴백하지 않는다.
+
 - 비-git cwd는 디스패처가 `--skip-git-repo-check`를 자동 판정·삽입한다
 - 출력 머리에 taskkill 한글 잡음(프로세스 정리 메시지)이 섞일 수 있음 — 본문만 취하면 됨
 - codex는 로컬 파일을 읽는다(전 sandbox 모드 실측). 큰 내용은 파일로 두고 경로를 지시한다.

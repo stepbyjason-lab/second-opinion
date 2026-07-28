@@ -6,6 +6,18 @@
 
 ## 텍스트 과업 세부
 
+### 명시적 plan/review mode
+
+`--mode plan|review`는 caller가 요청할 때만 사용한다. 두 값 모두 AGY native
+`--mode plan`으로 번역되고 `--dangerously-skip-permissions`는 제거된다. 실제 `--cwd`가
+그대로 `--add-dir`에 결속되므로 별도 sandbox·worktree·snapshot 없이 같은 프로젝트 전체를
+읽는다. mode 생략은 기존 default full-access 호출이며 자동으로 plan이 되지 않는다.
+
+headless plan은 승인 프롬프트를 띄울 수 없어 `command` 도구를 auto-deny한다. 따라서
+plan/review brief는 AGY의 native 파일 읽기·검색 도구만 사용하게 하고 `git diff` 같은
+shell command를 직접 요구하지 않는다. auto-denial 뒤 0바이트가 반환되면 dispatcher는
+provider exit 0을 성공으로 승격하지 않고 exit 4로 닫는다.
+
 - **brief는 무-플래그 stdin으로** (파일 리다이렉트) — 대용량 실측 통과, argv 경로의
   30,000자 한계 없음. 파일 리다이렉트가 stdin을 닫아주므로 hang 걱정도 없다.
   `-p -`는 1.1.1에서 `-`가 리터럴 프롬프트로 바뀌어 깨졌다. stdin은 미문서화

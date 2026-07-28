@@ -3,12 +3,12 @@ import { appendFileSync, closeSync, createWriteStream, mkdirSync, openSync, read
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { OPERATIONS, PolicyError, buildVendorArgv, executableName, normalizeVendor, resolveExecutable } from "./vendor-policy.mjs";
+import { DISPATCH_MODES, OPERATIONS, PolicyError, buildVendorArgv, effectiveVendorMode, executableName, normalizeVendor, resolveExecutable } from "./vendor-policy.mjs";
 
 const MAX_BRIEF_BYTES = 8 * 1024 * 1024;
 const MAX_VENDOR_USAGE_BYTES = 64 * 1024 * 1024;
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const SINGLE_OPTIONS = new Set(["--vendor", "--operation", "--brief", "--cwd", "--model", "--effort", "--timeout", "--out", "--err", "--expect-output", "--dry-run"]);
+const SINGLE_OPTIONS = new Set(["--vendor", "--operation", "--brief", "--cwd", "--model", "--effort", "--mode", "--timeout", "--out", "--err", "--expect-output", "--dry-run"]);
 
 export class CliError extends Error {
   constructor(message) { super(message); this.name = "CliError"; }
@@ -47,6 +47,15 @@ export function parseCli(argv, startCwd = process.cwd()) {
   if (!raw.vendor || !["codex", "agy", "antigravity", "claude"].includes(raw.vendor)) throw new CliError("--vendor must be codex, agy, or claude");
   const vendor = normalizeVendor(raw.vendor);
   if (!OPERATIONS.includes(raw.operation)) throw new CliError("--operation must be text, image-analyze, or image-generate");
+  if (raw.mode !== undefined && !DISPATCH_MODES.filter((mode) => mode !== "default").includes(raw.mode)) {
+    throw new CliError("--mode must be plan or review");
+  }
+  const mode = raw.mode ?? "default";
+  try { effectiveVendorMode({ vendor, operation: raw.operation, mode }); }
+  catch (error) {
+    if (error instanceof PolicyError) throw new CliError(error.message);
+    throw error;
+  }
   if (!raw.brief) throw new CliError("--brief is required");
   const brief = absoluteFrom(startCwd, raw.brief);
   const cwd = absoluteFrom(startCwd, raw.cwd ?? startCwd);
@@ -94,7 +103,7 @@ export function parseCli(argv, startCwd = process.cwd()) {
   if (conflicts.input) throw new CliError("--out/--err must not equal --input");
   if (conflicts.outputs) throw new CliError("--out and --err must not refer to the same file");
   if (receiptConflicts({ brief, inputs, out, err }, process.env)) throw new CliError("--out/--err must not equal SECOND_OPINION_RECEIPT");
-  return { vendor, operation: raw.operation, brief, cwd, model: raw.model, effort: raw.effort, inputs, timeout, out, err, expectOutput, dryRun: raw.dryRun ?? false };
+  return { vendor, operation: raw.operation, mode, brief, cwd, model: raw.model, effort: raw.effort, inputs, timeout, out, err, expectOutput, dryRun: raw.dryRun ?? false };
 }
 
 function isGitRepository(cwd) {
@@ -289,7 +298,11 @@ function collectVendorUsage(options, invoked, env, observation) {
 }
 function writeReceipt(stderr, options, exit, startedAt, invoked, outputCheckStatus, env = process.env, vendorObservation = null) {
   const duration = ((Date.now() - startedAt) / 1000).toFixed(3);
-  stderr.write(`[dispatch] vendor=${options.vendor} op=${options.operation} model=${options.model ?? "-"} exit=${exit} duration=${duration}s\n`);
+  const requestedMode = options.mode ?? "default";
+  let effectiveMode = "invalid";
+  try { effectiveMode = effectiveVendorMode({ ...options, mode: requestedMode }); }
+  catch { /* Validation errors still need a receipt with an explicit invalid mode. */ }
+  stderr.write(`[dispatch] vendor=${options.vendor} op=${options.operation} mode=${requestedMode}/${effectiveMode} model=${options.model ?? "-"} exit=${exit} duration=${duration}s\n`);
   try {
     const receipt = receiptPath(env);
     if (!receipt) return;
@@ -308,7 +321,7 @@ function writeReceipt(stderr, options, exit, startedAt, invoked, outputCheckStat
     let vendorUsage = { usage: null, status: "read-failed" };
     try { vendorUsage = collectVendorUsage(options, invoked, env, vendorObservation); }
     catch { /* Usage is additive; its own failure must not suppress the receipt. */ }
-    appendFileSync(receipt, `${separator}${JSON.stringify({ schemaVersion: 1, ts: new Date().toISOString(), vendor: options.vendor, operation: options.operation, model: options.model ?? null, effort: options.effort ?? null, exit, durationSec: Number(duration), invoked, cwd: options.cwd, outPath: options.out ?? null, errPath: options.err ?? null, pid: process.pid, vendorUsage: vendorUsage.usage, vendorUsageStatus: vendorUsage.status, outputCheckStatus })}\n`);
+    appendFileSync(receipt, `${separator}${JSON.stringify({ schemaVersion: 1, ts: new Date().toISOString(), vendor: options.vendor, operation: options.operation, requestedMode, effectiveMode, model: options.model ?? null, effort: options.effort ?? null, exit, durationSec: Number(duration), invoked, cwd: options.cwd, outPath: options.out ?? null, errPath: options.err ?? null, pid: process.pid, vendorUsage: vendorUsage.usage, vendorUsageStatus: vendorUsage.status, outputCheckStatus })}\n`);
   } catch { /* Receipt recording must not affect dispatch. */ }
 }
 function openOutput(path) {
@@ -332,18 +345,11 @@ function defaultForceKill(child) {
     try { child.kill("SIGKILL"); } catch { /* already gone */ }
   }
 }
-function envValue(env, expected) {
-  const key = Object.keys(env ?? {}).find((candidate) => candidate.toUpperCase() === expected);
-  return key === undefined ? undefined : env[key];
-}
-function isClaudeHost(env) {
-  const value = String(envValue(env, "CLAUDECODE") ?? "").trim();
-  return value !== "" && !/^(0|false)$/i.test(value);
-}
 
 export async function run(options, deps = { spawn }) {
   options = {
     ...options,
+    mode: options.mode ?? "default",
     brief: absoluteFrom(process.cwd(), options.brief),
     inputs: (options.inputs ?? []).map((input) => absoluteFrom(process.cwd(), input)),
     out: options.out ? absoluteFrom(process.cwd(), options.out) : undefined,
@@ -379,16 +385,18 @@ export async function run(options, deps = { spawn }) {
     return 2;
   }
   const isGitRepo = options.isGitRepo ?? isGitRepository(options.cwd);
-  const argv = buildVendorArgv({ ...options, isGitRepo });
+  let argv;
+  try { argv = buildVendorArgv({ ...options, isGitRepo }); }
+  catch (error) {
+    const code = error instanceof PolicyError ? 2 : 3;
+    parentStderr.write(`dispatch validation error: ${error.message ?? "vendor mode resolution failed"}\n`);
+    writeReceipt(parentStderr, options, code, startedAt, false, outputCheckStatus, env);
+    return code;
+  }
   if (options.dryRun) {
-    parentStdout.write(`${JSON.stringify({ vendor: options.vendor, operation: options.operation, executable: executableName(options.vendor), argv, stdinMode: "brief-file", cwd: options.cwd })}\n`);
+    parentStdout.write(`${JSON.stringify({ vendor: options.vendor, operation: options.operation, requestedMode: options.mode, effectiveMode: effectiveVendorMode(options), executable: executableName(options.vendor), argv, stdinMode: "brief-file", cwd: options.cwd })}\n`);
     writeReceipt(parentStderr, options, 0, startedAt, false, outputCheckStatus, env);
     return 0;
-  }
-  if (options.vendor === "claude" && isClaudeHost(env)) {
-    parentStderr.write("dispatch validation error: Claude host must not dispatch Claude for self-consultation\n");
-    writeReceipt(parentStderr, options, 2, startedAt, false, outputCheckStatus, env);
-    return 2;
   }
   let brief;
   try { brief = readFileSync(options.brief); }
@@ -423,6 +431,9 @@ export async function run(options, deps = { spawn }) {
     let invoked = false;
     let child;
     let timer, escalateTimer, reapTimer;
+    const validateExplicitOutput = options.mode !== "default";
+    const captureStdout = Boolean(stdoutStream || options.expectOutput || options.vendor === "claude" || validateExplicitOutput);
+    let outputBytes = 0;
     const claudeOutputChunks = [];
     let claudeOutputBytes = 0;
     let claudeOutputTooLarge = false;
@@ -441,11 +452,14 @@ export async function run(options, deps = { spawn }) {
       resolveRun(code);
     };
     try {
-      const spawnOptions = { cwd: options.cwd, shell: false, stdio: ["pipe", stdoutStream ? "pipe" : "inherit", stderrStream ? "pipe" : "inherit"], windowsHide: true };
-      if (receiptPath(env)) {
+      const spawnOptions = { cwd: options.cwd, shell: false, stdio: ["pipe", captureStdout ? "pipe" : "inherit", stderrStream ? "pipe" : "inherit"], windowsHide: true };
+      if (receiptPath(env) || options.vendor === "claude") {
         spawnOptions.env = { ...env };
         for (const key of Object.keys(spawnOptions.env)) {
-          if (key.toUpperCase() === "SECOND_OPINION_RECEIPT") delete spawnOptions.env[key];
+          const upper = key.toUpperCase();
+          if (upper === "SECOND_OPINION_RECEIPT" || (options.vendor === "claude" && upper === "CLAUDECODE")) {
+            delete spawnOptions.env[key];
+          }
         }
       }
       child = spawnImpl(executable, argv, spawnOptions);
@@ -504,6 +518,9 @@ export async function run(options, deps = { spawn }) {
         outputCheckStatus = outputMatched ? "matched" : "missing";
         if (!outputMatched) parentStderr.write("dispatch output check failed: expected token missing\n");
         finish(outputMatched ? 0 : 4);
+      } else if (code === 0 && validateExplicitOutput && outputBytes === 0) {
+        parentStderr.write("dispatch output validation failed: explicit mode returned empty output\n");
+        finish(4);
       } else finish(code);
     });
     child.stdin.once("error", streamError);
@@ -517,6 +534,9 @@ export async function run(options, deps = { spawn }) {
         if (!outputMatched) outputTail = combined.subarray(Math.max(0, combined.length - expected.length + 1));
       });
     }
+    if (captureStdout) {
+      child.stdout.on("data", (chunk) => { outputBytes += chunk.length; });
+    }
     if (options.vendor === "claude") {
       child.stdout.on("data", (chunk) => {
         if (claudeOutputTooLarge) return;
@@ -529,6 +549,7 @@ export async function run(options, deps = { spawn }) {
       });
     }
     if (stdoutStream) child.stdout.pipe(stdoutStream);
+    else if (captureStdout) child.stdout.pipe(parentStdout, { end: false });
     if (stderrStream) child.stderr.pipe(stderrStream);
     try { child.stdin.end(brief); } catch (error) { streamError(error); }
   });

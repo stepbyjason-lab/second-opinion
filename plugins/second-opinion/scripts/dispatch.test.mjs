@@ -6,7 +6,7 @@ import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, sym
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { PassThrough, Writable } from "node:stream";
-import { PolicyError, buildVendorArgv, detectDirectInference, resolveExecutable } from "./vendor-policy.mjs";
+import { PolicyError, buildVendorArgv, detectDirectInference, effectiveVendorMode, resolveExecutable } from "./vendor-policy.mjs";
 import { executeCli, parseCli, run } from "./dispatch.mjs";
 
 const tempDirs = [];
@@ -85,6 +85,50 @@ test("seven hand-written argv fixtures match policy exactly", () => {
   assert.equal(FIXTURES.at(-1).argv.some((value) => /^timeout$/i.test(value)), false);
 });
 
+const MODE_FIXTURES = [
+  {
+    vendor: "agy", operation: "text", mode: "plan", model: "Gemini 3.5 Flash (High)",
+    inputs: [], timeout: 1234, cwd: root,
+    effectiveMode: "plan",
+    argv: ["--mode", "plan", "--print-timeout", "1234s", "--model", "Gemini 3.5 Flash (High)", "--add-dir", root],
+  },
+  {
+    vendor: "agy", operation: "text", mode: "review", model: "Gemini 3.5 Flash (High)",
+    inputs: [], timeout: 1234, cwd: root,
+    effectiveMode: "plan",
+    argv: ["--mode", "plan", "--print-timeout", "1234s", "--model", "Gemini 3.5 Flash (High)", "--add-dir", root],
+  },
+  {
+    vendor: "claude", operation: "text", mode: "plan", model: "opus", effort: "high",
+    inputs: [], cwd: root,
+    effectiveMode: "plan",
+    argv: ["-p", "--model", "opus", "--effort", "high", "--output-format", "json", "--no-session-persistence", "--safe-mode", "--disable-slash-commands", "--permission-mode", "plan", "--tools=Read,Glob,Grep"],
+  },
+  {
+    vendor: "claude", operation: "text", mode: "review", model: "opus", effort: "high",
+    inputs: [], cwd: root,
+    effectiveMode: "plan",
+    argv: ["-p", "--model", "opus", "--effort", "high", "--output-format", "json", "--no-session-persistence", "--safe-mode", "--disable-slash-commands", "--permission-mode", "plan", "--tools=Read,Glob,Grep"],
+  },
+  {
+    vendor: "codex", operation: "text", mode: "review", model: "gpt model \"quoted\"",
+    effort: "high", inputs: [], isGitRepo: false, cwd: root,
+    effectiveMode: "review",
+    argv: ["exec", "review", "--skip-git-repo-check", "-m", "gpt model \"quoted\"", "-c", "model_reasoning_effort=\"high\"", "-"],
+  },
+];
+
+test("explicit plan and review modes map to closed provider-native argv", () => {
+  for (const fixture of MODE_FIXTURES) {
+    assert.equal(effectiveVendorMode(fixture), fixture.effectiveMode, `${fixture.vendor}/${fixture.mode}`);
+    assert.deepEqual(buildVendorArgv(fixture), fixture.argv, `${fixture.vendor}/${fixture.mode}`);
+  }
+  assert.throws(
+    () => buildVendorArgv({ ...FIXTURES[0], mode: "plan" }),
+    (error) => error instanceof PolicyError && error.classification === "mode_unsupported",
+  );
+});
+
 test("codex omits --skip-git-repo-check inside a git work tree", () => {
   const inTree = buildVendorArgv({ vendor: "codex", operation: "text", model: "m", effort: "high", inputs: [], isGitRepo: true });
   assert.equal(inTree.includes("--skip-git-repo-check"), false);
@@ -108,6 +152,31 @@ test("seven CLI dry-runs match literal fixtures and use bare executable names", 
   }
 });
 
+test("explicit mode CLI dry-runs expose requested and effective modes", async () => {
+  for (const fixture of MODE_FIXTURES) {
+    const args = [
+      "--vendor", fixture.vendor,
+      "--operation", fixture.operation,
+      "--mode", fixture.mode,
+      "--brief", brief,
+      "--cwd", fixture.cwd,
+      "--model", fixture.model,
+      "--dry-run",
+    ];
+    if (fixture.effort) args.push("--effort", fixture.effort);
+    if (fixture.timeout) args.push("--timeout", String(fixture.timeout));
+    if (fixture.vendor === "claude") args.push("--out", join(root, `claude-${fixture.mode}.out`), "--err", join(root, `claude-${fixture.mode}.err`));
+    const stdout = memoryWriter();
+    const stderr = memoryWriter();
+    const status = await executeCli(args, { cwd: root, stdout: stdout.stream, stderr: stderr.stream });
+    assert.equal(status, 0, stderr.value());
+    const value = JSON.parse(stdout.value());
+    assert.equal(value.requestedMode, fixture.mode);
+    assert.equal(value.effectiveMode, fixture.effectiveMode);
+    assert.deepEqual(value.argv, fixture.argv);
+  }
+});
+
 test("unsupported and ambiguous CLI inputs exit 2", async () => {
   const cases = [
     ["--vendor", "agy", "--operation", "text", "--brief", brief, "--effort", "high"],
@@ -126,6 +195,11 @@ test("unsupported and ambiguous CLI inputs exit 2", async () => {
     ["--vendor", "claude", "--operation", "text", "--brief", brief, "--model", "opus", "--effort", "high", "--err", join(root, "c.err")],
     ["--vendor", "claude", "--operation", "text", "--brief", brief, "--model", "opus", "--effort", "high", "--out", join(root, "c.out")],
     ["--vendor", "claude", "--operation", "image-generate", "--brief", brief, "--model", "opus", "--effort", "high", "--out", join(root, "c.out"), "--err", join(root, "c.err")],
+    ["--vendor", "agy", "--operation", "text", "--mode", "default", "--brief", brief],
+    ["--vendor", "agy", "--operation", "text", "--mode", "unsafe", "--brief", brief],
+    ["--vendor", "agy", "--operation", "text", "--mode", "review", "--mode", "plan", "--brief", brief],
+    ["--vendor", "agy", "--operation", "image-analyze", "--mode", "review", "--brief", brief, "--input", input1],
+    ["--vendor", "codex", "--operation", "text", "--mode", "plan", "--brief", brief],
   ];
   for (const args of cases) {
     const stderr = memoryWriter();
@@ -244,31 +318,46 @@ test("direct Claude run requires model, effort, and evidence paths before spawn"
   }
 });
 
-test("Claude host guard rejects self-consultation before spawn and records uninvoked receipt", async () => {
-  const receipt = join(root, "claude-host-guard.jsonl");
+test("Claude host signal does not change broker execution or receipt", async () => {
+  const receipt = join(root, "claude-host-signal.jsonl");
+  const out = join(root, "claude-host-signal.out");
+  const err = join(root, "claude-host-signal.err");
   let spawned = false;
-  const stderr = memoryWriter();
+  let childEnv;
+  const spawnFake = (_executable, _argv, spawnOptions) => {
+    spawned = true;
+    childEnv = spawnOptions.env;
+    return fakeChild((child) => {
+      child.stdin.on("end", () => {
+        child.stdout.end(claudeResult({ auxiliaryModel: "claude-haiku-4-5" }));
+        child.stderr.end();
+        queueMicrotask(() => child.emit("close", 0, null));
+      });
+      child.stdin.resume();
+    });
+  };
   const fixture = {
     ...FIXTURES.at(-1),
     brief,
     cwd: root,
-    out: join(root, "claude-host.out"),
-    err: join(root, "claude-host.err"),
+    out,
+    err,
     timeout: 2,
     dryRun: false,
   };
   const code = await run(fixture, {
-    spawn: () => { spawned = true; throw new Error("must not spawn"); },
-    stderr: stderr.stream,
+    spawn: spawnFake,
+    stderr: memoryWriter().stream,
     env: { SECOND_OPINION_RECEIPT: receipt, CLAUDECODE: "1" },
   });
-  assert.equal(code, 2);
-  assert.equal(spawned, false);
-  assert.match(stderr.value(), /Claude host must not dispatch Claude/);
+  assert.equal(code, 0);
+  assert.equal(spawned, true);
+  assert.equal(Object.keys(childEnv).some((key) => key.toUpperCase() === "CLAUDECODE"), false);
+  assert.equal(Object.keys(childEnv).some((key) => key.toUpperCase() === "SECOND_OPINION_RECEIPT"), false);
   const [row] = receiptLines(receipt);
   assert.equal(row.vendor, "claude");
-  assert.equal(row.invoked, false);
-  assert.equal(row.exit, 2);
+  assert.equal(row.invoked, true);
+  assert.equal(row.exit, 0);
 });
 
 test("Claude result binds the observed model and usage into the existing receipt", async () => {
@@ -286,7 +375,7 @@ test("Claude result binds the observed model and usage into the existing receipt
   let code;
   await withReceipt(receipt, async () => {
     code = await run({ ...FIXTURES.at(-1), brief, cwd: root, out, err, expectOutput: "NONE", timeout: 2, dryRun: false }, {
-      spawn: spawnFake, stderr: memoryWriter().stream,
+      spawn: spawnFake, stderr: memoryWriter().stream, env: { SECOND_OPINION_RECEIPT: receipt },
     });
   });
   assert.equal(code, 0);
@@ -365,7 +454,7 @@ test("Claude receipt tolerates absent optional cache and context fields without 
   let code;
   await withReceipt(receipt, async () => {
     code = await run({ ...FIXTURES.at(-1), brief, cwd: root, out, err, timeout: 2, dryRun: false }, {
-      spawn: spawnFake, stderr: memoryWriter().stream,
+      spawn: spawnFake, stderr: memoryWriter().stream, env: { SECOND_OPINION_RECEIPT: receipt },
     });
   });
   assert.equal(code, 0);
@@ -400,7 +489,7 @@ test("Claude empty, invalid, errored, or wrong-model output fails closed with ra
     let code;
     await withReceipt(receipt, async () => {
       code = await run({ ...FIXTURES.at(-1), brief, cwd: root, out, err, timeout: 2, dryRun: false }, {
-        spawn: spawnFake, stderr: parent.stream,
+        spawn: spawnFake, stderr: parent.stream, env: { SECOND_OPINION_RECEIPT: receipt },
       });
     });
     assert.equal(code, 4, name);
@@ -409,6 +498,45 @@ test("Claude empty, invalid, errored, or wrong-model output fails closed with ra
     assert.match(parent.value(), /Claude output validation failed/, name);
     assert.equal(receiptLines(receipt)[0].exit, 4, name);
     assert.notEqual(receiptLines(receipt)[0].vendorUsageStatus, "ok", name);
+  }
+});
+
+test("explicit mode empty output fails closed without changing default empty-output compatibility", async () => {
+  const cases = [
+    ["review", 4, /explicit mode returned empty output/],
+    ["default", 0, null],
+  ];
+  for (const [mode, expectedCode, expectedError] of cases) {
+    const receipt = join(root, `agy-${mode}-empty.jsonl`);
+    const out = join(root, `agy-${mode}-empty.out`);
+    const err = join(root, `agy-${mode}-empty.err`);
+    const parent = memoryWriter();
+    const spawnFake = () => fakeChild((child) => {
+      child.stdin.on("end", () => {
+        child.stdout.end();
+        child.stderr.end();
+        queueMicrotask(() => child.emit("close", 0, null));
+      });
+      child.stdin.resume();
+    });
+    const code = await run({
+      ...FIXTURES[3],
+      mode,
+      brief,
+      cwd: root,
+      out,
+      err,
+      timeout: 2,
+      dryRun: false,
+    }, {
+      spawn: spawnFake,
+      stderr: parent.stream,
+      env: { SECOND_OPINION_RECEIPT: receipt },
+    });
+    assert.equal(code, expectedCode, mode);
+    assert.equal(receiptLines(receipt)[0].exit, expectedCode, mode);
+    if (expectedError) assert.match(parent.value(), expectedError, mode);
+    else assert.equal(parent.value().includes("explicit mode returned empty output"), false, mode);
   }
 });
 
@@ -466,10 +594,12 @@ test("opt-in receipt appends typed JSONL for dry-run and invoked children", asyn
   assert.equal(dryRun.invoked, false);
   assert.equal(completed.invoked, true);
   for (const row of [dryRun, completed]) {
-    assert.deepEqual(Object.keys(row).sort(), ["cwd", "durationSec", "effort", "errPath", "exit", "invoked", "model", "operation", "outPath", "outputCheckStatus", "pid", "schemaVersion", "ts", "vendor", "vendorUsage", "vendorUsageStatus"].sort());
+    assert.deepEqual(Object.keys(row).sort(), ["cwd", "durationSec", "effectiveMode", "effort", "errPath", "exit", "invoked", "model", "operation", "outPath", "outputCheckStatus", "pid", "requestedMode", "schemaVersion", "ts", "vendor", "vendorUsage", "vendorUsageStatus"].sort());
     assert.equal(row.schemaVersion, 1);
     assert.equal(row.vendor, "codex");
     assert.equal(row.operation, "text");
+    assert.equal(row.requestedMode, "default");
+    assert.equal(row.effectiveMode, "default");
     assert.equal(row.model, FIXTURES[0].model);
     assert.equal(typeof row.model, "string");
     assert.equal(row.effort, FIXTURES[0].effort);

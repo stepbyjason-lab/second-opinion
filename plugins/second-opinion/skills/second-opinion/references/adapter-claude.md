@@ -1,13 +1,15 @@
 # adapter-claude — Claude Code reverse channel
 
-> 비-Claude 호스트 전용. dispatcher bridge 실측 기준 2026-07-28.
+> dispatcher bridge 실측 기준 2026-07-28.
 
-## Host guard
+## 리뷰 독립성과 중립 broker
 
-이 채널은 **호출하는 쪽이 Claude가 아닐 때만** 쓴다. Claude Code host에서 Claude를
-리뷰어로 다시 부르면 동일 벤더 자기검증이 되므로 사용하지 않는다. dispatcher는
-`CLAUDECODE`가 활성인 환경에서 `--vendor claude` 실제 실행을 spawn 전에 exit 2로 거부하고
-uninvoked receipt를 남긴다. Claude Code host에서는 Codex나 Antigravity를 대신 쓴다.
+dispatcher는 호출자의 실행 요청을 중립적으로 중계하며, 동일 호스트/벤더 호출 여부를 기계적으로 차단하지 않는다. 동일 벤더 호출 시 독립 리뷰 인정 여부는 caller(Madi 등)가 실제 기록된 영수증과 역할을 대조해 판정한다.
+
+Claude Code 부모에서 실행할 때 dispatcher는 parent session marker `CLAUDECODE`를 child
+환경에서만 제거한다. 그렇지 않으면 Claude CLI 자체의 nested-session 보호가 정당한
+same-host 호출까지 거부한다. 다른 환경과 receipt의 caller 증거는 바꾸지 않는다.
+
 
 ## 정식 호출
 
@@ -19,6 +21,10 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor claude --operation text
   --model opus --effort high \
   --out claude-result.json --err claude-stderr.txt
 ```
+
+같은 실제 project cwd를 읽는 plan/review는 각각 `--mode plan|review`를 추가한다. 둘 다
+Claude native `--permission-mode plan`과 `Read,Glob,Grep` 도구로 번역된다. mode 생략은
+아래 tool-less default 호출이며 자동으로 plan/review가 되지 않는다.
 
 PowerShell도 동일한 `node ... dispatch.mjs` argv를 사용한다. brief 내용은 dispatcher가
 바이트 그대로 stdin으로 전달하므로 `Get-Content | claude`를 조립하지 않는다.
@@ -49,17 +55,12 @@ dispatcher 규율에서는 303.92초에 exit 0·실제 `claude-opus-4-8`·유효
 
 ## 도구 경계
 
-Claude child는 `--safe-mode --disable-slash-commands --tools=`를 고정한 **격리된
-tool-less text review**다. `--safe-mode`는 대상 프로젝트의 CLAUDE.md·skills·plugins·
-hooks·MCP·auto-memory를 끄되 OAuth·명시 model·effort는 유지한다. 따라서 프로젝트 Stop
-hook나 project instruction이 brief를 덮어쓰지 않는다.
+default Claude child는 `--safe-mode --disable-slash-commands --tools=`인 tool-less text
+호출이다. brief 본문에 대상을 포함해야 하며 파일 경로만 주면 안 된다.
 
-brief 본문에 검토 대상을 모두 포함해야 하며 파일 경로만 주면 안 된다.
-도구가 없어도 모델이 가짜 tool-call을 서술할 수 있으므로 brief 끝에 “도구 호출·파일 접근을
-서술하지 말고 inline 대상만으로 최종 답을 직접 출력하라”고 명시한다.
-
-read-only/tool-enabled Claude mode, MCP allowlist, adapter registry는 R034 범위이며 이
-hotfix에 포함하지 않는다.
+명시적 `--mode plan|review`에서는 같은 `--safe-mode`를 유지하되
+`--permission-mode plan --tools=Read,Glob,Grep`로 실제 project cwd 전체를 읽는다.
+Write·Edit·Bash는 제공하지 않는다. sandbox·worktree·snapshot·packet 분리는 사용하지 않는다.
 
 ## 비용
 

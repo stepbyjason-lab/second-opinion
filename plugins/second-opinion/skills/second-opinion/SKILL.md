@@ -13,7 +13,7 @@ description: >
 
 # second-opinion — 외부 AI 어댑터
 
-**버전 0.8.6** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
+**버전 0.8.7** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
 
 이 스킬은 **아무것도 차단하지 않는다** — 중개(relay)만 한다. 디스패처는 커맨드 정합성을 위한 도구일 뿐이다. "Claude가 디스패처를 반드시 거치게" 강제하는 것은 **부르는 쪽(caller)의 책임**이다 → [references/enforcement.md](references/enforcement.md).
 
@@ -27,6 +27,25 @@ Claude Code 안에서 **다른 벤더의 AI**를 일상어로 부려 쓴다. Cod
    사용자/호출자가 정한다** — 이 스킬은 채널만 제공하고 스스로 라우팅 정책을 갖지 않는다.
 3. **능력** — 벤더 고유 기능 사용. 현재 실측 검증: 이미지 생성 · 이미지/영상 분석 입력 ·
    대용량 파일 입력(실측 2026-07-11).
+
+## 실행 모드 — 호출자가 명시할 때만
+
+dispatcher는 실행 목적을 추측하지 않는다. `--mode`를 생략하면 기존 `default` 호출이며,
+plan/review 권한을 자동 적용하지 않는다.
+
+| 호출 | 의미 | provider translation |
+|---|---|---|
+| mode 생략 | 기존 범용 호출 | 기존 argv 불변 |
+| `--mode plan` | 같은 실제 project cwd를 전체 탐색하는 읽기 전용 계획 | AGY/Claude native plan; Codex는 지원하지 않아 호출 전 실패 |
+| `--mode review` | 같은 실제 project cwd를 전체 탐색하는 읽기 전용 리뷰 | AGY/Claude native plan, Codex native `exec review` |
+
+- 이번 mode는 text operation 전용이다.
+- sandbox·worktree·snapshot·packet·분리 cwd를 만들지 않는다.
+- Madi 같은 caller가 review panel을 소집할 때만 `--mode review`를 붙인다.
+- reviewer는 파일 수정·stage·commit·설치·공개를 하지 않는다.
+- receipt의 `requestedMode`·`effectiveMode`로 요청 mode와 provider translation을 확인한다.
+- 지원하지 않는 조합은 default로 조용히 폴백하지 않는다.
+- 명시적 plan/review가 0바이트를 반환하면 provider exit 0이어도 dispatcher exit 4다.
 
 ## 벤더 선택 (사용자가 지정 안 했을 때의 기본)
 
@@ -54,6 +73,8 @@ Claude Code 안에서 **다른 벤더의 AI**를 일상어로 부려 쓴다. Cod
 ### 대용량은 파일로 (조립 내용이 크면)
 
 - **대상이 이미 파일이면 → 경로를 넘긴다**(inline 복사 금지). codex는 로컬 파일을 직접 읽고, agy는 `--add-dir`로 디렉토리를 허용한 뒤 경로를 읽는다.
+- `--mode plan|review`는 예외적으로 실제 project cwd 전체를 읽는 명시적 호출이다. 이때
+  대상 파일을 inline packet으로 축소하거나 별도 snapshot으로 분리하지 않는다.
 - **조립할 내용이 ≥8,000자면 → 임시 파일에 쓰고 경로를 넘긴다.**
   - 왜 8,000자: 신뢰 채널 argv가 최악 호스트에서도 버티는 선이다. stdin은 정규 경로가 아니라(미문서화 #525/#542, 재파손 가능) 언제든 argv로 물러설 수 있어야 하는데, argv 한계가 호스트별로 직접 실행이면 ~32,767자·cmd.exe 경유면 ~8,191자로 갈린다 → 세 호스트를 다 커버하려면 최악값 8,000 기준. 초과분은 stdin·argv 어느 쪽도 안 쓰는 파일읽기로 보내 stdin 상태와 무관하게 만든다.
   - agy로 넘길 땐 스필 파일을 그 `--add-dir` 대상 디렉토리 안에 둔다(밖이면 못 읽는다).
@@ -68,6 +89,9 @@ Claude Code 안에서 **다른 벤더의 AI**를 일상어로 부려 쓴다. Cod
 ```bash
 node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor codex --operation text --brief brief.txt --cwd <작업 repo 또는 임시 dir> --out out.txt --err err.txt
 ```
+
+읽기 전용 코드 리뷰는 같은 repo cwd에서 `--mode review`를 추가한다. `--mode plan`은
+승인된 non-sandbox native mapping이 없어 호출 전에 실패한다.
 
 이미지 과업은 `--operation image-analyze`(입력 `--input <파일>`)·`--operation image-generate` — 상세는 `references/adapter-codex.md`.
 
@@ -87,6 +111,13 @@ timeout은 직접 자식에 `child.kill()`만 수행하므로 벤더가 만든 �
 node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor agy --operation text --brief brief.txt --model "Gemini 3.5 Flash (High)" --out out.txt --err err.txt
 ```
 
+읽기 전용 plan/review는 같은 repo cwd에서 각각 `--mode plan|review`를 추가한다.
+둘 다 AGY native `--mode plan`으로 번역되며 default 호출에만 쓰는
+`--dangerously-skip-permissions`는 붙지 않는다.
+AGY headless는 command permission을 물을 수 없으므로 review brief는 native 읽기·검색
+도구를 사용하게 하고 shell command를 요구하지 않는다. command auto-denial로 출력이
+비면 dispatcher가 exit 4로 실패시킨다.
+
 이미지 분석은 `--operation image-analyze`(입력 `--input <파일>`) — 상세는 `references/adapter-antigravity.md`.
 
 정본은 `scripts/vendor-policy.mjs`다. 아래 raw 벤더 커맨드 언급은 비정본인 내부 동작 설명·수동 디버깅용이다.
@@ -105,12 +136,11 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor agy --operation text --
 
 ### Claude 채널
 
-**host guard (MUST NOT 위반)** — 이 채널은 **호출하는 쪽이 Claude가 아닐 때만**
-쓴다(Codex 등). **Claude Code host에서는 이 채널 변형을 절대 쓰지 않는다** — 의견
-렌즈로 쓰면 동일 벤더 자기검증이 되어 교차 검증 목적 자체가 무너진다.
+**중립 broker 실행** — 디스패처는 중립 broker로서 실행 규율(safe-mode, timeout, raw output, 모델 결속, 영수증)을 보장한다. 동일 호스트/벤더 호출도 실행하며, 리뷰 독립성 인정 여부는 호출자 방법론(Madi 등)이 영수증을 대조해 판정한다.
 
-비-Claude 호스트에서는 raw `claude -p`를 직접 실행하지 않고 같은 디스패처를 쓴다.
-Claude 채널은 text/tool-less 전용이며 model·effort·out·err를 모두 명시해야 한다.
+raw `claude -p`를 직접 실행하지 않고 같은 디스패처를 쓴다. Claude default 채널은
+text/tool-less이며 model·effort·out·err를 모두 명시해야 한다. `--mode plan|review`를
+명시하면 native plan mode에서 `Read,Glob,Grep`만 사용해 같은 project cwd를 읽는다.
 
 ```bash
 node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor claude --operation text \
@@ -121,10 +151,12 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor claude --operation text
 - 짧은 raw timeout은 없다. 공통 1800초 값은 정상 작업 한계가 아니라 runaway backstop이다.
 - child는 `--safe-mode`로 실행해 대상 프로젝트의 CLAUDE.md·hook·plugin·memory가
   review brief를 바꾸지 못하게 한다. OAuth와 명시한 model·effort는 유지된다.
+- Claude Code 부모의 session marker인 `CLAUDECODE`는 child에 전달하지 않는다. 이는
+  same-host 실행을 가능하게 하는 프로세스 격리이며 리뷰 독립성 판정이나 우회가 아니다.
 - exit 0이어도 result JSON이 비었거나 실제 model family가 요청과 다르면 exit 4다.
-- brief 본문에 검토 대상을 포함한다. 이 최소 bridge는 도구를 끄므로 파일 경로만 주지 않는다.
-- `CLAUDECODE`가 활성인 Claude Code host에서는 자기호출을 spawn 전에 거부한다.
-→ 호출 전 필수: `references/adapter-claude.md` 를 반드시 읽을 것 (host guard·비용·도구경계·Windows 함정)
+- default 호출은 brief 본문에 검토 대상을 포함한다. `--mode plan|review`는 read 도구로
+  실제 project cwd를 탐색하므로 파일 경로와 전체 repository 조사 지시를 사용할 수 있다.
+→ 호출 전 필수: `references/adapter-claude.md` 를 반드시 읽을 것 (리뷰 독립성·비용·도구경계·Windows 함정)
 
 ## 오래 걸리는 호출 (60초+ 예상: 큰 brief, 병렬 다건)
 

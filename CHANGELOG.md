@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.7 — 2026-07-28
+
+- **Broker Neutrality 복원**. dispatcher의 `CLAUDECODE` 기반 unconditional self-call hard block을 제거한다. dispatcher는 중립 broker로서 실행 규율(safe-mode, timeout, raw output, 모델 결속, 영수증)을 보장하며 동일 호스트/벤더 호출을 차단하지 않는다. 리뷰 독립성 검증 책임은 caller(Madi 등)가 영수증과 리뷰 역할을 대조해 판정하도록 본래 층으로 분리한다.
+- Claude Code 부모의 `CLAUDECODE` session marker는 Claude child에 전달하지 않는다.
+  broker가 호출을 허용해도 vendor CLI가 nested-session으로 다시 거부하는 우회 실패를 막는다.
+- **명시적 실행 mode**. `--mode plan|review`를 text 호출에만 추가한다. AGY/Claude는
+  native plan, Codex review는 native `exec review`로 번역하며 Codex plan은 명시 실패한다.
+  mode 생략은 기존 default argv다. receipt는 `requestedMode`·`effectiveMode`를 기록한다.
+- plan/review는 같은 실제 project cwd 전체를 읽고 쓰기 도구만 제거한다. sandbox,
+  worktree, snapshot, packet 분리는 하지 않는다.
+- 명시적 plan/review의 0바이트 출력을 exit 4로 fail-closed한다. AGY headless plan에서
+  command permission auto-denial이 exit 0·빈 리뷰로 위장되는 실측 결함을 막는다.
+
 ## 0.8.6 — 2026-07-28
 
 - **Claude child customization 격리**. reverse channel argv에 `--safe-mode`를 고정해

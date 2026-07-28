@@ -50,12 +50,22 @@ Claude가 만든 것을 Claude가 검토하면 결함을 과소보고한다 — 
   실측 토큰(입력·캐시된 입력·출력·추론·총계·컨텍스트창·쿼터 소진율)도 함께 남는다.
   선택적 `--expect-output <ASCII token>` 호출은 token 자체를 기록·전송하지 않고
   `outputCheckStatus`만 남긴다. token이 없으면 raw output을 보존하고 exit 4다.
-  비-Claude 호스트의 `--vendor claude`도 같은 dispatcher를 사용하며, 폐기된 280초
+  `--vendor claude`도 같은 dispatcher를 사용하며, 폐기된 280초
   셸 timeout을 쓰지 않는다. Claude result JSON의 실제 model family·token usage·cost를
-  `vendorUsage`에 결속하고 빈/깨진/다른 모델 출력은 exit 4로 거부한다. Claude host의
-  자기호출은 spawn 전에 차단한다. Claude child는 `--safe-mode`로 실행해 대상 프로젝트의
-  CLAUDE.md·훅·플러그인·메모리가 inline review brief를 덮어쓰지 못하게 한다.
+  `vendorUsage`에 결속하고 빈/깨진/다른 모델 출력은 exit 4로 거부한다. 디스패처는 중립
+  broker로서 동일 벤더 호출을 기계 차단하지 않으며, 리뷰 독립성 인정 여부는 호출자
+  방법론(Madi 등)이 영수증을 대조해 판정한다. Claude child는 `--safe-mode`로 실행해
+  대상 프로젝트의 CLAUDE.md·훅·플러그인·메모리가 inline review brief를 덮어쓰지 못하게
+  하고, 부모 전용 `CLAUDECODE` marker는 child 환경에서 제거해 의도한 nested 호출이
+  vendor CLI에서 다시 거부되지 않게 한다.
   기본값은 꺼짐이며, 설정 안 하면 아무것도 쓰지 않는다.
+
+  text 호출에는 caller가 `--mode plan` 또는 `--mode review`를 명시할 수 있다. 두 mode는
+  같은 실제 project cwd 전체를 유지하고 provider native 읽기 전용 plan/review 동작을
+  사용한다. sandbox·worktree·snapshot·축약 packet을 만들지 않는다. `--mode`를 생략하면
+  기존 default 호출이며, receipt에는 `requestedMode`·`effectiveMode`가 기록된다. 명시
+  mode의 출력이 비면 exit 4로 실패한다. AGY review brief는 headless에서 승인할 수 없는
+  shell command 대신 native 읽기·검색 도구를 사용해야 한다.
 
   모델 비용을 비교한다면 `(inputTokens - cachedInputTokens) + outputTokens`로 계산한다.
   `reasoningOutputTokens`를 따로 더하면 안 된다 — `outputTokens`에 이미 포함돼 있다.
