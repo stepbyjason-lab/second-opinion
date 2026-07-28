@@ -216,6 +216,68 @@ test("explicit mode CLI dry-runs expose requested and effective modes", async ()
   }
 });
 
+// A caller that guesses a flag wrong should recover from the error itself, not
+// by reading this source. Measured: a caller passed agy's native --add-dir,
+// got a bare "unknown argument", and went reading SINGLE_OPTIONS to find --cwd.
+test("help is served without arguments, on --help, and inside the unknown-argument error", async () => {
+  const listed = ["codex", "agy", "claude", "antigravity", "--cwd", "--brief", "--dry-run", "installed_plugins.json"];
+
+  for (const args of [[], ["--help"], ["-h"]]) {
+    const stdout = memoryWriter();
+    const stderr = memoryWriter();
+    const status = await executeCli(args, { cwd: root, stdout: stdout.stream, stderr: stderr.stream });
+    assert.equal(status, 0, `${JSON.stringify(args)} must succeed: ${stderr.value()}`);
+    for (const token of listed) assert.ok(stdout.value().includes(token), `${JSON.stringify(args)} usage missing ${token}`);
+  }
+
+  // A help token sitting in a VALUE position is not a help request. Scanning the
+  // whole argv made `--model help` print usage and exit 0 without ever calling
+  // the vendor — a silent skip. Caught in review before release; keep it caught.
+  // A plain "help" is a legal model string, so the call must actually dispatch.
+  const dispatched = memoryWriter();
+  const dispatchStatus = await executeCli(
+    ["--vendor", "agy", "--operation", "text", "--brief", brief, "--cwd", root, "--model", "help", "--dry-run"],
+    { cwd: root, stdout: dispatched.stream, stderr: memoryWriter().stream },
+  );
+  assert.equal(dispatchStatus, 0, "--model help should dispatch, not print help");
+  const emitted = JSON.parse(dispatched.value());
+  assert.equal(emitted.vendor, "agy");
+  assert.ok(emitted.argv.includes("help"), "--model help must reach the vendor argv");
+
+  // "-h"/"--help" as a value stay rejected by the existing model validation
+  // (leading "-" is unsafe). The point here is the failure mode: they must be
+  // refused, never answered with usage on stdout.
+  for (const value of ["-h", "--help"]) {
+    const stdout = memoryWriter();
+    const status = await executeCli(
+      ["--vendor", "agy", "--operation", "text", "--brief", brief, "--cwd", root, "--model", value, "--dry-run"],
+      { cwd: root, stdout: stdout.stream, stderr: memoryWriter().stream },
+    );
+    assert.equal(status, 2, `--model ${value} should be rejected by validation`);
+    assert.equal(stdout.value(), "", `--model ${value} must not emit usage to stdout`);
+  }
+
+  // The invariant is "any option's value position", not just --model. --out has
+  // no leading-dash rule, so "-h" there is a legal path and the call must run.
+  const outValue = memoryWriter();
+  const outStatus = await executeCli(
+    ["--vendor", "agy", "--operation", "text", "--brief", brief, "--cwd", root, "--out", "-h", "--dry-run"],
+    { cwd: root, stdout: outValue.stream, stderr: memoryWriter().stream },
+  );
+  assert.equal(outStatus, 0, "--out -h should dispatch, not print help");
+  assert.equal(JSON.parse(outValue.value()).vendor, "agy", "--out -h produced usage instead of a dry-run");
+
+  // Unknown flag: still exit 2, but the message carries the same usage text.
+  const stderr = memoryWriter();
+  const status = await executeCli(
+    ["--vendor", "agy", "--operation", "text", "--brief", brief, "--add-dir", root],
+    { cwd: root, stderr: stderr.stream },
+  );
+  assert.equal(status, 2);
+  assert.ok(stderr.value().includes("unknown argument: --add-dir"));
+  for (const token of listed) assert.ok(stderr.value().includes(token), `error usage missing ${token}`);
+});
+
 test("unsupported and ambiguous CLI inputs exit 2", async () => {
   const cases = [
     ["--vendor", "agy", "--operation", "text", "--brief", brief, "--effort", "high"],

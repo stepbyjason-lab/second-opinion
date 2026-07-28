@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.8.9 — 2026-07-28
+
+- **`--help` 신설**. 인자 없이 실행하거나 첫 인자가 `--help`/`-h`/`help`면 사용법을
+  stdout에 출력하고 exit 0. 벤더·오퍼레이션·플래그 목록은 파서가 강제하는 상수에서
+  직접 생성해 코드와 어긋날 수 없다.
+- **unknown-argument 에러에 사용법 첨부**. 호출자가 플래그를 잘못 주면 그 자리에서
+  유효 목록을 받는다. 실측 계기: 비-Claude 호스트의 호출자가 agy native `--add-dir`를
+  디스패처에 넘겼다가 `unknown argument`만 받고 `SINGLE_OPTIONS`를 직접 읽어 `--cwd`를
+  알아내야 했다.
+- **enum 거부 에러가 허용값을 싣는다**. `invalid --effort: turbo (claude accepts low,
+  medium, high, xhigh, max)`처럼 벤더별로 다른 집합까지 알려준다. `--operation`·`--mode`
+  에러도 손으로 친 문자열 대신 상수에서 생성한다.
+- **소스 헤더 주석**에 파일을 찾는 법을 적었다 — 버전 디렉터리를 하드코딩하지 말 것.
+  실측: 한 호출자가 0.8.2 경로에 고정된 채 남아, 0.8.3이 고친 agy 5분 내부 타임아웃에
+  계속 걸렸다. 호스트마다 자체 플러그인 캐시를 쓰며 매니페스트가 없을 수도 있다
+  (Codex는 `installed_plugins.json` 없이 자체 cache 사용 — 실측).
+- 사용법은 **조건부 호출 규칙을 재진술하지 않는다**. 어느 벤더/오퍼레이션/모드가
+  무엇을 요구하는지는 검증이 강제하고 에러가 정확히 보고한다. 손으로 쓴 산문 사본은
+  검증 로직과 조용히 어긋나며, 실제로 리뷰가 두 라운드 연속 부정확을 찾아냈다.
+
 ## 0.8.8 — 2026-07-28
 
 - AGY explicit `--mode plan|review` 입력에 `agy-native-readonly/v1` control envelope를
