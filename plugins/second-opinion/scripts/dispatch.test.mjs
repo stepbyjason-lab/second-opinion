@@ -761,7 +761,8 @@ test("--expect-output matches across chunks and fails closed without changing ra
   const token = "TOKEN_0123456789abcdef";
   const matchedOut = join(root, "expect-matched.out");
   const missingOut = join(root, "expect-missing.out");
-  const receipt = join(root, "expect-output.jsonl");
+  const matchedReceipt = join(root, "expect-output-matched.jsonl");
+  const missingReceipt = join(root, "expect-output-missing.jsonl");
   const seen = [];
   const matchedSpawn = (_executable, argv) => {
     seen.push(argv);
@@ -781,19 +782,23 @@ test("--expect-output matches across chunks and fails closed without changing ra
     });
     child.stdin.resume();
   });
-  await withReceipt(receipt, async () => {
-    assert.equal(await run({ ...FIXTURES[3], brief, cwd: root, timeout: 2, out: matchedOut, expectOutput: token, dryRun: false }, {
-      spawn: matchedSpawn, stderr: memoryWriter().stream,
-    }), 0);
-    assert.equal(await run({ ...FIXTURES[3], brief, cwd: root, timeout: 2, out: missingOut, expectOutput: token, dryRun: false }, {
-      spawn: missingSpawn, stderr: memoryWriter().stream,
-    }), 4);
-  });
+  assert.equal(await run({ ...FIXTURES[3], brief, cwd: root, timeout: 2, out: matchedOut, expectOutput: token, dryRun: false }, {
+    spawn: matchedSpawn, stderr: memoryWriter().stream,
+    env: { SECOND_OPINION_RECEIPT: matchedReceipt },
+  }), 0);
+  assert.equal(await run({ ...FIXTURES[3], brief, cwd: root, timeout: 2, out: missingOut, expectOutput: token, dryRun: false }, {
+    spawn: missingSpawn, stderr: memoryWriter().stream,
+    env: { SECOND_OPINION_RECEIPT: missingReceipt },
+  }), 4);
   await new Promise((done) => setTimeout(done, 10));
-  assert.deepEqual(receiptLines(receipt).map((row) => [row.exit, row.outputCheckStatus]), [[0, "matched"], [4, "missing"]]);
+  assert.deepEqual([
+    ...receiptLines(matchedReceipt),
+    ...receiptLines(missingReceipt),
+  ].map((row) => [row.exit, row.outputCheckStatus]), [[0, "matched"], [4, "missing"]]);
   assert.equal(readFileSync(missingOut, "utf8"), "raw vendor output without challenge\n");
   assert.equal(JSON.stringify(seen).includes(token), false);
-  assert.equal(readFileSync(receipt, "utf8").includes(token), false);
+  assert.equal(readFileSync(matchedReceipt, "utf8").includes(token), false);
+  assert.equal(readFileSync(missingReceipt, "utf8").includes(token), false);
 });
 
 const USAGE_SESSION = "12345678-1234-1234-1234-123456789abc";
