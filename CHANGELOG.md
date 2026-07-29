@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.0 — 2026-07-29
+
+- **Codex model normalization.** `--model luna@high` now separates a recognized
+  final effort token and resolves `luna` to the exact or unique suffix match in
+  Codex's local `models_cache.json` (for example `gpt-5.6-luna`). Exact slugs stay
+  unchanged; missing, malformed, zero-match, or ambiguous caches preserve the
+  original model so Codex can reject it loudly instead of the dispatcher guessing.
+- Receipts and dry-runs now distinguish the caller's `modelRequested` from the
+  normalized `model` passed to the vendor. The receipt schema version remains 1.
+- AGY and Claude argv behavior is unchanged.
+
 ## 0.8.10 — 2026-07-29
 
 - **Claude explicit plan/review mode hotfix**. `--mode plan|review` now preserves

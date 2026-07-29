@@ -16,7 +16,7 @@ import {
   effectiveVendorMode,
   resolveExecutable,
 } from "./vendor-policy.mjs";
-import { executeCli, parseCli, run } from "./dispatch.mjs";
+import { executeCli, parseCli, resolveCodexModelAlias, run, splitModelEffort } from "./dispatch.mjs";
 
 const tempDirs = [];
 function makeTempDir(prefix, parent = tmpdir()) {
@@ -175,6 +175,61 @@ test("codex omits --skip-git-repo-check inside a git work tree", () => {
   const inTree = buildVendorArgv({ vendor: "codex", operation: "text", model: "m", effort: "high", inputs: [], isGitRepo: true });
   assert.equal(inTree.includes("--skip-git-repo-check"), false);
   assert.deepEqual(inTree, ["exec", "-m", "m", "-c", "model_reasoning_effort=\"high\"", "-"]);
+});
+
+function modelCache(slugs, raw) {
+  const home = makeTempDir("second-opinion-model-cache-");
+  writeFileSync(
+    join(home, "models_cache.json"),
+    raw ?? JSON.stringify({ models: slugs.map((slug) => ({ slug })) }),
+  );
+  return home;
+}
+
+test("model@effort shorthand splits only a recognized final suffix when effort is absent", () => {
+  assert.deepEqual(splitModelEffort("luna@high", undefined), { model: "luna", effort: "high" });
+  assert.deepEqual(splitModelEffort("future@family@xhigh", undefined), { model: "future@family", effort: "xhigh" });
+  assert.deepEqual(splitModelEffort("luna@turbo", undefined), { model: "luna@turbo", effort: undefined });
+  assert.deepEqual(splitModelEffort("luna@high", "medium"), { model: "luna@high", effort: "medium" });
+});
+
+test("Codex model aliases resolve through exact or unique cache matches and otherwise preserve input", () => {
+  const unique = modelCache(["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]);
+  assert.equal(resolveCodexModelAlias("gpt-5.6-luna", { CODEX_HOME: unique }), "gpt-5.6-luna");
+  assert.equal(resolveCodexModelAlias("GPT-5.6-LUNA", { CODEX_HOME: unique }), "gpt-5.6-luna");
+  assert.equal(resolveCodexModelAlias("luna", { CODEX_HOME: unique }), "gpt-5.6-luna");
+  assert.equal(resolveCodexModelAlias("sol", { CODEX_HOME: unique }), "gpt-5.6-sol");
+  assert.equal(resolveCodexModelAlias("unknown", { CODEX_HOME: unique }), "unknown");
+
+  const ambiguous = modelCache(["gpt-5.6-luna", "vendor-preview-luna"]);
+  assert.equal(resolveCodexModelAlias("luna", { CODEX_HOME: ambiguous }), "luna");
+
+  const malformed = modelCache([], "{not-json");
+  assert.equal(resolveCodexModelAlias("luna", { CODEX_HOME: malformed }), "luna");
+  assert.equal(resolveCodexModelAlias("luna", { CODEX_HOME: join(root, "missing-model-cache") }), "luna");
+});
+
+test("Codex CLI dry-run separates requested shorthand from the normalized executable model", async () => {
+  const home = modelCache(["gpt-5.6-luna", "gpt-5.6-sol"]);
+  const stdout = memoryWriter();
+  const stderr = memoryWriter();
+  const status = await executeCli(
+    ["--vendor", "codex", "--operation", "text", "--mode", "review", "--brief", brief, "--cwd", root, "--model", "luna@high", "--dry-run"],
+    { cwd: root, stdout: stdout.stream, stderr: stderr.stream, env: { CODEX_HOME: home } },
+  );
+  assert.equal(status, 0, stderr.value());
+  const value = JSON.parse(stdout.value());
+  assert.equal(value.modelRequested, "luna@high");
+  assert.equal(value.model, "gpt-5.6-luna");
+  assert.deepEqual(value.argv, ["exec", "review", "--skip-git-repo-check", "-m", "gpt-5.6-luna", "-c", "model_reasoning_effort=\"high\"", "-"]);
+
+  const explicit = parseCli(
+    ["--vendor", "codex", "--operation", "text", "--brief", brief, "--model", "luna@high", "--effort", "xhigh"],
+    root,
+  );
+  assert.equal(explicit.modelRequested, "luna@high");
+  assert.equal(explicit.model, "luna@high");
+  assert.equal(explicit.effort, "xhigh");
 });
 
 test("seven CLI dry-runs match literal fixtures and use bare executable names", async () => {
@@ -732,13 +787,14 @@ test("opt-in receipt appends typed JSONL for dry-run and invoked children", asyn
   assert.equal(dryRun.invoked, false);
   assert.equal(completed.invoked, true);
   for (const row of [dryRun, completed]) {
-    assert.deepEqual(Object.keys(row).sort(), ["cwd", "durationSec", "effectiveMode", "effort", "errPath", "exit", "inputProfile", "invoked", "model", "operation", "outPath", "outputCheckStatus", "pid", "requestedMode", "schemaVersion", "ts", "vendor", "vendorUsage", "vendorUsageStatus"].sort());
+    assert.deepEqual(Object.keys(row).sort(), ["cwd", "durationSec", "effectiveMode", "effort", "errPath", "exit", "inputProfile", "invoked", "model", "modelRequested", "operation", "outPath", "outputCheckStatus", "pid", "requestedMode", "schemaVersion", "ts", "vendor", "vendorUsage", "vendorUsageStatus"].sort());
     assert.equal(row.schemaVersion, 1);
     assert.equal(row.vendor, "codex");
     assert.equal(row.operation, "text");
     assert.equal(row.requestedMode, "default");
     assert.equal(row.effectiveMode, "default");
     assert.equal(row.inputProfile, "none");
+    assert.equal(row.modelRequested, FIXTURES[0].model);
     assert.equal(row.model, FIXTURES[0].model);
     assert.equal(typeof row.model, "string");
     assert.equal(row.effort, FIXTURES[0].effort);
@@ -775,6 +831,7 @@ test("receipt records null model for a normal invocation without --model", async
     assert.equal(await run({ ...FIXTURES[0], brief, cwd: root, model: undefined, timeout: 2, dryRun: true }, { stderr: memoryWriter().stream }), 0);
   });
   const [row] = receiptLines(receipt);
+  assert.equal(row.modelRequested, null);
   assert.equal(row.model, null);
 });
 

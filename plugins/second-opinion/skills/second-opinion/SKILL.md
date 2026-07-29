@@ -13,7 +13,7 @@ description: >
 
 # second-opinion — 외부 AI 어댑터
 
-**버전 0.8.10** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
+**버전 0.9.0** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
 
 이 스킬은 **아무것도 차단하지 않는다** — 중개(relay)만 한다. 디스패처는 커맨드 정합성을 위한 도구일 뿐이다. "Claude가 디스패처를 반드시 거치게" 강제하는 것은 **부르는 쪽(caller)의 책임**이다 → [references/enforcement.md](references/enforcement.md).
 
@@ -99,6 +99,12 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor codex --operation text 
 timeout은 직접 자식에 `child.kill()`만 수행하므로 벤더가 만든 자손 프로세스가 남을 수 있다.
 
 - brief 내용은 stdin으로 전달된다(디스패처가 처리) — argv에 콘텐츠를 넣지 않는다.
+- `--model luna@high`처럼 model과 effort를 함께 쓰면 dispatcher가 마지막 `@` 뒤의
+  승인된 effort를 분리한다. Codex 모델 `luna`·`sol` 같은 논리 별칭은
+  `CODEX_HOME/models_cache.json`(기본 `~/.codex/models_cache.json`)에서 exact slug 또는
+  유일한 `-별칭` suffix가 있을 때만 정식 slug로 바꾼다. 0개·복수·깨진 cache면 추측하지
+  않고 원문을 넘긴다. receipt의 `modelRequested`는 입력 원문, `model`은 실행에 전달한
+  정규화 결과다.
 - codex는 로컬 파일을 읽는다(전 sandbox 모드 실측). 큰 내용은 파일로 두고 경로를 지시할 수 있다.
   과거 CryptUnprotectData 오류는 elevated sandbox 계정의 DPAPI stale 버그로 상위 수정됐다 —
   재발 시 `references/adapter-codex.md`의 우회를 따르고, 내용 발췌 동봉은 안전 폴백으로 쓴다.

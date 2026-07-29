@@ -39,6 +39,7 @@ import { DISPATCH_MODES, OPERATIONS, PolicyError, VENDORS, buildVendorArgv, comp
 const MAX_BRIEF_BYTES = 8 * 1024 * 1024;
 const MAX_VENDOR_USAGE_BYTES = 64 * 1024 * 1024;
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MODEL_SHORTHAND_EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh"]);
 const SINGLE_OPTIONS = new Set(["--vendor", "--operation", "--brief", "--cwd", "--model", "--effort", "--mode", "--timeout", "--out", "--err", "--expect-output", "--dry-run"]);
 // Accepted --vendor spellings: the canonical set plus the "antigravity" alias
 // normalizeVendor() folds into "agy". Kept next to VENDORS so a new vendor is
@@ -110,6 +111,34 @@ export function usageText() {
   ].join("\n");
 }
 
+export function splitModelEffort(model, effort) {
+  if (model === undefined || effort !== undefined) return { model, effort };
+  const separator = model.lastIndexOf("@");
+  if (separator <= 0) return { model, effort };
+  const candidate = model.slice(separator + 1).toLowerCase();
+  if (!MODEL_SHORTHAND_EFFORTS.has(candidate)) return { model, effort };
+  return { model: model.slice(0, separator), effort: candidate };
+}
+
+export function resolveCodexModelAlias(model, env = process.env) {
+  if (!model) return model;
+  try {
+    const root = env.CODEX_HOME?.trim() || join(homedir(), ".codex");
+    const payload = JSON.parse(readFileSync(join(root, "models_cache.json"), "utf8"));
+    const slugs = Array.isArray(payload?.models)
+      ? payload.models.map((entry) => entry?.slug).filter((value) => typeof value === "string" && value.length > 0)
+      : [];
+    const requested = model.toLowerCase();
+    const exact = slugs.find((slug) => slug.toLowerCase() === requested);
+    if (exact) return exact;
+    const suffix = `-${requested}`;
+    const matches = slugs.filter((slug) => slug.toLowerCase().endsWith(suffix));
+    return matches.length === 1 ? matches[0] : model;
+  } catch {
+    return model;
+  }
+}
+
 export function parseCli(argv, startCwd = process.cwd()) {
   const raw = { inputs: [] };
   const seen = new Set();
@@ -155,10 +184,14 @@ export function parseCli(argv, startCwd = process.cwd()) {
   assertRegularFile(brief, "brief");
   if (statSync(brief).size > MAX_BRIEF_BYTES) throw new CliError("brief exceeds 8MB");
   assertDirectory(cwd, "cwd");
-  if (raw.model !== undefined && (raw.model.length === 0 || raw.model.startsWith("-") || /[\x00-\x1f\x7f]/.test(raw.model))) {
+  const modelRequested = raw.model;
+  const shorthand = splitModelEffort(raw.model, raw.effort);
+  const model = shorthand.model;
+  const effort = shorthand.effort;
+  if (model !== undefined && (model.length === 0 || model.startsWith("-") || /[\x00-\x1f\x7f]/.test(model))) {
     throw new CliError("--model must be non-empty, must not start with '-', and must not contain control characters");
   }
-  if (raw.effort !== undefined) {
+  if (effort !== undefined) {
     if (!["codex", "claude"].includes(vendor)) throw new CliError("--effort is supported only for codex or claude");
     const allowedEffort = vendor === "claude"
       ? ["low", "medium", "high", "xhigh", "max"]
@@ -167,8 +200,8 @@ export function parseCli(argv, startCwd = process.cwd()) {
     // not restate per-vendor rules, so this error is the caller's only route to
     // a working call — "invalid --effort" alone leaves them guessing, and the
     // accepted set differs by vendor (claude adds "max").
-    if (!allowedEffort.includes(raw.effort)) {
-      throw new CliError(`invalid --effort: ${raw.effort} (${vendor} accepts ${allowedEffort.join(", ")})`);
+    if (!allowedEffort.includes(effort)) {
+      throw new CliError(`invalid --effort: ${effort} (${vendor} accepts ${allowedEffort.join(", ")})`);
     }
   }
   if (raw.operation === "image-analyze") {
@@ -181,8 +214,8 @@ export function parseCli(argv, startCwd = process.cwd()) {
   }
   if (vendor === "claude") {
     if (raw.operation !== "text") throw new CliError("claude supports only --operation text");
-    if (!raw.model) throw new CliError("claude requires --model");
-    if (!raw.effort) throw new CliError("claude requires --effort");
+    if (!model) throw new CliError("claude requires --model");
+    if (!effort) throw new CliError("claude requires --effort");
     if (!out) throw new CliError("claude requires --out to preserve and validate the result JSON");
     if (!err) throw new CliError("claude requires --err to preserve vendor stderr");
   }
@@ -198,7 +231,7 @@ export function parseCli(argv, startCwd = process.cwd()) {
   if (conflicts.input) throw new CliError("--out/--err must not equal --input");
   if (conflicts.outputs) throw new CliError("--out and --err must not refer to the same file");
   if (receiptConflicts({ brief, inputs, out, err }, process.env)) throw new CliError("--out/--err must not equal SECOND_OPINION_RECEIPT");
-  return { vendor, operation: raw.operation, mode, brief, cwd, model: raw.model, effort: raw.effort, inputs, timeout, out, err, expectOutput, dryRun: raw.dryRun ?? false };
+  return { vendor, operation: raw.operation, mode, brief, cwd, modelRequested, model, effort, inputs, timeout, out, err, expectOutput, dryRun: raw.dryRun ?? false };
 }
 
 function isGitRepository(cwd) {
@@ -419,7 +452,7 @@ function writeReceipt(stderr, options, exit, startedAt, invoked, outputCheckStat
     let vendorUsage = { usage: null, status: "read-failed" };
     try { vendorUsage = collectVendorUsage(options, invoked, env, vendorObservation); }
     catch { /* Usage is additive; its own failure must not suppress the receipt. */ }
-    appendFileSync(receipt, `${separator}${JSON.stringify({ schemaVersion: 1, ts: new Date().toISOString(), vendor: options.vendor, operation: options.operation, requestedMode, effectiveMode, inputProfile, model: options.model ?? null, effort: options.effort ?? null, exit, durationSec: Number(duration), invoked, cwd: options.cwd, outPath: options.out ?? null, errPath: options.err ?? null, pid: process.pid, vendorUsage: vendorUsage.usage, vendorUsageStatus: vendorUsage.status, outputCheckStatus })}\n`);
+    appendFileSync(receipt, `${separator}${JSON.stringify({ schemaVersion: 1, ts: new Date().toISOString(), vendor: options.vendor, operation: options.operation, requestedMode, effectiveMode, inputProfile, modelRequested: options.modelRequested ?? options.model ?? null, model: options.model ?? null, effort: options.effort ?? null, exit, durationSec: Number(duration), invoked, cwd: options.cwd, outPath: options.out ?? null, errPath: options.err ?? null, pid: process.pid, vendorUsage: vendorUsage.usage, vendorUsageStatus: vendorUsage.status, outputCheckStatus })}\n`);
   } catch { /* Receipt recording must not affect dispatch. */ }
 }
 function openOutput(path) {
@@ -445,16 +478,19 @@ function defaultForceKill(child) {
 }
 
 export async function run(options, deps = { spawn }) {
+  const env = deps.env ?? process.env;
+  const modelRequested = options.modelRequested ?? options.model;
   options = {
     ...options,
     mode: options.mode ?? "default",
+    modelRequested,
+    model: options.vendor === "codex" ? resolveCodexModelAlias(options.model, env) : options.model,
     brief: absoluteFrom(process.cwd(), options.brief),
     inputs: (options.inputs ?? []).map((input) => absoluteFrom(process.cwd(), input)),
     out: options.out ? absoluteFrom(process.cwd(), options.out) : undefined,
     err: options.err ? absoluteFrom(process.cwd(), options.err) : undefined,
   };
   const spawnImpl = deps.spawn;
-  const env = deps.env ?? process.env;
   const parentStdout = deps.stdout ?? process.stdout;
   const parentStderr = deps.stderr ?? process.stderr;
   const startedAt = Date.now();
@@ -492,7 +528,7 @@ export async function run(options, deps = { spawn }) {
     return code;
   }
   if (options.dryRun) {
-    parentStdout.write(`${JSON.stringify({ vendor: options.vendor, operation: options.operation, requestedMode: options.mode, effectiveMode: effectiveVendorMode(options), inputProfile: effectiveInputProfile(options), executable: executableName(options.vendor), argv, stdinMode: "brief-file", cwd: options.cwd })}\n`);
+    parentStdout.write(`${JSON.stringify({ vendor: options.vendor, operation: options.operation, requestedMode: options.mode, effectiveMode: effectiveVendorMode(options), inputProfile: effectiveInputProfile(options), modelRequested: options.modelRequested ?? null, model: options.model ?? null, executable: executableName(options.vendor), argv, stdinMode: "brief-file", cwd: options.cwd })}\n`);
     writeReceipt(parentStderr, options, 0, startedAt, false, outputCheckStatus, env);
     return 0;
   }
@@ -679,7 +715,7 @@ export async function executeCli(argv, deps = {}) {
     stderr.write(`dispatch validation error: ${error.message}\n`);
     return 2;
   }
-  const runDeps = deps.spawn ? { spawn: deps.spawn, stdout: deps.stdout, stderr } : { spawn, stdout: deps.stdout, stderr };
+  const runDeps = deps.spawn ? { spawn: deps.spawn, stdout: deps.stdout, stderr, env: deps.env } : { spawn, stdout: deps.stdout, stderr, env: deps.env };
   return await run(options, runDeps);
 }
 

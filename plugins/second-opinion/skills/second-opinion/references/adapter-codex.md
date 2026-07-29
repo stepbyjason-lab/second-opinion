@@ -6,6 +6,21 @@
 
 ## 텍스트 과업 세부
 
+### 모델 입력 정규화
+
+dispatcher는 `--effort`가 따로 없을 때 `--model luna@high`의 마지막 `@high`를 effort로
+분리한다. Codex 모델 값은 `CODEX_HOME/models_cache.json` 또는 기본
+`~/.codex/models_cache.json`에서 다음 순서로 정규화한다.
+
+1. cache의 exact slug와 대소문자 무시 일치하면 그 slug를 사용한다.
+2. 아니면 `-<입력>`으로 끝나는 slug가 정확히 하나일 때만 그 slug를 사용한다
+   (`luna` → `gpt-5.6-luna`).
+3. 일치 0개·복수, cache 부재·파싱 실패면 원문을 그대로 전달해 Codex의 loud reject에 맡긴다.
+
+고정 별칭표·fuzzy matching·network 조회는 없다. receipt의 `modelRequested`는 호출자의
+원문이고 `model`은 실제 CLI에 전달한 정규화 결과다. `--effort`를 따로 명시한 호출은
+`model@effort`를 분해하지 않는다.
+
 ### 명시적 review mode
 
 `--mode review`는 실제 repo cwd에서 native `codex exec review -`로 번역한다. sandbox,
