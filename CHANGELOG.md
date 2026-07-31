@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.9.1 — 2026-07-31
+
+- **Claude default is full access again.** `--vendor claude` without `--mode` now
+  runs with `--dangerously-skip-permissions --tools=default` — every built-in
+  tool plus non-interactive execution — instead of the empty `--tools=`
+  allowlist. Explicit `--mode plan|review` is unchanged and stays read-only on
+  `--tools=Read,Glob,Grep`.
+- **Why it was broken.** The empty allowlist was never a general-purpose
+  decision. `f6b6953` introduced `--tools=` as a review-only minimal bridge when
+  Claude first entered the dispatcher; `60a760f` added explicit plan/review and
+  preserved that temporary constraint in the `else` branch, freezing it into the
+  general contract; `6a83b66` repaired only the review identity and left the
+  tool-less default out of scope. The result was a general call weaker than the
+  read-only modes: anything asked to implement had to ship its patch as output
+  text. This was a design regression inherited from a review bridge — not a
+  missing sandbox and not a missing mode.
+- **Measured.** In an isolated temporary directory, one default call created a
+  file, modified it, and ran a command, all successfully; the receipt recorded
+  `default/default`, `invoked=true`, `exit=0`, `vendorUsageStatus=ok`.
+- `--safe-mode` stays on in every mode. It is configuration isolation (the
+  target project's CLAUDE.md, hooks, plugins, and MCP servers), not a filesystem
+  sandbox, and it coexists with full access. No sandbox, worktree, snapshot, or
+  rewritten cwd is used as the permission model — the split is flags alone, and
+  every mode runs in the caller's real cwd.
+- Regression tests pin the split: default carries no empty `--tools=`, carries
+  `--tools=default` and `--dangerously-skip-permissions`, and never inherits
+  `--permission-mode` or the `Read,Glob,Grep` allowlist; plan/review keep the
+  closed allowlist and never expose `Write`, `Edit`, `Bash`, `PowerShell`, or
+  `Agent`; omitting `--mode` still records `default/default` with
+  `inputProfile=none`.
+- No new mode was added, AGY and Codex argv are unchanged, and the receipt schema
+  version remains 1.
+
 ## 0.9.0 — 2026-07-29
 
 - **Codex model normalization.** `--model luna@high` now separates a recognized

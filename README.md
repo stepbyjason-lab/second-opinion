@@ -2,7 +2,7 @@
 
 **English** | [한국어](./README.ko.md)
 
-![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.0-informational)
+![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.1-informational)
 
 **Use other AI vendors from inside Claude Code — in plain language.**
 Second opinions, task offloading, and vendor capabilities like image generation.
@@ -79,8 +79,10 @@ extracted from:
   obsolete 280-second shell timeout. Claude result JSON binds the observed model
   family, token usage, and cost into `vendorUsage`; empty, malformed, or
   wrong-model output returns exit 4. The Claude child runs in `--safe-mode`, so
-  project instructions, hooks, plugins, and memory cannot override the inline
-  review brief. The dispatcher operates as a neutral broker and does not
+  project instructions, hooks, plugins, and MCP servers cannot override the inline
+  review brief. `--safe-mode` is configuration isolation, not a filesystem
+  sandbox — it coexists with full tool access and stays on in every mode.
+  The dispatcher operates as a neutral broker and does not
   hard-block same-vendor calls; it removes the parent-only `CLAUDECODE` marker
   from the child environment so an intentional nested invocation can start.
   Review independence is evaluated by caller methodologies against recorded receipts.
@@ -91,7 +93,10 @@ extracted from:
   behavior; they do not create a sandbox, worktree, snapshot, or reduced review
   packet. For Claude, plan/review identities remain distinct in the receipt but both
   use only the closed `Read,Glob,Grep` tool allowlist—without native plan workflow.
-  Omitting `--mode` preserves the existing default call.
+  Omitting `--mode` preserves the existing default call, which for Claude is the
+  **full-access** one: all built-in tools plus non-interactive execution, in the
+  caller's real cwd. Read-only comes only from an explicit `--mode plan|review`;
+  the permission split is flags alone, never an isolation primitive.
   Receipts record `requestedMode`, `effectiveMode`, and `inputProfile`. Explicit modes
   fail closed with exit 4 on empty output. AGY explicit plan/review automatically
   applies the `agy-native-readonly/v1` input profile so an ordinary brief that mentions

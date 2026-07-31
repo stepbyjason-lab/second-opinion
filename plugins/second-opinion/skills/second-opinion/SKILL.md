@@ -13,7 +13,7 @@ description: >
 
 # second-opinion — 외부 AI 어댑터
 
-**버전 0.9.0** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
+**버전 0.9.1** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
 
 이 스킬은 **아무것도 차단하지 않는다** — 중개(relay)만 한다. 디스패처는 커맨드 정합성을 위한 도구일 뿐이다. "Claude가 디스패처를 반드시 거치게" 강제하는 것은 **부르는 쪽(caller)의 책임**이다 → [references/enforcement.md](references/enforcement.md).
 
@@ -35,12 +35,15 @@ plan/review 권한을 자동 적용하지 않는다.
 
 | 호출 | 의미 | provider translation |
 |---|---|---|
-| mode 생략 | 기존 범용 호출 | 기존 argv 불변 |
+| mode 생략 | 기존 범용 호출 | AGY·Codex는 기존 argv 불변; Claude는 모든 기본 도구 + 비대화형 실행 |
 | `--mode plan` | 같은 실제 project cwd를 전체 탐색하는 읽기 전용 계획 | AGY native plan; Claude는 plan identity를 유지한 closed `Read,Glob,Grep`; Codex는 지원하지 않아 호출 전 실패 |
 | `--mode review` | 같은 실제 project cwd를 전체 탐색하는 읽기 전용 리뷰 | AGY native plan; Claude는 review identity를 유지한 closed `Read,Glob,Grep`; Codex native `exec review` |
 
 - 이번 mode는 text operation 전용이다.
-- sandbox·worktree·snapshot·packet·분리 cwd를 만들지 않는다.
+- **읽기 전용은 명시적 plan/review뿐이다.** mode 생략은 좁은 호출이 아니라 범용
+  full-access 호출이며, 권한을 좁히려면 mode를 명시해야 한다.
+- sandbox·worktree·snapshot·packet·분리 cwd를 만들지 않는다. 권한은 mode별 flag 조합으로만
+  결정되고, 어느 mode든 caller가 준 실제 cwd에서 실행된다.
 - Madi 같은 caller가 review panel을 소집할 때만 `--mode review`를 붙인다.
 - reviewer는 파일 수정·stage·commit·설치·공개를 하지 않는다.
 - receipt의 `requestedMode`·`effectiveMode`·`inputProfile`로 요청 mode와 provider translation을 확인한다.
@@ -147,8 +150,9 @@ AGY headless는 command permission을 물을 수 없으므로 dispatcher가 expl
 **중립 broker 실행** — 디스패처는 중립 broker로서 실행 규율(safe-mode, timeout, raw output, 모델 결속, 영수증)을 보장한다. 동일 호스트/벤더 호출도 실행하며, 리뷰 독립성 인정 여부는 호출자 방법론(Madi 등)이 영수증을 대조해 판정한다.
 
 raw `claude -p`를 직접 실행하지 않고 같은 디스패처를 쓴다. Claude default 채널은
-text/tool-less이며 model·effort·out·err를 모두 명시해야 한다. `--mode plan|review`를
-명시하면 requested/effective identity를 plan 또는 review로 보존하고, native plan workflow를 켜지 않은 채 `Read,Glob,Grep`만으로 같은 project cwd를 읽는다.
+**full-access**다 — 모든 기본 도구와 비대화형 실행을 갖고 caller가 준 실제 cwd에서 돈다.
+model·effort·out·err는 모두 명시해야 한다. `--mode plan|review`를
+명시하면 requested/effective identity를 plan 또는 review로 보존하고, native plan workflow를 켜지 않은 채 `Read,Glob,Grep`만으로 같은 project cwd를 읽는다. 즉 읽기 전용은 명시적 mode에서만 생긴다.
 
 ```bash
 node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor claude --operation text \
@@ -157,13 +161,17 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor claude --operation text
 ```
 
 - 짧은 raw timeout은 없다. 공통 1800초 값은 정상 작업 한계가 아니라 runaway backstop이다.
-- child는 `--safe-mode`로 실행해 대상 프로젝트의 CLAUDE.md·hook·plugin·memory가
+- child는 `--safe-mode`로 실행해 대상 프로젝트의 CLAUDE.md·hook·plugin·MCP가
   review brief를 바꾸지 못하게 한다. OAuth와 명시한 model·effort는 유지된다.
+  `--safe-mode`는 **구성 격리이지 filesystem sandbox가 아니며** default의 full-access와
+  공존한다. 세 mode 모두에 그대로 남는다.
 - Claude Code 부모의 session marker인 `CLAUDECODE`는 child에 전달하지 않는다. 이는
   same-host 실행을 가능하게 하는 프로세스 격리이며 리뷰 독립성 판정이나 우회가 아니다.
 - exit 0이어도 result JSON이 비었거나 실제 model family가 요청과 다르면 exit 4다.
-- default 호출은 brief 본문에 검토 대상을 포함한다. `--mode plan|review`는 read 도구로
-  실제 project cwd를 탐색하므로 파일 경로와 전체 repository 조사 지시를 사용할 수 있다.
+- default 호출은 파일 경로와 전체 repository 조사·수정 지시를 그대로 줄 수 있다. 실측:
+  임시 디렉터리에서 default 호출 한 번으로 파일 생성·수정·명령 실행이 모두 성공했다
+  (영수증 `default/default`·`invoked=true`·`exit=0`). 결과를 출력 텍스트로 실어 나를 필요가
+  없다. `--mode plan|review`도 실제 project cwd를 탐색하지만 읽기만 가능하다.
 → 호출 전 필수: `references/adapter-claude.md` 를 반드시 읽을 것 (리뷰 독립성·비용·도구경계·Windows 함정)
 
 ## 오래 걸리는 호출 (60초+ 예상: 큰 brief, 병렬 다건)

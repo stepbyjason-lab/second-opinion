@@ -84,7 +84,7 @@ const FIXTURES = [
   { vendor: "agy", operation: "image-generate", model: "Gemini 3.5 Flash (High)", inputs: [], isGitRepo: false, timeout: 1234, cwd: root,
     argv: ["--dangerously-skip-permissions", "--print-timeout", "1234s", "--model", "Gemini 3.5 Flash (High)", "--add-dir", root] },
   { vendor: "claude", operation: "text", model: "opus", effort: "high", inputs: [], isGitRepo: false, cwd: root,
-    argv: ["-p", "--model", "opus", "--effort", "high", "--output-format", "json", "--no-session-persistence", "--safe-mode", "--disable-slash-commands", "--tools="] },
+    argv: ["-p", "--model", "opus", "--effort", "high", "--output-format", "json", "--no-session-persistence", "--safe-mode", "--disable-slash-commands", "--dangerously-skip-permissions", "--tools=default"] },
 ];
 
 test("seven hand-written argv fixtures match policy exactly", () => {
@@ -147,6 +147,104 @@ test("explicit plan and review modes map to closed provider-native argv", () => 
     () => buildVendorArgv({ ...FIXTURES[0], mode: "plan" }),
     (error) => error instanceof PolicyError && error.classification === "mode_unsupported",
   );
+});
+
+// R033-H8. The Claude channel's `default` used to be `--tools=` — no tools at
+// all — while explicit --mode plan|review could at least read. The general
+// call was weaker than the read-only ones, so anything asked to implement had
+// to ship its patch as output text. That empty allowlist was a review-only
+// bridge (f6b6953) frozen into the default branch when explicit modes landed
+// (60a760f), and left in place by the review-identity fix (6a83b66). This test
+// pins the permission split so the bridge cannot be re-inherited: default is
+// full access, explicit plan/review stay read-only, and neither uses a sandbox,
+// worktree, snapshot, or rewritten cwd as the permission model.
+test("Claude default carries full tool access while explicit plan and review stay read-only", async () => {
+  const claudeDefault = FIXTURES.find((fixture) => fixture.vendor === "claude");
+  const defaultArgv = buildVendorArgv(claudeDefault);
+  assert.deepEqual(defaultArgv, claudeDefault.argv);
+
+  // An empty allowlist is the exact regression: it must not survive anywhere in
+  // the default call, in either spelling.
+  assert.equal(defaultArgv.includes("--tools="), false, "default must not ship an empty tool allowlist");
+  assert.equal(defaultArgv.some((value) => /^--tools=\s*$/.test(value)), false, "default must not ship a blank tool allowlist");
+
+  // The two flags that actually let the default call do work rather than
+  // describe it.
+  assert.ok(defaultArgv.includes("--tools=default"), "default must open the full built-in tool set");
+  assert.ok(defaultArgv.includes("--dangerously-skip-permissions"), "default must run non-interactively without a permission prompt");
+
+  // No read-only or permission-workflow behavior may leak back into default.
+  assert.equal(defaultArgv.some((value) => value.startsWith("--permission-mode")), false, "default must not enable a permission workflow");
+  assert.equal(defaultArgv.some((value) => value.includes("Read,Glob,Grep")), false, "default must not inherit the read-only allowlist");
+
+  // --safe-mode is configuration isolation (CLAUDE.md, hooks, plugins, MCP),
+  // not a filesystem sandbox. It coexists with full access and stays.
+  assert.ok(defaultArgv.includes("--safe-mode"), "default keeps configuration isolation");
+
+  const readOnly = MODE_FIXTURES.filter((fixture) => fixture.vendor === "claude");
+  assert.deepEqual(readOnly.map((fixture) => fixture.mode), ["plan", "review"]);
+  for (const fixture of readOnly) {
+    const argv = buildVendorArgv(fixture);
+    assert.deepEqual(argv, fixture.argv, fixture.mode);
+    assert.deepEqual(argv.filter((value) => value.startsWith("--tools=")), ["--tools=Read,Glob,Grep"], `${fixture.mode} closed read-only allowlist`);
+    assert.equal(argv.includes("--tools=default"), false, `${fixture.mode} must not open the full tool set`);
+    assert.equal(argv.includes("--dangerously-skip-permissions"), false, `${fixture.mode} must not skip permissions`);
+    for (const forbidden of ["Write", "Edit", "Bash", "PowerShell", "Agent"]) {
+      assert.equal(argv.some((value) => value.includes(forbidden)), false, `${fixture.mode} must not expose ${forbidden}`);
+    }
+  }
+
+  // Omitting --mode stays default end to end: the dispatcher never guesses an
+  // unstated mode, and the receipt keeps the same identity it always had.
+  const receipt = join(root, "claude-default-permission.jsonl");
+  const out = join(root, "claude-default-permission.out");
+  const err = join(root, "claude-default-permission.err");
+  let captured;
+  const spawnFake = (_executable, argv, spawnOptions) => {
+    captured = { argv, spawnOptions };
+    return fakeChild((child) => {
+      child.stdin.on("end", () => {
+        child.stdout.end(claudeResult());
+        child.stderr.end();
+        queueMicrotask(() => child.emit("close", 0, null));
+      });
+      child.stdin.resume();
+    });
+  };
+  assert.equal(claudeDefault.mode, undefined, "the default fixture must carry no explicit mode");
+  const code = await run({ ...claudeDefault, brief, cwd: root, out, err, timeout: 2, dryRun: false }, {
+    spawn: spawnFake, stderr: memoryWriter().stream, env: { SECOND_OPINION_RECEIPT: receipt },
+  });
+  assert.equal(code, 0);
+  const [row] = receiptLines(receipt);
+  assert.equal(row.requestedMode, "default");
+  assert.equal(row.effectiveMode, "default");
+  assert.equal(row.inputProfile, "none");
+  assert.deepEqual(captured.argv, claudeDefault.argv);
+
+  // The split is flags only. Every Claude argv is pure vendor flags carrying no
+  // directory of its own, and the child runs in the caller's real cwd — no
+  // isolation primitive is introduced as the permission model.
+  for (const fixture of [claudeDefault, ...readOnly]) {
+    const label = fixture.mode ?? "default";
+    const argv = buildVendorArgv(fixture);
+    for (const value of argv) {
+      assert.doesNotMatch(value, /sandbox|worktree|snapshot/i, `${label}: ${value}`);
+      assert.equal(value.includes(fixture.cwd), false, `${label} argv must carry no directory: ${value}`);
+    }
+    assert.equal(argv.includes("--add-dir"), false, `${label} must not rewrite scope`);
+    assert.equal(argv.includes("--cwd"), false, `${label} must not rewrite cwd`);
+  }
+  assert.equal(captured.spawnOptions.cwd, root, "the Claude child runs in the caller's real cwd");
+  assert.equal(row.cwd, root);
+
+  const planDryRun = memoryWriter();
+  assert.equal(await executeCli([
+    "--vendor", "claude", "--operation", "text", "--mode", "plan", "--brief", brief,
+    "--cwd", root, "--model", "opus", "--effort", "high",
+    "--out", join(root, "claude-plan-cwd.out"), "--err", join(root, "claude-plan-cwd.err"), "--dry-run",
+  ], { cwd: root, stdout: planDryRun.stream, stderr: memoryWriter().stream }), 0);
+  assert.equal(JSON.parse(planDryRun.value()).cwd, root, "explicit plan keeps the same real cwd");
 });
 
 test("AGY explicit modes compose the native-readonly profile while every other input stays byte-identical", () => {

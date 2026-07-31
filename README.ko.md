@@ -5,7 +5,7 @@
 Claude Code 안에서 **다른 벤더의 AI**(Codex/GPT, Antigravity/Gemini)를 일상어로 부려 쓰는
 어댑터 스킬 — 점검·리뷰·의견부터 작업 오프로드, 이미지 생성까지.
 
-**버전 0.9.0**
+**버전 0.9.1**
 
 > "이 설계 코덱스로 점검받고 싶어" / "안티그래비티한테 물어봐" / "교차 검증해줘"
 > "코덱스한테 로고 시안 이미지 만들어달라고 해줘" / "클로드 사용량 아끼게 이 번역은 제미나이로"
@@ -59,16 +59,20 @@ Claude가 만든 것을 Claude가 검토하면 결함을 과소보고한다 — 
   `vendorUsage`에 결속하고 빈/깨진/다른 모델 출력은 exit 4로 거부한다. 디스패처는 중립
   broker로서 동일 벤더 호출을 기계 차단하지 않으며, 리뷰 독립성 인정 여부는 호출자
   방법론(Madi 등)이 영수증을 대조해 판정한다. Claude child는 `--safe-mode`로 실행해
-  대상 프로젝트의 CLAUDE.md·훅·플러그인·메모리가 inline review brief를 덮어쓰지 못하게
+  대상 프로젝트의 CLAUDE.md·훅·플러그인·MCP가 inline review brief를 덮어쓰지 못하게
   하고, 부모 전용 `CLAUDECODE` marker는 child 환경에서 제거해 의도한 nested 호출이
-  vendor CLI에서 다시 거부되지 않게 한다.
+  vendor CLI에서 다시 거부되지 않게 한다. `--safe-mode`는 **구성 격리이지 filesystem
+  sandbox가 아니며** full-access와 공존한다 — 모든 mode에서 그대로 켜져 있다.
   기본값은 꺼짐이며, 설정 안 하면 아무것도 쓰지 않는다.
 
   text 호출에는 caller가 `--mode plan` 또는 `--mode review`를 명시할 수 있다. 두 mode는
   같은 실제 project cwd 전체를 유지하고 provider별 읽기 전용 동작을 사용한다.
   Claude는 plan/review identity를 receipt에 각각 보존하되 native plan workflow 없이 closed
   `Read,Glob,Grep` allowlist만 사용한다. sandbox·worktree·snapshot·축약 packet을 만들지
-  않는다. `--mode`를 생략하면 기존 default 호출이며, receipt에는
+  않는다. `--mode`를 생략하면 기존 default 호출이며, Claude에서는 이것이 **full-access**
+  호출이다 — 모든 기본 도구와 비대화형 실행을 caller가 준 실제 cwd에서 갖는다. 읽기 전용은
+  명시적 `--mode plan|review`에서만 생기고, 권한 분리는 오직 flag 조합으로만 이뤄진다.
+  receipt에는
   `requestedMode`·`effectiveMode`·`inputProfile`이 기록된다. 명시 mode의 출력이 비면 exit
   4로 실패한다. AGY explicit plan/review는
   `agy-native-readonly/v1` 입력 profile을 자동 적용한다. 따라서 평범한 brief에

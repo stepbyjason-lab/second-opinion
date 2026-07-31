@@ -146,8 +146,20 @@ export function buildVendorArgv(options) {
       "--safe-mode",
       "--disable-slash-commands",
     ];
+    // default is the general-purpose call and must be able to do the work, not
+    // just describe it. The tool-less `--tools=` here was a review-only bridge
+    // (f6b6953) that later got frozen into the default branch (60a760f), which
+    // left the general call weaker than the read-only modes — an implementer had
+    // to ship patches as output text. Explicit plan/review keep the closed
+    // read-only allowlist; only they are restricted.
+    //
+    // No sandbox, worktree, or rewritten cwd is used as the permission model:
+    // the vendor runs in the caller's real --cwd. `--safe-mode` stays because it
+    // isolates configuration (CLAUDE.md, hooks, plugins, MCP), not the
+    // filesystem — `claude --help` 2.1.220 describes it as disabling
+    // customizations, and it says nothing about the built-in tools.
     if (effectiveMode !== "default") argv.push("--tools=Read,Glob,Grep");
-    else argv.push("--tools=");
+    else argv.push("--dangerously-skip-permissions", "--tools=default");
     return argv;
   }
   // --dangerously-skip-permissions: headless agy cannot prompt for tool

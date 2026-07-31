@@ -24,8 +24,9 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor claude --operation text
 
 같은 실제 project cwd를 읽는 plan/review는 각각 `--mode plan|review`를 추가한다. 둘 다
 native plan workflow를 켜지 않고 closed `Read,Glob,Grep` 도구로 번역되며, receipt의
-`requestedMode`·`effectiveMode`는 각각 plan/review로 보존된다. mode 생략은 아래 tool-less
-default 호출이며 자동으로 plan/review가 되지 않는다.
+`requestedMode`·`effectiveMode`는 각각 plan/review로 보존된다. mode 생략은 아래 full-access
+default 호출이며 자동으로 plan/review가 되지 않는다. 즉 읽기 전용은 명시적
+`--mode plan|review`뿐이고, 권한을 좁히려면 반드시 mode를 명시해야 한다.
 
 PowerShell도 동일한 `node ... dispatch.mjs` argv를 사용한다. brief 내용은 dispatcher가
 바이트 그대로 stdin으로 전달하므로 `Get-Content | claude`를 조립하지 않는다.
@@ -56,13 +57,31 @@ dispatcher 규율에서는 303.92초에 exit 0·실제 `claude-opus-4-8`·유효
 
 ## 도구 경계
 
-default Claude child는 `--safe-mode --disable-slash-commands --tools=`인 tool-less text
-호출이다. brief 본문에 대상을 포함해야 하며 파일 경로만 주면 안 된다.
+| 호출 | requested/effective | 권한 | cwd |
+|---|---|---|---|
+| mode 생략 | `default/default` | 모든 기본 도구 + 비대화형 실행 | caller가 준 실제 cwd |
+| `--mode plan` | `plan/plan` | `Read,Glob,Grep`만 | 같은 실제 cwd |
+| `--mode review` | `review/review` | `Read,Glob,Grep`만 | 같은 실제 cwd |
 
-명시적 `--mode plan|review`에서는 같은 `--safe-mode`를 유지하되
-`--tools=Read,Glob,Grep`로 실제 project cwd 전체를 읽는다. `--permission-mode`와 native
-plan workflow는 사용하지 않는다. Write·Edit·Bash·Agent는 제공하지 않는다.
-sandbox·worktree·snapshot·packet 분리는 사용하지 않는다.
+default Claude child는 `--safe-mode --disable-slash-commands
+--dangerously-skip-permissions --tools=default`인 **full-access 호출**이다. 기본 도구
+전체(읽기·쓰기·편집·명령 실행)를 쓸 수 있고, headless라 권한을 물을 수 없으므로 비대화형
+실행을 허용한다. 실측: 격리된 임시 디렉터리에서 default 호출 한 번으로 파일 생성·수정·명령
+실행이 모두 성공했고 영수증은 `default/default`·`invoked=true`·`exit=0`·
+`vendorUsageStatus=ok`였다. 따라서 brief에 파일 경로와 저장소 조사 지시를 그대로 줄 수
+있으며, 결과를 출력 텍스트에 실어 나를 필요가 없다.
+
+읽기 전용은 명시적 `--mode plan|review`뿐이다. 두 mode는 같은 `--safe-mode`를 유지하되
+`--tools=Read,Glob,Grep`로 실제 project cwd 전체를 읽기만 한다. `--permission-mode`와
+native plan workflow는 사용하지 않고, `--dangerously-skip-permissions`도 붙이지 않는다.
+Write·Edit·Bash·PowerShell·Agent는 제공하지 않는다.
+
+`--safe-mode`는 세 mode 모두에 남는다. 이것은 **구성 격리**(대상 프로젝트의 CLAUDE.md·
+hook·plugin·MCP 비활성)이지 filesystem sandbox가 아니며, full-access와 공존한다 —
+`claude --help` 2.1.220은 customization 비활성만 설명하고 내장 도구에는 아무 말도 하지
+않는다. 권한 모델로 sandbox·worktree·snapshot·packet 분리·cwd 재작성은 사용하지 않는다.
+권한은 오직 위 표의 mode별 flag 조합으로 결정되며, 자식은 항상 caller가 준 실제 cwd에서
+실행된다.
 
 ## 비용
 
