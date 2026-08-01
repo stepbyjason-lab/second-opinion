@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.2 — 2026-08-01
+
+- **Default model-to-vendor routing.** When `--vendor` is omitted, `--model` is
+  matched against the current Codex cache, `agy models`, and Claude help catalog.
+  One matching vendor is selected; zero or multiple vendors, or an unreadable
+  catalog, fail closed. An explicit `--vendor` still wins.
+- **Future-proof Claude alias binding.** Result validation now uses exact and
+  boundary-based alias matching instead of a hardcoded Opus/Sonnet/Haiku list,
+  so aliases such as `fable` bind correctly to `claude-fable-5`.
+- No new option or receipt schema was added.
+
 ## 0.9.1 — 2026-07-31
 
 - **Claude default is full access again.** `--vendor claude` without `--mode` now

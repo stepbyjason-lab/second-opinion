@@ -2,7 +2,7 @@
 
 **English** | [한국어](./README.ko.md)
 
-![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.1-informational)
+![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.2-informational)
 
 **Use other AI vendors from inside Claude Code — in plain language.**
 Second opinions, task offloading, and vendor capabilities like image generation.
@@ -57,6 +57,7 @@ extracted from:
 | AGY can keep using a previous host project even when the subprocess and receipt use a temporary `cwd` | binds every AGY call to the requested workspace with `--add-dir`; callers can add `--expect-output` for a hidden-token read check |
 | AGY headless plan auto-denies shell commands, so a review brief asking for `git diff` can return exit 0 with no review | explicit AGY plan/review automatically composes the `agy-native-readonly/v1` input profile, using native read/list/search; empty output still fails closed |
 | A caller passes Madi's logical Codex name `luna` or shorthand `luna@high`, but Codex CLI requires a versioned slug such as `gpt-5.6-luna` | splits a recognized final `@effort`, then resolves exact or unique `-alias` matches from Codex's local `models_cache.json`; ambiguous or missing data is never guessed |
+| The caller knows a model such as `fable` but not which vendor owns it | when `--vendor` is omitted, compares current Codex, AGY, and Claude catalogs; one matching vendor routes automatically, while zero/multiple matches or any unreadable catalog fail closed |
 | Codex sandbox **can't read files on Windows** | excerpts content into the brief instead of asking it to read files |
 | Image generation: agy **ignores where you asked it to save** (uses its own scratch dir), codex needs a **write-enabled sandbox** and its Windows copy step can fail | knows each vendor's real artifact location, verifies the file actually exists, and moves it where you wanted — a vendor saying "saved" is not treated as success |
 | "No issues found" is a weak signal (Gemini especially leans false-negative) | always relayed as "didn't find problems ≠ no problems" |

@@ -79,7 +79,7 @@ export function usageText() {
   return [
     "second-opinion dispatcher — call an external vendor through one audited path.",
     "",
-    "  node dispatch.mjs --vendor <v> --operation <op> --brief <file> [options]",
+    "  node dispatch.mjs [--vendor <v>] --operation <op> --brief <file> [options]",
     "",
     `  vendors    : ${VENDOR_INPUTS.join(", ")}`,
     `  operations : ${OPERATIONS.join(", ")}`,
@@ -87,6 +87,7 @@ export function usageText() {
     `  help       : ${[...HELP_FLAGS].join(" ")}  (first argument only)`,
     "",
     "  --brief is a FILE; its contents reach the vendor over stdin.",
+    "  Without --vendor, all current catalogs must load and --model must match one vendor.",
     "  --cwd is the vendor's workspace; omitted, it is this process's directory.",
     "  --brief/--input/--out/--err resolve from THIS process's directory, not --cwd.",
     "  Vendor-native flags (agy --add-dir, codex -s) are assembled internally.",
@@ -123,11 +124,7 @@ export function splitModelEffort(model, effort) {
 export function resolveCodexModelAlias(model, env = process.env) {
   if (!model) return model;
   try {
-    const root = env.CODEX_HOME?.trim() || join(homedir(), ".codex");
-    const payload = JSON.parse(readFileSync(join(root, "models_cache.json"), "utf8"));
-    const slugs = Array.isArray(payload?.models)
-      ? payload.models.map((entry) => entry?.slug).filter((value) => typeof value === "string" && value.length > 0)
-      : [];
+    const slugs = codexModelCatalog(env);
     const requested = model.toLowerCase();
     const exact = slugs.find((slug) => slug.toLowerCase() === requested);
     if (exact) return exact;
@@ -139,7 +136,81 @@ export function resolveCodexModelAlias(model, env = process.env) {
   }
 }
 
-export function parseCli(argv, startCwd = process.cwd()) {
+function codexModelCatalog(env = process.env) {
+  const root = env.CODEX_HOME?.trim() || join(homedir(), ".codex");
+  const payload = JSON.parse(readFileSync(join(root, "models_cache.json"), "utf8"));
+  return Array.isArray(payload?.models)
+    ? payload.models.map((entry) => entry?.slug).filter((value) => typeof value === "string" && value.length > 0)
+    : [];
+}
+
+function modelNameMatches(requested, available) {
+  const alias = String(requested).toLowerCase();
+  const candidate = String(available).toLowerCase();
+  if (!alias || !candidate) return false;
+  if (candidate === alias || candidate.endsWith(`-${alias}`)) return true;
+  const firstSeparator = candidate.indexOf("-");
+  return firstSeparator >= 0 && candidate.slice(firstSeparator + 1).startsWith(`${alias}-`);
+}
+
+function claudeModelCatalog(help) {
+  const start = help.indexOf("--model <model>");
+  if (start < 0) return [];
+  const tail = help.slice(start);
+  const nextOption = tail.slice(1).search(/\n\s{2}--[a-z]/i);
+  const block = nextOption < 0 ? tail : tail.slice(0, nextOption + 1);
+  return [...block.matchAll(/'([a-z0-9][a-z0-9._-]*)'/gi)].map((match) => match[1]);
+}
+
+function commandModelCatalog(command, args, parse, deps) {
+  try {
+    const result = (deps.spawnSync ?? spawnSync)(command, args, {
+      shell: false,
+      encoding: "utf8",
+      windowsHide: true,
+      env: deps.env ?? process.env,
+    });
+    if (result.status !== 0) return { available: false, models: [] };
+    const models = parse(`${result.stdout ?? ""}\n${result.stderr ?? ""}`);
+    return { available: models.length > 0, models };
+  } catch { return { available: false, models: [] }; }
+}
+
+function discoverModelCatalogs(deps = {}) {
+  if (deps.modelCatalogs) {
+    return Object.fromEntries(VENDORS.map((vendor) => {
+      const catalog = deps.modelCatalogs[vendor];
+      return [vendor, Array.isArray(catalog) ? { available: true, models: catalog } : catalog];
+    }));
+  }
+  const env = deps.env ?? process.env;
+  let codex = { available: false, models: [] };
+  try {
+    const models = codexModelCatalog(env);
+    codex = { available: models.length > 0, models };
+  } catch { /* unavailable vendor catalog */ }
+  const agy = commandModelCatalog("agy", ["models"], (output) => output.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^[a-z0-9][a-z0-9._-]*$/i.test(line)), deps);
+  const claude = commandModelCatalog("claude", ["--help"], claudeModelCatalog, deps);
+  return { codex, agy, claude };
+}
+
+export function resolveVendorForModel(model, deps = {}) {
+  const catalogs = discoverModelCatalogs(deps);
+  const unavailable = VENDORS.filter((vendor) => catalogs[vendor]?.available !== true);
+  if (unavailable.length > 0) {
+    throw new CliError(`model catalog unavailable for automatic vendor routing: ${unavailable.join(", ")} (pass --vendor explicitly)`);
+  }
+  const matches = VENDORS.flatMap((vendor) => {
+    const models = [...new Set(catalogs[vendor].models)];
+    return models.filter((candidate) => modelNameMatches(model, candidate)).map((candidate) => ({ vendor, model: candidate }));
+  });
+  const vendors = [...new Set(matches.map((match) => match.vendor))];
+  if (vendors.length === 1) return vendors[0];
+  if (matches.length === 0) throw new CliError(`unknown model for automatic vendor routing: ${model}`);
+  throw new CliError(`ambiguous model for automatic vendor routing: ${model} (${matches.map((match) => `${match.vendor}:${match.model}`).join(", ")})`);
+}
+
+export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
   const raw = { inputs: [] };
   const seen = new Set();
   for (let index = 0; index < argv.length; index += 1) {
@@ -160,8 +231,16 @@ export function parseCli(argv, startCwd = process.cwd()) {
       raw[flag.slice(2)] = argv[++index];
     }
   }
-  if (!raw.vendor || !VENDOR_INPUTS.includes(raw.vendor)) throw new CliError(`--vendor must be one of: ${VENDOR_INPUTS.join(", ")}`);
-  const vendor = normalizeVendor(raw.vendor);
+  const modelRequested = raw.model;
+  const shorthand = splitModelEffort(raw.model, raw.effort);
+  const model = shorthand.model;
+  const effort = shorthand.effort;
+  if (model !== undefined && (model.length === 0 || model.startsWith("-") || /[\x00-\x1f\x7f]/.test(model))) {
+    throw new CliError("--model must be non-empty, must not start with '-', and must not contain control characters");
+  }
+  if (raw.vendor !== undefined && !VENDOR_INPUTS.includes(raw.vendor)) throw new CliError(`--vendor must be one of: ${VENDOR_INPUTS.join(", ")}`);
+  if (!raw.vendor && !model) throw new CliError("--vendor is required when --model is omitted");
+  const vendor = raw.vendor ? normalizeVendor(raw.vendor) : resolveVendorForModel(model, deps);
   // Accepted values come from the constant, not a hand-typed copy of it — the
   // same drift that made the prose usage wrong applies to error strings.
   if (!OPERATIONS.includes(raw.operation)) throw new CliError(`--operation must be one of: ${OPERATIONS.join(", ")}`);
@@ -184,13 +263,6 @@ export function parseCli(argv, startCwd = process.cwd()) {
   assertRegularFile(brief, "brief");
   if (statSync(brief).size > MAX_BRIEF_BYTES) throw new CliError("brief exceeds 8MB");
   assertDirectory(cwd, "cwd");
-  const modelRequested = raw.model;
-  const shorthand = splitModelEffort(raw.model, raw.effort);
-  const model = shorthand.model;
-  const effort = shorthand.effort;
-  if (model !== undefined && (model.length === 0 || model.startsWith("-") || /[\x00-\x1f\x7f]/.test(model))) {
-    throw new CliError("--model must be non-empty, must not start with '-', and must not contain control characters");
-  }
   if (effort !== undefined) {
     if (!["codex", "claude"].includes(vendor)) throw new CliError("--effort is supported only for codex or claude");
     const allowedEffort = vendor === "claude"
@@ -324,9 +396,7 @@ function normalizeClaudeModel(value) {
 function claudeModelMatches(requested, actualModels) {
   const expected = normalizeClaudeModel(requested ?? "").toLowerCase();
   if (!expected || actualModels.length === 0) return false;
-  const family = ["opus", "sonnet", "haiku"].find((name) => expected === name);
-  if (family) return actualModels.every((model) => model.toLowerCase().includes(`-${family}-`));
-  return actualModels.every((model) => model.toLowerCase() === expected);
+  return actualModels.every((model) => modelNameMatches(expected, normalizeClaudeModel(model)));
 }
 function inspectClaudeOutput(options, capturedOutput) {
   if (capturedOutput?.tooLarge) return { usage: null, status: "output-too-large", valid: false };
@@ -710,7 +780,7 @@ export async function executeCli(argv, deps = {}) {
     (deps.stdout ?? process.stdout).write(`${usageText()}\n`);
     return 0;
   }
-  try { options = parseCli(argv, deps.cwd ?? process.cwd()); }
+  try { options = parseCli(argv, deps.cwd ?? process.cwd(), { env: deps.env, spawnSync: deps.spawnSync, modelCatalogs: deps.modelCatalogs }); }
   catch (error) {
     stderr.write(`dispatch validation error: ${error.message}\n`);
     return 2;

@@ -16,7 +16,7 @@ import {
   effectiveVendorMode,
   resolveExecutable,
 } from "./vendor-policy.mjs";
-import { executeCli, parseCli, resolveCodexModelAlias, run, splitModelEffort } from "./dispatch.mjs";
+import { executeCli, parseCli, resolveCodexModelAlias, resolveVendorForModel, run, splitModelEffort } from "./dispatch.mjs";
 
 const tempDirs = [];
 function makeTempDir(prefix, parent = tmpdir()) {
@@ -305,6 +305,57 @@ test("Codex model aliases resolve through exact or unique cache matches and othe
   const malformed = modelCache([], "{not-json");
   assert.equal(resolveCodexModelAlias("luna", { CODEX_HOME: malformed }), "luna");
   assert.equal(resolveCodexModelAlias("luna", { CODEX_HOME: join(root, "missing-model-cache") }), "luna");
+});
+
+test("omitting --vendor routes a unique current model and fails closed for unknown or ambiguous names", () => {
+  const catalogs = {
+    codex: ["gpt-5.6-luna"],
+    agy: ["gemini-3.6-flash-high", "claude-opus-4-6-thinking"],
+    claude: ["fable", "opus", "sonnet", "claude-fable-5"],
+  };
+  assert.equal(resolveVendorForModel("luna", { modelCatalogs: catalogs }), "codex");
+  assert.equal(resolveVendorForModel("fable", { modelCatalogs: catalogs }), "claude");
+  assert.equal(resolveVendorForModel("gemini-3.6-flash-high", { modelCatalogs: catalogs }), "agy");
+  assert.throws(() => resolveVendorForModel("unknown", { modelCatalogs: catalogs }), /unknown model/);
+  assert.throws(() => resolveVendorForModel("opus", { modelCatalogs: catalogs }), /ambiguous model/);
+
+  const auto = parseCli([
+    "--operation", "text", "--brief", brief, "--model", "fable@high",
+    "--out", join(root, "auto-claude.out"), "--err", join(root, "auto-claude.err"),
+  ], root, { modelCatalogs: catalogs });
+  assert.equal(auto.vendor, "claude");
+  assert.equal(auto.model, "fable");
+  assert.equal(auto.effort, "high");
+
+  const explicit = parseCli([
+    "--vendor", "codex", "--operation", "text", "--brief", brief, "--model", "fable",
+  ], root, { modelCatalogs: catalogs });
+  assert.equal(explicit.vendor, "codex", "an explicit vendor must win over model discovery");
+});
+
+test("automatic routing exercises live catalog parsers and rejects incomplete discovery", () => {
+  const home = modelCache(["gpt-5.6-luna"]);
+  const spawnCatalog = (command) => command === "agy"
+    ? { status: 0, stdout: "gemini-3.6-flash-high\nclaude-opus-4-6-thinking\n", stderr: "" }
+    : { status: 0, stdout: "  --model <model>  Model. Use an alias (e.g. 'fable', 'opus', or 'sonnet') or full name (e.g. 'claude-fable-5').\n  --output-format <format>\n", stderr: "" };
+  const deps = { env: { CODEX_HOME: home }, spawnSync: spawnCatalog };
+  assert.equal(resolveVendorForModel("fable", deps), "claude");
+  assert.throws(() => resolveVendorForModel("opus", deps), /ambiguous model/);
+
+  const failedClaude = (command) => command === "agy"
+    ? spawnCatalog(command)
+    : { status: 1, stdout: "", stderr: "help failed" };
+  assert.throws(
+    () => resolveVendorForModel("opus", { env: { CODEX_HOME: home }, spawnSync: failedClaude }),
+    /model catalog unavailable.*claude.*pass --vendor explicitly/,
+  );
+  assert.throws(
+    () => resolveVendorForModel("fable", {
+      env: { CODEX_HOME: home },
+      spawnSync: (command) => ({ status: 0, stdout: command === "agy" ? "Display Model (High)" : "unparseable", stderr: "" }),
+    }),
+    /model catalog unavailable.*agy, claude/,
+  );
 });
 
 test("Codex CLI dry-run separates requested shorthand from the normalized executable model", async () => {
@@ -692,6 +743,30 @@ test("Claude model binding accepts a lower-output safe-mode classifier but rejec
   });
   assert.equal(invalid, 4);
   assert.equal(receiptLines(invalidReceipt).at(-1).vendorUsageStatus, "model-mismatch");
+});
+
+test("Claude model binding accepts future aliases without a hardcoded family list", async () => {
+  const receipt = join(root, "claude-fable-alias.jsonl");
+  const out = join(root, "claude-fable-alias.out");
+  const err = join(root, "claude-fable-alias.err");
+  const spawnFake = () => fakeChild((child) => {
+    child.stdin.on("end", () => {
+      child.stdout.end(claudeResult({ model: "claude-fable-5" }));
+      child.stderr.end();
+      queueMicrotask(() => child.emit("close", 0, null));
+    });
+    child.stdin.resume();
+  });
+  const status = await run({
+    vendor: "claude", operation: "text", brief, cwd: root, model: "fable", effort: "high",
+    out, err, timeout: 2, killGraceMs: 10, reapGraceMs: 10,
+  }, {
+    spawn: spawnFake,
+    stderr: memoryWriter().stream,
+    env: { SECOND_OPINION_RECEIPT: receipt },
+  });
+  assert.equal(status, 0);
+  assert.equal(receiptLines(receipt).at(-1).vendorUsageStatus, "ok");
 });
 
 test("Claude receipt tolerates absent optional cache and context fields without weakening model binding", async () => {
