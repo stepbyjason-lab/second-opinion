@@ -13,13 +13,13 @@
 //     Claude Code : "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs"
 //                   or read plugins["second-opinion@second-opinion"][0].installPath
 //                   from ~/.claude/plugins/installed_plugins.json
-//     other hosts : each host keeps its OWN plugin cache and may ship no
-//                   manifest at all — Codex, for example, installs under
-//                   <CODEX_HOME>/plugins/cache/second-opinion/second-opinion/<version>
-//                   with no installed_plugins.json. Do not read another host's
-//                   manifest; it points at that host's copy, which can be a
-//                   different version. Resolve the newest version directory in
-//                   your own host's cache instead.
+//     other hosts : use the exact path from that host's available-skills
+//                   catalog. Join its root alias and relative path literally;
+//                   repeated marketplace/plugin names are normal and must not
+//                   be flattened. Codex, for example, installs under
+//                   <CODEX_HOME>/plugins/cache/second-opinion/second-opinion/<version>.
+//                   Only if the host provides no catalog or manifest should a
+//                   caller discover the current version in that host's own cache.
 //
 //   CALLING IT (brief is a file; its contents go to the vendor over stdin)
 //     node <dispatch> --vendor codex  --operation text --brief b.txt --cwd <dir> --out o.txt --err e.txt
@@ -30,7 +30,7 @@
 //   reports them precisely when a call is wrong, and prose copies of those rules
 //   drift from the checks that enforce them.
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, closeSync, createWriteStream, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { appendFileSync, closeSync, createWriteStream, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,7 +39,11 @@ import { DISPATCH_MODES, OPERATIONS, PolicyError, VENDORS, buildVendorArgv, comp
 const MAX_BRIEF_BYTES = 8 * 1024 * 1024;
 const MAX_VENDOR_USAGE_BYTES = 64 * 1024 * 1024;
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const MODEL_SHORTHAND_EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh"]);
+const MODEL_SHORTHAND_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max", "ultra"]);
+const MODEL_CATALOG_SCHEMA = 1;
+const MODEL_CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
+const MODEL_CATALOG_FAILURE_TTL_MS = 5 * 60 * 1000;
+const MODEL_CATALOG_FILENAME = "model-catalog-v1.json";
 const SINGLE_OPTIONS = new Set(["--vendor", "--operation", "--brief", "--cwd", "--model", "--effort", "--mode", "--timeout", "--out", "--err", "--expect-output", "--dry-run"]);
 // Accepted --vendor spellings: the canonical set plus the "antigravity" alias
 // normalizeVendor() folds into "agy". Kept next to VENDORS so a new vendor is
@@ -87,7 +91,11 @@ export function usageText() {
     `  help       : ${[...HELP_FLAGS].join(" ")}  (first argument only)`,
     "",
     "  --brief is a FILE; its contents reach the vendor over stdin.",
-    "  Without --vendor, all current catalogs must load and --model must match one vendor.",
+    "  Without --vendor, --model is matched against a cache-first provider catalog.",
+    "  Catalog metadata is cached for 24h at ~/.second-opinion/model-catalog-v1.json.",
+    "  A fresh-cache miss refreshes once; refresh failure uses last-known-good data.",
+    "  Degraded fallback retries after 5m; the active Codex local cache is re-read.",
+    "  Model separators/case and effort labels (light/very-high/maximum) are normalized.",
     "  --cwd is the vendor's workspace; omitted, it is this process's directory.",
     "  --brief/--input/--out/--err resolve from THIS process's directory, not --cwd.",
     "  Vendor-native flags (agy --add-dir, codex -s) are assembled internally.",
@@ -101,12 +109,14 @@ export function usageText() {
     "  Claude Code : \"$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs\", or installPath from",
     "                ~/.claude/plugins/installed_plugins.json",
     "                (plugins[\"second-opinion@second-opinion\"][0].installPath)",
-    "  other hosts : use YOUR host's own plugin cache, resolving its current",
-    "                version rather than a fixed one. It may ship no manifest at",
-    "                all (Codex installs under",
-    "                <CODEX_HOME>/plugins/cache/second-opinion/second-opinion/<version>).",
-    "                Another host's manifest points at that host's copy, which can",
-    "                be a different version.",
+    "  other hosts : use the exact path from YOUR host's available-skills catalog;",
+    "                join its root alias and relative path literally. Do not flatten",
+    "                repeated marketplace/plugin names. Codex installs under",
+    "                <CODEX_HOME>/plugins/cache/second-opinion/second-opinion/<version>.",
+    "                If no catalog or manifest exists, only then discover the current",
+    "                version in that same host's cache. Never use another host's copy.",
+    "                On Windows PowerShell 5.1, verify catalog paths directly; an empty",
+    "                rg --files ... | rg '...$' result is not proof of absence.",
     "",
     "  Set SECOND_OPINION_RECEIPT to a path to record calls as JSON lines.",
   ].join("\n");
@@ -117,20 +127,17 @@ export function splitModelEffort(model, effort) {
   const separator = model.lastIndexOf("@");
   if (separator <= 0) return { model, effort };
   const candidate = model.slice(separator + 1).toLowerCase();
-  if (!MODEL_SHORTHAND_EFFORTS.has(candidate)) return { model, effort };
-  return { model: model.slice(0, separator), effort: candidate };
+  const normalized = normalizeEffort(candidate);
+  if (!MODEL_SHORTHAND_EFFORTS.has(normalized)) return { model, effort };
+  return { model: model.slice(0, separator), effort: normalized };
 }
 
 export function resolveCodexModelAlias(model, env = process.env) {
   if (!model) return model;
   try {
-    const slugs = codexModelCatalog(env);
-    const requested = model.toLowerCase();
-    const exact = slugs.find((slug) => slug.toLowerCase() === requested);
-    if (exact) return exact;
-    const suffix = `-${requested}`;
-    const matches = slugs.filter((slug) => slug.toLowerCase().endsWith(suffix));
-    return matches.length === 1 ? matches[0] : model;
+    const matches = rankedCatalogMatches(model, "codex", codexModelCatalog(env));
+    const best = winningMatches(matches);
+    return best.length === 1 ? best[0].model : model;
   } catch {
     return model;
   }
@@ -140,74 +147,294 @@ function codexModelCatalog(env = process.env) {
   const root = env.CODEX_HOME?.trim() || join(homedir(), ".codex");
   const payload = JSON.parse(readFileSync(join(root, "models_cache.json"), "utf8"));
   return Array.isArray(payload?.models)
-    ? payload.models.map((entry) => entry?.slug).filter((value) => typeof value === "string" && value.length > 0)
+    ? payload.models.map((entry) => catalogRecord("codex", entry)).filter(Boolean)
     : [];
 }
 
-function modelNameMatches(requested, available) {
-  const alias = String(requested).toLowerCase();
-  const candidate = String(available).toLowerCase();
-  if (!alias || !candidate) return false;
-  if (candidate === alias || candidate.endsWith(`-${alias}`)) return true;
-  const firstSeparator = candidate.indexOf("-");
-  return firstSeparator >= 0 && candidate.slice(firstSeparator + 1).startsWith(`${alias}-`);
+function normalizeEffort(value) {
+  const normalized = String(value).trim().toLowerCase().replace(/[\s_-]+/g, " ");
+  return ({ light: "low", "very high": "xhigh", maximum: "max" })[normalized] ?? normalized.replace(/ /g, "");
 }
 
-function claudeModelCatalog(help) {
-  const start = help.indexOf("--model <model>");
-  if (start < 0) return [];
-  const tail = help.slice(start);
-  const nextOption = tail.slice(1).search(/\n\s{2}--[a-z]/i);
-  const block = nextOption < 0 ? tail : tail.slice(0, nextOption + 1);
-  return [...block.matchAll(/'([a-z0-9][a-z0-9._-]*)'/gi)].map((match) => match[1]);
+function stripModelDecoration(value) {
+  return String(value ?? "").replace(/(?:\x1b\[[0-9;]*m|\[[0-9;]*m\])/g, "").trim();
 }
 
-function commandModelCatalog(command, args, parse, deps) {
+function normalizeModelKey(value) {
+  return stripModelDecoration(value).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
+}
+
+function uniqueStrings(values) {
+  return [...new Set(values.map(stripModelDecoration).filter(Boolean))];
+}
+
+function catalogRecord(vendor, value) {
+  if (typeof value === "string") value = vendor === "claude" ? { value, resolvedModel: value } : { slug: value };
+  if (!value || typeof value !== "object") return null;
+  if (value.canonical && Array.isArray(value.aliases)) {
+    // 0.9.3 development caches created before provider-advertised aliases were
+    // distinguished from display-derived families are unsafe to reuse: refresh
+    // those Claude rows instead of guessing whether a bare token is executable.
+    if (vendor === "claude" && !Object.hasOwn(value, "latestAlias")) return null;
+    const canonical = stripModelDecoration(value.canonical);
+    if (!canonical) return null;
+    return {
+      canonical,
+      aliases: uniqueStrings([canonical, ...value.aliases]),
+      efforts: uniqueStrings(value.efforts ?? []).map(normalizeEffort),
+      family: value.family ? normalizeModelKey(value.family) : undefined,
+      latestAlias: value.latestAlias ? normalizeModelKey(value.latestAlias) : null,
+    };
+  }
+  if (vendor === "codex") {
+    const canonical = stripModelDecoration(value.slug);
+    if (!canonical) return null;
+    const withoutProvider = canonical.replace(/^gpt[-_. ]+/i, "");
+    const lastPart = normalizeModelKey(withoutProvider).split(" ").at(-1);
+    return {
+      canonical,
+      aliases: uniqueStrings([canonical, value.display_name, withoutProvider, lastPart && !/^\d+$/.test(lastPart) ? lastPart : ""]),
+      efforts: uniqueStrings((value.supported_reasoning_levels ?? []).map((row) => row?.effort)).map(normalizeEffort),
+    };
+  }
+  if (vendor === "agy") {
+    const canonical = stripModelDecoration(value.slug ?? value.canonical);
+    if (!canonical) return null;
+    const withoutProvider = canonical.replace(/^claude[-_. ]+/i, "");
+    const withoutThinking = withoutProvider.replace(/[-_. ]+thinking$/i, "");
+    return { canonical, aliases: uniqueStrings([canonical, withoutProvider, withoutThinking]), efforts: [] };
+  }
+  const canonical = stripModelDecoration(value.resolvedModel ?? value.value ?? value.canonical);
+  if (!canonical) return null;
+  const shortValue = stripModelDecoration(value.value);
+  const display = stripModelDecoration(value.displayName).replace(/\s*\([^)]*\)\s*$/, "");
+  const withoutProvider = canonical.replace(/^claude[-_. ]+/i, "");
+  const shortKey = normalizeModelKey(shortValue);
+  const latestAlias = shortKey !== "default" && /^[a-z]+$/.test(shortKey) ? shortKey : undefined;
+  const familyCandidate = shortKey === "default"
+    ? undefined
+    : (/^[a-z]+$/.test(shortKey) ? shortKey : normalizeModelKey(display || withoutProvider).split(" ")[0]);
+  const family = familyCandidate && familyCandidate !== "default" && /^[a-z]+$/.test(familyCandidate) ? familyCandidate : undefined;
+  return {
+    canonical,
+    aliases: uniqueStrings([canonical, withoutProvider, shortValue !== "default" ? shortValue : "", display, family]),
+    efforts: uniqueStrings(value.supportedEffortLevels ?? []).map(normalizeEffort),
+    family,
+    latestAlias: latestAlias ?? null,
+  };
+}
+
+function normalizeCatalog(vendor, catalog) {
+  const source = Array.isArray(catalog) ? catalog : catalog?.models;
+  const models = Array.isArray(source) ? source.map((value) => catalogRecord(vendor, value)).filter(Boolean) : [];
+  return { available: (Array.isArray(catalog) || catalog?.available === true) && models.length > 0, models };
+}
+
+function claudeModelCatalog(output) {
+  for (const line of String(output).split(/\r?\n/)) {
+    try {
+      const event = JSON.parse(line);
+      const models = event?.type === "control_response" ? event?.response?.response?.models : undefined;
+      if (Array.isArray(models)) return models.map((value) => catalogRecord("claude", value)).filter(Boolean);
+    } catch { /* ignore non-protocol stderr and partial lines */ }
+  }
+  return [];
+}
+
+function commandModelCatalog(command, args, parse, deps, input) {
   try {
     const result = (deps.spawnSync ?? spawnSync)(command, args, {
       shell: false,
       encoding: "utf8",
       windowsHide: true,
       env: deps.env ?? process.env,
+      input,
+      timeout: deps.catalogTimeoutMs ?? 20_000,
+      killSignal: "SIGKILL",
+      maxBuffer: 8 * 1024 * 1024,
     });
-    if (result.status !== 0) return { available: false, models: [] };
+    if (result.status !== 0 || result.error || result.signal) return { available: false, models: [] };
     const models = parse(`${result.stdout ?? ""}\n${result.stderr ?? ""}`);
     return { available: models.length > 0, models };
   } catch { return { available: false, models: [] }; }
 }
 
-function discoverModelCatalogs(deps = {}) {
-  if (deps.modelCatalogs) {
-    return Object.fromEntries(VENDORS.map((vendor) => {
-      const catalog = deps.modelCatalogs[vendor];
-      return [vendor, Array.isArray(catalog) ? { available: true, models: catalog } : catalog];
-    }));
-  }
+function liveModelCatalogs(deps = {}) {
   const env = deps.env ?? process.env;
   let codex = { available: false, models: [] };
   try {
     const models = codexModelCatalog(env);
     codex = { available: models.length > 0, models };
   } catch { /* unavailable vendor catalog */ }
-  const agy = commandModelCatalog("agy", ["models"], (output) => output.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^[a-z0-9][a-z0-9._-]*$/i.test(line)), deps);
-  const claude = commandModelCatalog("claude", ["--help"], claudeModelCatalog, deps);
+  const agy = commandModelCatalog("agy", ["models"], (output) => output.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^[a-z0-9][a-z0-9._-]*$/i.test(line)).map((slug) => catalogRecord("agy", { slug })), deps);
+  // Claude's supportedModels metadata is returned by the initialize control
+  // request. Cache only the model rows: the full response also carries account
+  // metadata that must never be persisted by second-opinion. This exact
+  // non-print protocol (intentionally no -p) is field-verified on Claude Code
+  // 2.1.220; adding -p would switch away from the control session being queried.
+  const request = `${JSON.stringify({ request_id: "second-opinion-catalog", type: "control_request", request: { subtype: "initialize" } })}\n`;
+  const claude = commandModelCatalog("claude", ["--output-format", "stream-json", "--verbose", "--input-format", "stream-json", "--tools", "", "--no-session-persistence", "--safe-mode", "--disable-slash-commands"], claudeModelCatalog, deps, request);
   return { codex, agy, claude };
 }
 
-export function resolveVendorForModel(model, deps = {}) {
-  const catalogs = discoverModelCatalogs(deps);
+function modelCatalogCachePath(deps = {}) {
+  return deps.cachePath ?? join(homedir(), ".second-opinion", MODEL_CATALOG_FILENAME);
+}
+
+function readCatalogCache(deps = {}) {
+  try {
+    const payload = JSON.parse(readFileSync(modelCatalogCachePath(deps), "utf8"));
+    if (payload?.schemaVersion !== MODEL_CATALOG_SCHEMA || !Number.isFinite(payload.checkedAt)) return null;
+    const catalogs = Object.fromEntries(VENDORS.map((vendor) => [vendor, normalizeCatalog(vendor, payload.vendors?.[vendor])]));
+    const invalid = VENDORS.some((vendor) => payload.vendors?.[vendor]?.available === true && catalogs[vendor].available !== true);
+    return { checkedAt: payload.checkedAt, degraded: payload.degraded === true, invalid, catalogs };
+  } catch { return null; }
+}
+
+function writeCatalogCache(catalogs, now, degraded, deps = {}) {
+  const path = modelCatalogCachePath(deps);
+  const temp = `${path}.${process.pid}.tmp`;
+  const vendors = Object.fromEntries(VENDORS.map((vendor) => [vendor, {
+    available: catalogs[vendor]?.available === true,
+    models: catalogs[vendor]?.models ?? [],
+  }]));
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(temp, `${JSON.stringify({ schemaVersion: MODEL_CATALOG_SCHEMA, checkedAt: now, degraded, vendors }, null, 2)}\n`, "utf8");
+    renameSync(temp, path);
+  } catch {
+    try { rmSync(temp, { force: true }); } catch { /* cache failure must not block routing */ }
+  }
+}
+
+function refreshModelCatalogs(stale, deps = {}) {
+  const live = liveModelCatalogs(deps);
+  let degraded = false;
+  const catalogs = Object.fromEntries(VENDORS.map((vendor) => {
+    if (live[vendor]?.available) return [vendor, live[vendor]];
+    degraded = true;
+    // Codex's source is already a local cache and may vary with CODEX_HOME.
+    // Never reuse a unified-cache Codex row when the active local source failed.
+    if (vendor !== "codex" && stale?.[vendor]?.available) return [vendor, stale[vendor]];
+    return [vendor, { available: false, models: [] }];
+  }));
+  writeCatalogCache(catalogs, deps.now?.() ?? Date.now(), degraded, deps);
+  return catalogs;
+}
+
+function currentCodexCatalog(deps = {}) {
+  try {
+    const models = codexModelCatalog(deps.env ?? process.env);
+    return { available: models.length > 0, models };
+  } catch { return { available: false, models: [] }; }
+}
+
+function discoverModelCatalogs(deps = {}, forceRefresh = false) {
+  if (deps.modelCatalogs) {
+    return { catalogs: Object.fromEntries(VENDORS.map((vendor) => [vendor, normalizeCatalog(vendor, deps.modelCatalogs[vendor])])), refreshable: false, refreshed: false };
+  }
+  const now = deps.now?.() ?? Date.now();
+  const cached = readCatalogCache(deps);
+  const cacheTtl = cached?.degraded ? MODEL_CATALOG_FAILURE_TTL_MS : MODEL_CATALOG_TTL_MS;
+  const age = cached ? now - cached.checkedAt : null;
+  if (!forceRefresh && cached && !cached.invalid && age >= 0 && age < cacheTtl) {
+    return { catalogs: { ...cached.catalogs, codex: currentCodexCatalog(deps) }, refreshable: true, refreshed: false };
+  }
+  return { catalogs: refreshModelCatalogs(cached?.catalogs, deps), refreshable: true, refreshed: true };
+}
+
+function requestedRouteHint(model) {
+  const source = stripModelDecoration(model).toLowerCase();
+  for (const [prefix, vendor] of [["claude code ", "claude"], ["codex ", "codex"], ["antigravity ", "agy"], ["agy ", "agy"]]) {
+    if (source.startsWith(prefix)) return { vendor, model: normalizeModelKey(source.slice(prefix.length)) };
+  }
+  return { vendor: undefined, model: normalizeModelKey(source) };
+}
+
+function rankedCatalogMatches(requested, vendor, catalog) {
+  const hint = requestedRouteHint(requested);
+  if (hint.vendor && hint.vendor !== vendor) return [];
+  const key = hint.model;
+  if (!key) return [];
+  const matches = [];
+  for (const record of catalog) {
+    const aliases = record.aliases.map(normalizeModelKey);
+    if (aliases.includes(key)) {
+      const preserveLatestAlias = vendor === "claude" && record.latestAlias === key;
+      matches.push({ vendor, model: preserveLatestAlias ? key : record.canonical, rank: 100, record });
+      continue;
+    }
+    if (vendor === "claude" && record.family && new RegExp(`^${record.family} \\d+(?: \\d+)*(?: [a-z0-9]+)*$`).test(key)) {
+      matches.push({ vendor, model: `claude-${key.replace(/ /g, "-")}`, rank: 70, record });
+      continue;
+    }
+    if (aliases.some((alias) => alias.endsWith(` ${key}`) || alias.startsWith(`${key} `))) {
+      matches.push({ vendor, model: record.canonical, rank: 40, record });
+    }
+  }
+  return matches;
+}
+
+function winningMatches(matches) {
+  const rank = Math.max(-1, ...matches.map((match) => match.rank));
+  return matches.filter((match) => match.rank === rank);
+}
+
+function modelNameMatches(requested, available) {
+  const alias = normalizeModelKey(requested);
+  const candidate = normalizeModelKey(available);
+  if (!alias || !candidate) return false;
+  if (candidate === alias || candidate.endsWith(` ${alias}`) || candidate.startsWith(`${alias} `)) return true;
+  const firstSeparator = candidate.indexOf(" ");
+  return firstSeparator >= 0 && candidate.slice(firstSeparator + 1).startsWith(`${alias} `);
+}
+
+function matchModelRoute(model, catalogs) {
   const unavailable = VENDORS.filter((vendor) => catalogs[vendor]?.available !== true);
   if (unavailable.length > 0) {
     throw new CliError(`model catalog unavailable for automatic vendor routing: ${unavailable.join(", ")} (pass --vendor explicitly)`);
   }
-  const matches = VENDORS.flatMap((vendor) => {
-    const models = [...new Set(catalogs[vendor].models)];
-    return models.filter((candidate) => modelNameMatches(model, candidate)).map((candidate) => ({ vendor, model: candidate }));
-  });
+  const matches = winningMatches(VENDORS.flatMap((vendor) => rankedCatalogMatches(model, vendor, catalogs[vendor].models)));
   const vendors = [...new Set(matches.map((match) => match.vendor))];
-  if (vendors.length === 1) return vendors[0];
-  if (matches.length === 0) throw new CliError(`unknown model for automatic vendor routing: ${model}`);
+  if (vendors.length === 1) {
+    const sameVendor = matches.filter((match) => match.vendor === vendors[0]);
+    const models = [...new Set(sameVendor.map((match) => match.model))];
+    if (models.length === 1) {
+      return {
+        vendor: vendors[0],
+        model: models[0],
+        efforts: uniqueStrings(sameVendor.flatMap((match) => match.record.efforts ?? [])).map(normalizeEffort),
+      };
+    }
+  }
+  if (matches.length === 0) return null;
   throw new CliError(`ambiguous model for automatic vendor routing: ${model} (${matches.map((match) => `${match.vendor}:${match.model}`).join(", ")})`);
+}
+
+function resolveModelRouteDetailed(model, deps = {}) {
+  let discovery = discoverModelCatalogs(deps);
+  let route = matchModelRoute(model, discovery.catalogs);
+  if (!route && discovery.refreshable && !discovery.refreshed) {
+    discovery = discoverModelCatalogs(deps, true);
+    route = matchModelRoute(model, discovery.catalogs);
+  }
+  if (!route) throw new CliError(`unknown model for automatic vendor routing: ${model}`);
+  return route;
+}
+
+export function resolveModelRoute(model, deps = {}) {
+  const { vendor, model: routedModel } = resolveModelRouteDetailed(model, deps);
+  return { vendor, model: routedModel };
+}
+
+export function resolveVendorForModel(model, deps = {}) {
+  return resolveModelRouteDetailed(model, deps).vendor;
+}
+
+function validateModelValue(model) {
+  if (model !== undefined && (model.length === 0 || model.startsWith("-") || /[\x00-\x1f\x7f]/.test(model))) {
+    throw new CliError("--model must be non-empty, must not start with '-', and must not contain control characters");
+  }
 }
 
 export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
@@ -233,14 +460,15 @@ export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
   }
   const modelRequested = raw.model;
   const shorthand = splitModelEffort(raw.model, raw.effort);
-  const model = shorthand.model;
-  const effort = shorthand.effort;
-  if (model !== undefined && (model.length === 0 || model.startsWith("-") || /[\x00-\x1f\x7f]/.test(model))) {
-    throw new CliError("--model must be non-empty, must not start with '-', and must not contain control characters");
-  }
+  let model = shorthand.model;
+  const effort = shorthand.effort === undefined ? undefined : normalizeEffort(shorthand.effort);
+  validateModelValue(model);
   if (raw.vendor !== undefined && !VENDOR_INPUTS.includes(raw.vendor)) throw new CliError(`--vendor must be one of: ${VENDOR_INPUTS.join(", ")}`);
   if (!raw.vendor && !model) throw new CliError("--vendor is required when --model is omitted");
-  const vendor = raw.vendor ? normalizeVendor(raw.vendor) : resolveVendorForModel(model, deps);
+  const route = raw.vendor ? { vendor: normalizeVendor(raw.vendor), model, efforts: [] } : resolveModelRouteDetailed(model, deps);
+  const vendor = route.vendor;
+  model = route.model;
+  validateModelValue(model);
   // Accepted values come from the constant, not a hand-typed copy of it — the
   // same drift that made the prose usage wrong applies to error strings.
   if (!OPERATIONS.includes(raw.operation)) throw new CliError(`--operation must be one of: ${OPERATIONS.join(", ")}`);
@@ -265,9 +493,9 @@ export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
   assertDirectory(cwd, "cwd");
   if (effort !== undefined) {
     if (!["codex", "claude"].includes(vendor)) throw new CliError("--effort is supported only for codex or claude");
-    const allowedEffort = vendor === "claude"
-      ? ["low", "medium", "high", "xhigh", "max"]
-      : ["low", "medium", "high", "xhigh"];
+    const allowedEffort = route.efforts.length > 0
+      ? route.efforts
+      : (vendor === "claude" ? ["low", "medium", "high", "xhigh", "max"] : ["low", "medium", "high", "xhigh", "max", "ultra"]);
     // Name the accepted values, not just the rejection. Usage deliberately does
     // not restate per-vendor rules, so this error is the caller's only route to
     // a working call — "invalid --effort" alone leaves them guessing, and the
@@ -780,7 +1008,15 @@ export async function executeCli(argv, deps = {}) {
     (deps.stdout ?? process.stdout).write(`${usageText()}\n`);
     return 0;
   }
-  try { options = parseCli(argv, deps.cwd ?? process.cwd(), { env: deps.env, spawnSync: deps.spawnSync, modelCatalogs: deps.modelCatalogs }); }
+  try {
+    options = parseCli(argv, deps.cwd ?? process.cwd(), {
+      env: deps.env,
+      spawnSync: deps.spawnSync,
+      modelCatalogs: deps.modelCatalogs,
+      cachePath: deps.cachePath,
+      now: deps.now,
+    });
+  }
   catch (error) {
     stderr.write(`dispatch validation error: ${error.message}\n`);
     return 2;

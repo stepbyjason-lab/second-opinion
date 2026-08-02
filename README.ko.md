@@ -5,7 +5,7 @@
 Claude Code 안에서 **다른 벤더의 AI**(Codex/GPT, Antigravity/Gemini)를 일상어로 부려 쓰는
 어댑터 스킬 — 점검·리뷰·의견부터 작업 오프로드, 이미지 생성까지.
 
-**버전 0.9.2**
+**버전 0.9.3**
 
 > "이 설계 코덱스로 점검받고 싶어" / "안티그래비티한테 물어봐" / "교차 검증해줘"
 > "코덱스한테 로고 시안 이미지 만들어달라고 해줘" / "클로드 사용량 아끼게 이 번역은 제미나이로"
@@ -37,8 +37,10 @@ Claude가 만든 것을 Claude가 검토하면 결함을 과소보고한다 — 
 | `agy -p "<텍스트>"`는 stdin을 안 닫으면 **무한 hang** + argv라 **30,000자 한계** | brief를 stdin으로 전달(`-p - < brief.txt`) — hang 없음, 105KB 실측 통과 |
 | `--model`은 디스플레이 라벨(`"Gemini 3.1 Pro (High)"`)과 `agy models`의 정규 slug(`gemini-3.1-pro-high`) 둘 다 유효(agy 1.1.5). `agy models`는 slug를, 피커는 라벨을 보여줌. 모르는·깨진 이름은 **exit 1로 loud reject**(구버전은 조용히 강등) | 어느 출처든 그대로 복사하고 exit code 확인 |
 | subprocess·영수증 cwd가 temp여도 AGY가 이전 host project를 계속 사용할 수 있음 | 모든 AGY 호출에 요청 workspace를 `--add-dir`로 결속하고, 필요하면 `--expect-output`으로 hidden token 읽기를 검사 |
-| Madi 논리 모델명 `luna` 또는 `luna@high`를 넘겼지만 Codex CLI는 `gpt-5.6-luna` 같은 versioned slug를 요구 | 마지막 `@effort`를 승인값일 때만 분리하고 Codex 로컬 `models_cache.json`의 exact 또는 유일한 `-별칭` suffix로 정규화. 0개·복수·cache 오류는 추측하지 않음 |
-| `fable`처럼 모델명은 알지만 어느 벤더 소속인지 모름 | `--vendor`를 생략하면 Codex·AGY·Claude의 현재 카탈로그를 대조. 한 벤더만 잡힐 때만 자동 라우팅하고 0개·복수·카탈로그 판독 실패면 실행 전 실패 |
+| `terra`·`gpt 5.5`·`5.6 sol@ultra`처럼 입력했지만 Codex CLI는 현재 정규 slug를 요구 | 대소문자·구분자와 UI effort 명칭을 정규화하고 Codex live cache에서 해석(`terra` → `gpt-5.6-terra`). 선택 모델이 광고한 effort만 허용(`low`부터 `ultra` 중 지원값) |
+| `opus`·`opus 4.8`·`fable`처럼 모델명만 알고 벤더는 모름 | cache-first Codex·AGY·Claude 메타데이터를 대조. 공급자가 직접 광고한 `opus`는 최신 별칭으로 유지하고 display에서 유도한 `fable`은 `claude-fable-5`로 전달. 버전명은 고정 family 표가 아니라 현재 메타데이터에서 유도 |
+| `opus 4.6`·`sonnet 4.6`이 Claude Code와 AGY 양쪽에 존재 | AGY의 정확한 카탈로그 항목이 Claude의 family/version 추론보다 우선. `--vendor` 생략 시 `Claude Code opus 4.6`, 또는 `--vendor claude --model claude-opus-4-6`으로 Claude 선택 |
+| 호출마다 공급자 카탈로그를 조회하면 시작·네트워크 시간이 낭비됨 | 모델 메타데이터만 `~/.second-opinion/model-catalog-v1.json`에 24시간 캐시. fresh cache miss는 1회 갱신하고 실패하면 last-known-good를 쓰되 5분 후 재시도. 이미 로컬인 Codex cache는 현재 `CODEX_HOME`에서 다시 읽음 |
 | Windows에서 codex sandbox의 **파일 읽기 불능** | "파일 읽어봐" 대신 내용을 brief에 발췌 동봉 |
 | 이미지 생성: agy는 **지정 저장 위치를 무시**(자기 scratch 폴더에 저장), codex는 **쓰기 샌드박스 필요** + Windows 복사 실패 가능 | 벤더별 실제 산출물 위치를 알고, 파일 존재를 직접 확인 후 원한 위치로 옮김 — 벤더의 "저장했다"를 성공으로 안 침 |
 | "이상 없음"은 약한 신호(특히 Gemini의 false-negative 편향) | "문제를 못 찾음 ≠ 문제 없음" 명시 전달 |
@@ -110,6 +112,12 @@ claude plugin install second-opinion@second-opinion
 
 `claude plugin install`은 `--help`에 안 나오지만 동작한다(Windows Claude Code,
 2026-07 실측). 대화형 `/plugin` 다이얼로그를 못 여는 환경에서 유용.
+
+Claude 이외의 호스트에서는 그 호스트의 available-skills 카탈로그가 제공한 정확한 스킬
+경로를 사용한다. root alias와 상대 경로를 그대로 결합하며, 캐시에서 marketplace/plugin
+이름이 반복되는 것은 정상이다. 경로 단계를 합치거나 버전 디렉터리를 재구성하지 않는다.
+Windows PowerShell 5.1에서는 `Test-Path -LiteralPath`로 정확한 경로를 확인한다.
+`rg --files ... | rg '...$'`의 빈 결과만으로 스킬이 없다고 판정하면 안 된다.
 
 ### C. 수동 복사
 

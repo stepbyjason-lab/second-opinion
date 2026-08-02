@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.9.3 — 2026-08-02
+
+- **Cache-first provider catalogs.** Automatic routing caches model-only metadata
+  for 24 hours in `~/.second-opinion/model-catalog-v1.json`. Fresh hits launch no
+  provider process; a fresh miss forces one refresh. Failed refreshes retain
+  last-known-good data and retry after five minutes, while incomplete first
+  discovery still fails closed. The active `CODEX_HOME` cache is re-read locally
+  so models do not bleed between Codex environments. Process-backed metadata
+  discovery is bounded to 20 seconds and 8 MB per provider.
+  Explicit `--vendor` bypasses discovery and cache refresh.
+- **Ranked, version-aware routing.** Case and separators are normalized. Exact
+  provider entries outrank dynamically inferred Claude family/version names:
+  `opus` stays Claude's latest alias, `opus 4.8` becomes `claude-opus-4-8`, and
+  display-derived `fable` becomes the advertised canonical `claude-fable-5`;
+  the exact AGY entries make bare `opus 4.6` and `sonnet 4.6` route to AGY. `Claude Code opus 4.6`
+  or explicit `--vendor claude` selects Claude. `terra`, `gpt 5.5`, and `5.5`
+  resolve through the current Codex catalog. No fixed model-family table was added.
+- **Current effort names.** Codex recognizes `max` and `ultra` where the selected
+  model advertises them; UI labels normalize as `light`→`low`, `very-high`→`xhigh`,
+  and `maximum`→`max`.
+- Claude catalog discovery now uses the CLI initialize control metadata rather
+  than scraping `--help`. Only model fields are retained; account metadata is
+  discarded. Receipt schema remains version 1 and no public option was added.
+
 ## 0.9.2 — 2026-08-01
 
 - **Default model-to-vendor routing.** When `--vendor` is omitted, `--model` is

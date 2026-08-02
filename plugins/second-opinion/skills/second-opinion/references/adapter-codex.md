@@ -8,18 +8,20 @@
 
 ### 모델 입력 정규화
 
-dispatcher는 `--effort`가 따로 없을 때 `--model luna@high`의 마지막 `@high`를 effort로
-분리한다. Codex 모델 값은 `CODEX_HOME/models_cache.json` 또는 기본
-`~/.codex/models_cache.json`에서 다음 순서로 정규화한다.
+dispatcher는 `--effort`가 따로 없을 때 `--model 5.6 sol@ultra`의 마지막 `@ultra`를
+effort로 분리한다. `light`·`very-high`·`maximum`은 각각 `low`·`xhigh`·`max`로 바뀌며,
+현재 Codex 전체 표면은 `low | medium | high | xhigh | max | ultra`이며 자동 라우팅은
+선택 모델이 카탈로그에서 광고한 지원값만 허용한다. Codex 모델 값은
+`CODEX_HOME/models_cache.json` 또는 기본 `~/.codex/models_cache.json`의 slug,
+display name, 논리 별칭을 대소문자·구분자 차이 없이 대조한다.
 
-1. cache의 exact slug와 대소문자 무시 일치하면 그 slug를 사용한다.
-2. 아니면 `-<입력>`으로 끝나는 slug가 정확히 하나일 때만 그 slug를 사용한다
-   (`luna` → `gpt-5.6-luna`).
-3. 일치 0개·복수, cache 부재·파싱 실패면 원문을 그대로 전달해 Codex의 loud reject에 맡긴다.
+예: `terra` → `gpt-5.6-terra`, `gpt 5.5` 또는 `5.5` → `gpt-5.5`.
+동순위 후보가 복수면 추측하지 않는다. 명시적 `--vendor codex` 호출에서 로컬 cache를
+읽지 못하거나 일치하지 않으면 원문을 전달해 Codex의 loud reject에 맡긴다.
 
-고정 별칭표·fuzzy matching·network 조회는 없다. receipt의 `modelRequested`는 호출자의
-원문이고 `model`은 실제 CLI에 전달한 정규화 결과다. `--effort`를 따로 명시한 호출은
-`model@effort`를 분해하지 않는다.
+고정 별칭표와 fuzzy matching은 없다. `--vendor` 생략 시 쓰는 공급자 통합 cache 정책은
+SKILL.md를 따른다. receipt의 `modelRequested`는 호출자의 원문이고 `model`은 실제 CLI에
+전달한 정규화 결과다. `--effort`를 따로 명시한 호출은 `model@effort`를 분해하지 않는다.
 
 ### 명시적 review mode
 

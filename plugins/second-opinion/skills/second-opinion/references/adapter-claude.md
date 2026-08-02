@@ -31,6 +31,15 @@ default 호출이며 자동으로 plan/review가 되지 않는다. 즉 읽기 �
 PowerShell도 동일한 `node ... dispatch.mjs` argv를 사용한다. brief 내용은 dispatcher가
 바이트 그대로 stdin으로 전달하므로 `Get-Content | claude`를 조립하지 않는다.
 
+- `--vendor`를 생략한 자동 라우팅은 Claude initialize control response의 모델 메타데이터를
+  사용한다. 이 요청은 추론을 실행하지 않으며, dispatcher는 응답 중 모델 필드만 24시간
+  cache에 저장하고 계정·조직 정보는 버린다. `--help` 문구를 모델 카탈로그로 해석하지 않는다.
+- `opus`는 최신 alias 그대로 전달한다. 현재 metadata에서 발견한 family를 바탕으로
+  `opus 5`·`opus 4.8` 같은 versioned 이름을 정규 ID로 만들며 고정 family 목록은 없다.
+  AGY에도 정확한 `opus 4.6`·`sonnet 4.6` 항목이 있으므로 bare 입력은 AGY가 우선한다.
+  Claude Code를 원하면 `--vendor`를 생략한 `Claude Code opus 4.6`, 또는
+  `--vendor claude --model claude-opus-4-6`처럼 벤더를 고정한다. `Claude Code` 접두사는
+  자동 라우팅 힌트이므로 명시적 `--vendor`의 `--model` 값에는 붙이지 않는다.
 - `--model`과 `--effort`는 필수다. Claude CLI 2.1.215 실측 effort는
   `low | medium | high | xhigh | max`다.
 - `--out`과 `--err`도 필수다. raw JSON·stderr가 증거 봉투의 backend output이 된다.

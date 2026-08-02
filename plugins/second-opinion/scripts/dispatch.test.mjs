@@ -16,7 +16,7 @@ import {
   effectiveVendorMode,
   resolveExecutable,
 } from "./vendor-policy.mjs";
-import { executeCli, parseCli, resolveCodexModelAlias, resolveVendorForModel, run, splitModelEffort } from "./dispatch.mjs";
+import { executeCli, parseCli, resolveCodexModelAlias, resolveModelRoute, resolveVendorForModel, run, splitModelEffort, usageText } from "./dispatch.mjs";
 
 const tempDirs = [];
 function makeTempDir(prefix, parent = tmpdir()) {
@@ -28,6 +28,30 @@ process.on("exit", () => {
   for (const dir of tempDirs) {
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
   }
+});
+
+test("skill resolves the catalog path directly before declaring it missing", () => {
+  // This is a user-facing operations contract, not prose decoration. A PS 5.1
+  // `rg --files | rg '...$'` false negative previously produced a false install error.
+  const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
+  assert.match(skill, /available-skills 카탈로그의 root alias와 상대 경로/);
+  assert.match(skill, /Test-Path -LiteralPath/);
+  assert.match(skill, /rg --files <root> -g 'SKILL\.md' -g 'dispatch\.mjs'/);
+  assert.match(skill, /검색 결과가 비었다는 이유만으로 설치 누락이나 카탈로그 오류라고 단정하지 않는다/);
+});
+
+test("0.9.3 public help and documentation describe cache-first ranked routing", () => {
+  const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
+  const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
+  const englishReadme = readFileSync(new URL("../../../README.md", import.meta.url), "utf8");
+  const readme = readFileSync(new URL("../../../README.ko.md", import.meta.url), "utf8");
+  assert.equal(plugin.version, "0.9.3");
+  for (const text of [skill, englishReadme, readme]) {
+    assert.match(text, /0\.9\.3/);
+    assert.match(text, /model-catalog-v1\.json/);
+    assert.match(text, /opus 4\.6/);
+  }
+  assert.match(usageText(), /cached for 24h.*model-catalog-v1\.json/s);
 });
 
 const root = makeTempDir("second-opinion-r030-");
@@ -275,11 +299,11 @@ test("codex omits --skip-git-repo-check inside a git work tree", () => {
   assert.deepEqual(inTree, ["exec", "-m", "m", "-c", "model_reasoning_effort=\"high\"", "-"]);
 });
 
-function modelCache(slugs, raw) {
+function modelCache(entries, raw) {
   const home = makeTempDir("second-opinion-model-cache-");
   writeFileSync(
     join(home, "models_cache.json"),
-    raw ?? JSON.stringify({ models: slugs.map((slug) => ({ slug })) }),
+    raw ?? JSON.stringify({ models: entries.map((entry) => typeof entry === "string" ? { slug: entry } : entry) }),
   );
   return home;
 }
@@ -287,6 +311,11 @@ function modelCache(slugs, raw) {
 test("model@effort shorthand splits only a recognized final suffix when effort is absent", () => {
   assert.deepEqual(splitModelEffort("luna@high", undefined), { model: "luna", effort: "high" });
   assert.deepEqual(splitModelEffort("future@family@xhigh", undefined), { model: "future@family", effort: "xhigh" });
+  assert.deepEqual(splitModelEffort("5.6 sol@ultra", undefined), { model: "5.6 sol", effort: "ultra" });
+  assert.deepEqual(splitModelEffort("5.5@maximum", undefined), { model: "5.5", effort: "max" });
+  assert.deepEqual(splitModelEffort("opus@very-high", undefined), { model: "opus", effort: "xhigh" });
+  assert.deepEqual(splitModelEffort("opus@very_high", undefined), { model: "opus", effort: "xhigh" });
+  assert.deepEqual(splitModelEffort("opus@minimal", undefined), { model: "opus@minimal", effort: undefined });
   assert.deepEqual(splitModelEffort("luna@turbo", undefined), { model: "luna@turbo", effort: undefined });
   assert.deepEqual(splitModelEffort("luna@high", "medium"), { model: "luna@high", effort: "medium" });
 });
@@ -295,6 +324,8 @@ test("Codex model aliases resolve through exact or unique cache matches and othe
   const unique = modelCache(["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]);
   assert.equal(resolveCodexModelAlias("gpt-5.6-luna", { CODEX_HOME: unique }), "gpt-5.6-luna");
   assert.equal(resolveCodexModelAlias("GPT-5.6-LUNA", { CODEX_HOME: unique }), "gpt-5.6-luna");
+  assert.equal(resolveCodexModelAlias("gpt 5.6 luna", { CODEX_HOME: unique }), "gpt-5.6-luna");
+  assert.equal(resolveCodexModelAlias("5.6 sol", { CODEX_HOME: unique }), "gpt-5.6-sol");
   assert.equal(resolveCodexModelAlias("luna", { CODEX_HOME: unique }), "gpt-5.6-luna");
   assert.equal(resolveCodexModelAlias("sol", { CODEX_HOME: unique }), "gpt-5.6-sol");
   assert.equal(resolveCodexModelAlias("unknown", { CODEX_HOME: unique }), "unknown");
@@ -307,54 +338,200 @@ test("Codex model aliases resolve through exact or unique cache matches and othe
   assert.equal(resolveCodexModelAlias("luna", { CODEX_HOME: join(root, "missing-model-cache") }), "luna");
 });
 
-test("omitting --vendor routes a unique current model and fails closed for unknown or ambiguous names", () => {
+test("omitting --vendor ranks exact catalog names over inferred families and canonicalizes the executable model", () => {
   const catalogs = {
-    codex: ["gpt-5.6-luna"],
-    agy: ["gemini-3.6-flash-high", "claude-opus-4-6-thinking"],
-    claude: ["fable", "opus", "sonnet", "claude-fable-5"],
+    codex: ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.5"],
+    agy: ["gemini-3.6-flash-high", "claude-opus-4-6-thinking", "claude-sonnet-4-6"],
+    claude: [
+      { value: "claude-fable-5[1m]", resolvedModel: "claude-fable-5", displayName: "Fable 5" },
+      { value: "opus", resolvedModel: "claude-opus-5", displayName: "Opus 5" },
+      { value: "sonnet", resolvedModel: "claude-sonnet-5", displayName: "Sonnet 5" },
+    ],
   };
   assert.equal(resolveVendorForModel("luna", { modelCatalogs: catalogs }), "codex");
+  assert.deepEqual(resolveModelRoute("terra", { modelCatalogs: catalogs }), { vendor: "codex", model: "gpt-5.6-terra" });
   assert.equal(resolveVendorForModel("fable", { modelCatalogs: catalogs }), "claude");
+  assert.deepEqual(resolveModelRoute("fable", { modelCatalogs: catalogs }), { vendor: "claude", model: "claude-fable-5" });
   assert.equal(resolveVendorForModel("gemini-3.6-flash-high", { modelCatalogs: catalogs }), "agy");
+  assert.deepEqual(resolveModelRoute("opus", { modelCatalogs: catalogs }), { vendor: "claude", model: "opus" });
+  assert.deepEqual(resolveModelRoute("opus 5", { modelCatalogs: catalogs }), { vendor: "claude", model: "claude-opus-5" });
+  assert.deepEqual(resolveModelRoute("opus 4.8", { modelCatalogs: catalogs }), { vendor: "claude", model: "claude-opus-4-8" });
+  assert.deepEqual(resolveModelRoute("opus 4.7", { modelCatalogs: catalogs }), { vendor: "claude", model: "claude-opus-4-7" });
+  assert.deepEqual(resolveModelRoute("opus 4.6", { modelCatalogs: catalogs }), { vendor: "agy", model: "claude-opus-4-6-thinking" });
+  assert.deepEqual(resolveModelRoute("Claude Opus 4.6 (Thinking)", { modelCatalogs: catalogs }), { vendor: "agy", model: "claude-opus-4-6-thinking" });
+  assert.deepEqual(resolveModelRoute("sonnet 4.6", { modelCatalogs: catalogs }), { vendor: "agy", model: "claude-sonnet-4-6" });
+  assert.deepEqual(resolveModelRoute("Claude Code opus 4.6", { modelCatalogs: catalogs }), { vendor: "claude", model: "claude-opus-4-6" });
+  assert.deepEqual(resolveModelRoute("gpt 5.5", { modelCatalogs: catalogs }), { vendor: "codex", model: "gpt-5.5" });
+  assert.deepEqual(resolveModelRoute("5.5", { modelCatalogs: catalogs }), { vendor: "codex", model: "gpt-5.5" });
+  assert.throws(() => resolveModelRoute("opus terra", { modelCatalogs: catalogs }), /unknown model/);
   assert.throws(() => resolveVendorForModel("unknown", { modelCatalogs: catalogs }), /unknown model/);
-  assert.throws(() => resolveVendorForModel("opus", { modelCatalogs: catalogs }), /ambiguous model/);
 
   const auto = parseCli([
     "--operation", "text", "--brief", brief, "--model", "fable@high",
     "--out", join(root, "auto-claude.out"), "--err", join(root, "auto-claude.err"),
   ], root, { modelCatalogs: catalogs });
   assert.equal(auto.vendor, "claude");
-  assert.equal(auto.model, "fable");
+  assert.equal(auto.model, "claude-fable-5");
   assert.equal(auto.effort, "high");
 
   const explicit = parseCli([
     "--vendor", "codex", "--operation", "text", "--brief", brief, "--model", "fable",
-  ], root, { modelCatalogs: catalogs });
+  ], root, { spawnSync: () => { throw new Error("explicit vendor must not discover catalogs"); } });
   assert.equal(explicit.vendor, "codex", "an explicit vendor must win over model discovery");
 });
 
-test("automatic routing exercises live catalog parsers and rejects incomplete discovery", () => {
-  const home = modelCache(["gpt-5.6-luna"]);
-  const spawnCatalog = (command) => command === "agy"
+function claudeCatalogOutput(models = [{ value: "opus", resolvedModel: "claude-opus-5[1m]", displayName: "Opus 5", supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"] }]) {
+  return `${JSON.stringify({ type: "control_response", response: { subtype: "success", request_id: "catalog", response: { models, account: { email: "must-not-be-cached@example.test" } } } })}\n`;
+}
+
+function liveCatalogFake(command) {
+  return command === "agy"
     ? { status: 0, stdout: "gemini-3.6-flash-high\nclaude-opus-4-6-thinking\n", stderr: "" }
-    : { status: 0, stdout: "  --model <model>  Model. Use an alias (e.g. 'fable', 'opus', or 'sonnet') or full name (e.g. 'claude-fable-5').\n  --output-format <format>\n", stderr: "" };
-  const deps = { env: { CODEX_HOME: home }, spawnSync: spawnCatalog };
-  assert.equal(resolveVendorForModel("fable", deps), "claude");
-  assert.throws(() => resolveVendorForModel("opus", deps), /ambiguous model/);
+    : { status: 0, stdout: claudeCatalogOutput(), stderr: "" };
+}
+
+test("automatic routing exercises provider metadata parsers and rejects incomplete discovery", () => {
+  const home = modelCache(["gpt-5.6-luna"]);
+  const cachePath = join(makeTempDir("second-opinion-route-cache-"), "catalog.json");
+  const invocations = [];
+  const deps = { env: { CODEX_HOME: home }, cachePath, spawnSync: (command, args, options) => {
+    invocations.push({ command, args, input: options.input, timeout: options.timeout, killSignal: options.killSignal, maxBuffer: options.maxBuffer });
+    return liveCatalogFake(command);
+  } };
+  assert.equal(resolveVendorForModel("opus", deps), "claude");
+  assert.deepEqual(resolveModelRoute("opus 4.8", deps), { vendor: "claude", model: "claude-opus-4-8" });
+  const claudeInvocation = invocations.find((row) => row.command === "claude");
+  assert.ok(claudeInvocation);
+  assert.equal(claudeInvocation.args.includes("--help"), false);
+  assert.equal(claudeInvocation.args.includes("-p"), false, "initialize control protocol is intentionally not print mode");
+  assert.ok(claudeInvocation.args.includes("stream-json"));
+  assert.match(claudeInvocation.input, /"subtype":"initialize"/);
+  assert.deepEqual({ timeout: claudeInvocation.timeout, killSignal: claudeInvocation.killSignal, maxBuffer: claudeInvocation.maxBuffer }, { timeout: 20_000, killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024 });
+  assert.equal(invocations.every((row) => row.command !== "claude" || row.input.endsWith("\n")), true);
+  const cachedText = readFileSync(cachePath, "utf8");
+  assert.doesNotMatch(cachedText, /must-not-be-cached|account|email/);
 
   const failedClaude = (command) => command === "agy"
-    ? spawnCatalog(command)
+    ? liveCatalogFake(command)
     : { status: 1, stdout: "", stderr: "help failed" };
   assert.throws(
-    () => resolveVendorForModel("opus", { env: { CODEX_HOME: home }, spawnSync: failedClaude }),
+    () => resolveVendorForModel("opus", { env: { CODEX_HOME: home }, cachePath: join(makeTempDir("second-opinion-failed-cache-"), "catalog.json"), spawnSync: failedClaude }),
     /model catalog unavailable.*claude.*pass --vendor explicitly/,
   );
   assert.throws(
     () => resolveVendorForModel("fable", {
       env: { CODEX_HOME: home },
+      cachePath: join(makeTempDir("second-opinion-empty-cache-"), "catalog.json"),
       spawnSync: (command) => ({ status: 0, stdout: command === "agy" ? "Display Model (High)" : "unparseable", stderr: "" }),
     }),
     /model catalog unavailable.*agy, claude/,
+  );
+});
+
+test("catalog cache avoids provider calls for 24h, refreshes a fresh miss once, and keeps last-known-good data", () => {
+  const home = modelCache(["gpt-5.6-luna"]);
+  const cachePath = join(makeTempDir("second-opinion-cache-policy-"), "catalog.json");
+  const now = 2_000_000_000_000;
+  const seed = {
+    schemaVersion: 1,
+    checkedAt: now,
+    degraded: false,
+    vendors: {
+      codex: { available: true, models: [{ canonical: "gpt-5.6-luna", aliases: ["gpt-5.6-luna", "luna"], efforts: ["high"] }] },
+      agy: { available: true, models: [{ canonical: "gemini-3.6-flash-high", aliases: ["gemini-3.6-flash-high"], efforts: [] }] },
+      claude: { available: true, models: [{ canonical: "claude-opus-5", aliases: ["opus", "Opus 5"], efforts: ["high"], family: "opus", latestAlias: "opus" }] },
+    },
+  };
+  writeFileSync(cachePath, JSON.stringify(seed));
+  let calls = 0;
+  assert.equal(resolveVendorForModel("opus", { env: { CODEX_HOME: home }, cachePath, now: () => now + 1, spawnSync: () => { calls += 1; throw new Error("must not run"); } }), "claude");
+  assert.equal(calls, 0, "a fresh hit makes zero provider process calls");
+
+  const refresh = (command) => {
+    calls += 1;
+    if (command === "agy") return { status: 0, stdout: "gemini-3.6-flash-high\n", stderr: "" };
+    return { status: 0, stdout: claudeCatalogOutput([{ value: "opus", resolvedModel: "claude-opus-5", displayName: "Opus 5" }, { value: "claude-fable-5[1m]", resolvedModel: "claude-fable-5", displayName: "Fable 5" }]), stderr: "" };
+  };
+  assert.equal(resolveVendorForModel("fable", { env: { CODEX_HOME: home }, cachePath, now: () => now + 2, spawnSync: refresh }), "claude");
+  assert.equal(calls, 2, "a fresh miss performs one AGY and one Claude metadata refresh");
+
+  const staleTime = now + (25 * 60 * 60 * 1000);
+  const failed = () => { calls += 1; return { status: 1, stdout: "", stderr: "offline" }; };
+  assert.equal(resolveVendorForModel("opus", { env: { CODEX_HOME: home }, cachePath, now: () => staleTime, spawnSync: failed }), "claude");
+  assert.equal(calls, 4, "a stale refresh attempts metadata once per process-backed provider");
+  assert.equal(resolveVendorForModel("opus", { env: { CODEX_HOME: home }, cachePath, now: () => staleTime + (4 * 60 * 1000), spawnSync: failed }), "claude");
+  assert.equal(calls, 4, "a degraded last-known-good cache suppresses retries for five minutes");
+  assert.equal(resolveVendorForModel("opus", { env: { CODEX_HOME: home }, cachePath, now: () => staleTime + (6 * 60 * 1000), spawnSync: failed }), "claude");
+  assert.equal(calls, 6, "a degraded cache retries provider metadata after five minutes");
+  assert.throws(
+    () => resolveVendorForModel("opus", { env: { CODEX_HOME: join(root, "different-missing-codex-home") }, cachePath, now: () => staleTime + (7 * 60 * 1000), spawnSync: failed }),
+    /model catalog unavailable.*codex/,
+    "unified cache must not leak Codex models across CODEX_HOME values",
+  );
+});
+
+test("an incompatible fresh Claude cache refreshes, while a known provider outage stays negatively cached", () => {
+  const home = modelCache(["gpt-5.6-luna"]);
+  const cachePath = join(makeTempDir("second-opinion-cache-migration-"), "catalog.json");
+  const now = 2_100_000_000_000;
+  const vendors = {
+    codex: { available: true, models: [{ canonical: "gpt-5.6-luna", aliases: ["luna"], efforts: ["high"] }] },
+    agy: { available: true, models: [{ canonical: "gemini-3.6-flash-high", aliases: ["gemini-3.6-flash-high"], efforts: [] }] },
+    claude: { available: true, models: [{ canonical: "claude-opus-5", aliases: ["opus"], efforts: ["high"], family: "opus" }] },
+  };
+  writeFileSync(cachePath, JSON.stringify({ schemaVersion: 1, checkedAt: now, degraded: false, vendors }));
+  let calls = 0;
+  const refresh = (command) => {
+    calls += 1;
+    return command === "agy"
+      ? { status: 0, stdout: "gemini-3.6-flash-high\n", stderr: "" }
+      : { status: 0, stdout: claudeCatalogOutput(), stderr: "" };
+  };
+  assert.deepEqual(resolveModelRoute("opus", { env: { CODEX_HOME: home }, cachePath, now: () => now + 1, spawnSync: refresh }), { vendor: "claude", model: "opus" });
+  assert.equal(calls, 2, "missing alias provenance invalidates an otherwise fresh development cache");
+
+  const unavailable = JSON.parse(readFileSync(cachePath, "utf8"));
+  unavailable.checkedAt = now + 2;
+  unavailable.degraded = true;
+  unavailable.vendors.agy = { available: false, models: [] };
+  writeFileSync(cachePath, JSON.stringify(unavailable));
+  calls = 0;
+  assert.throws(
+    () => resolveVendorForModel("opus", { env: { CODEX_HOME: home }, cachePath, now: () => now + 3, spawnSync: () => { calls += 1; throw new Error("must stay cached"); } }),
+    /model catalog unavailable.*agy/,
+  );
+  assert.equal(calls, 0, "a known outage is cached for the five-minute degraded TTL");
+});
+
+test("Codex accepts current max/ultra efforts and UI effort labels normalize to CLI values", () => {
+  for (const [provided, expected] of [["light", "low"], ["very-high", "xhigh"], ["maximum", "max"], ["ultra", "ultra"]]) {
+    const parsed = parseCli(["--vendor", "codex", "--operation", "text", "--brief", brief, "--model", "gpt-5.6-sol", "--effort", provided], root);
+    assert.equal(parsed.effort, expected);
+  }
+  assert.match(usageText(), /cached for 24h.*model-catalog-v1\.json/s);
+  assert.match(usageText(), /fresh-cache miss refreshes once/);
+
+  const catalogs = {
+    codex: [{ slug: "gpt-future", supported_reasoning_levels: [{ effort: "low" }] }],
+    agy: ["gemini-3.6-flash-high"],
+    claude: [{ value: "opus", resolvedModel: "claude-opus-5", displayName: "Opus 5", supportedEffortLevels: ["high"] }],
+  };
+  assert.throws(
+    () => parseCli(["--operation", "text", "--brief", brief, "--model", "gpt-future", "--effort", "ultra"], root, { modelCatalogs: catalogs }),
+    /codex accepts low/,
+    "automatic routing should honor model-specific catalog effort levels",
+  );
+});
+
+test("automatic routing validates the canonical catalog model before building vendor argv", () => {
+  const catalogs = {
+    codex: [{ canonical: "-unsafe", aliases: ["safe-name"], efforts: [] }],
+    agy: ["gemini-3.6-flash-high"],
+    claude: ["opus"],
+  };
+  assert.throws(
+    () => parseCli(["--operation", "text", "--brief", brief, "--model", "safe-name"], root, { modelCatalogs: catalogs }),
+    /--model must be non-empty/,
   );
 });
 
@@ -429,7 +606,10 @@ test("explicit mode CLI dry-runs expose requested and effective modes", async ()
 // by reading this source. Measured: a caller passed agy's native --add-dir,
 // got a bare "unknown argument", and went reading SINGLE_OPTIONS to find --cwd.
 test("help is served without arguments, on --help, and inside the unknown-argument error", async () => {
-  const listed = ["codex", "agy", "claude", "antigravity", "--cwd", "--brief", "--dry-run", "installed_plugins.json"];
+  const listed = [
+    "codex", "agy", "claude", "antigravity", "--cwd", "--brief", "--dry-run",
+    "installed_plugins.json", "available-skills catalog", "Do not flatten", "not proof of absence",
+  ];
 
   for (const args of [[], ["--help"], ["-h"]]) {
     const stdout = memoryWriter();
@@ -437,6 +617,7 @@ test("help is served without arguments, on --help, and inside the unknown-argume
     const status = await executeCli(args, { cwd: root, stdout: stdout.stream, stderr: stderr.stream });
     assert.equal(status, 0, `${JSON.stringify(args)} must succeed: ${stderr.value()}`);
     for (const token of listed) assert.ok(stdout.value().includes(token), `${JSON.stringify(args)} usage missing ${token}`);
+    assert.doesNotMatch(stdout.value(), /resolving its current\s+version rather than a fixed one/);
   }
 
   // A help token sitting in a VALUE position is not a help request. Scanning the
@@ -759,6 +940,30 @@ test("Claude model binding accepts future aliases without a hardcoded family lis
   });
   const status = await run({
     vendor: "claude", operation: "text", brief, cwd: root, model: "fable", effort: "high",
+    out, err, timeout: 2, killGraceMs: 10, reapGraceMs: 10,
+  }, {
+    spawn: spawnFake,
+    stderr: memoryWriter().stream,
+    env: { SECOND_OPINION_RECEIPT: receipt },
+  });
+  assert.equal(status, 0);
+  assert.equal(receiptLines(receipt).at(-1).vendorUsageStatus, "ok");
+});
+
+test("Claude canonical model binding accepts a provider date suffix", async () => {
+  const receipt = join(root, "claude-canonical-date-suffix.jsonl");
+  const out = join(root, "claude-canonical-date-suffix.out");
+  const err = join(root, "claude-canonical-date-suffix.err");
+  const spawnFake = () => fakeChild((child) => {
+    child.stdin.on("end", () => {
+      child.stdout.end(claudeResult({ model: "claude-opus-4-8-20260401" }));
+      child.stderr.end();
+      queueMicrotask(() => child.emit("close", 0, null));
+    });
+    child.stdin.resume();
+  });
+  const status = await run({
+    vendor: "claude", operation: "text", brief, cwd: root, model: "claude-opus-4-8", effort: "high",
     out, err, timeout: 2, killGraceMs: 10, reapGraceMs: 10,
   }, {
     spawn: spawnFake,

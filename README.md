@@ -2,7 +2,7 @@
 
 **English** | [한국어](./README.ko.md)
 
-![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.2-informational)
+![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.3-informational)
 
 **Use other AI vendors from inside Claude Code — in plain language.**
 Second opinions, task offloading, and vendor capabilities like image generation.
@@ -56,8 +56,10 @@ extracted from:
 | `--model` accepts both the display label (`"Gemini 3.1 Pro (High)"`) and the canonical slug from `agy models` (`gemini-3.1-pro-high`); `agy models` prints slugs while the picker shows labels. An unknown/malformed name is **rejected loudly (exit 1)** with an available-models list — not silently downgraded (older agy versions did downgrade) | copies the exact string from either source and checks the exit code |
 | AGY can keep using a previous host project even when the subprocess and receipt use a temporary `cwd` | binds every AGY call to the requested workspace with `--add-dir`; callers can add `--expect-output` for a hidden-token read check |
 | AGY headless plan auto-denies shell commands, so a review brief asking for `git diff` can return exit 0 with no review | explicit AGY plan/review automatically composes the `agy-native-readonly/v1` input profile, using native read/list/search; empty output still fails closed |
-| A caller passes Madi's logical Codex name `luna` or shorthand `luna@high`, but Codex CLI requires a versioned slug such as `gpt-5.6-luna` | splits a recognized final `@effort`, then resolves exact or unique `-alias` matches from Codex's local `models_cache.json`; ambiguous or missing data is never guessed |
-| The caller knows a model such as `fable` but not which vendor owns it | when `--vendor` is omitted, compares current Codex, AGY, and Claude catalogs; one matching vendor routes automatically, while zero/multiple matches or any unreadable catalog fail closed |
+| A caller passes `terra`, `gpt 5.5`, or `5.6 sol@ultra`, but Codex CLI needs its current canonical slug | normalizes case/separators and UI effort labels, then resolves the live Codex cache (`terra` → `gpt-5.6-terra`); the selected model's advertised effort levels are enforced (`low` through `ultra` where supported) |
+| The caller knows `opus`, `opus 4.8`, or `fable` but not which vendor owns it | compares cache-first Codex, AGY, and Claude metadata. Bare provider-advertised `opus` stays Claude's latest alias; display-derived `fable` becomes `claude-fable-5`; versioned families come from current metadata rather than a fixed list |
+| `opus 4.6` and `sonnet 4.6` exist in both Claude Code and AGY | an exact AGY catalog entry wins over Claude's inferred family/version route; use `Claude Code opus 4.6` (only with omitted `--vendor`) or explicit `--vendor claude --model claude-opus-4-6` to select Claude |
+| Provider catalog checks on every call would waste startup and network time | caches model-only metadata for 24 hours at `~/.second-opinion/model-catalog-v1.json`; a fresh miss refreshes once, and refresh failure keeps last-known-good data with a five-minute retry. The already-local Codex cache is re-read for the active `CODEX_HOME` |
 | Codex sandbox **can't read files on Windows** | excerpts content into the brief instead of asking it to read files |
 | Image generation: agy **ignores where you asked it to save** (uses its own scratch dir), codex needs a **write-enabled sandbox** and its Windows copy step can fail | knows each vendor's real artifact location, verifies the file actually exists, and moves it where you wanted — a vendor saying "saved" is not treated as success |
 | "No issues found" is a weak signal (Gemini especially leans false-negative) | always relayed as "didn't find problems ≠ no problems" |
@@ -140,6 +142,13 @@ claude plugin install second-opinion@second-opinion
 `claude plugin install` doesn't appear in `claude plugin --help`, but it works
 (verified on Claude Code for Windows, 2026-07). Useful when you can't open the
 interactive `/plugin` dialog.
+
+For non-Claude hosts, use the exact skill path supplied by that host's
+available-skills catalog. Join its root alias and relative path literally;
+repeated marketplace/plugin names in the cache are normal. Do not flatten the
+path or reconstruct a version directory. On Windows PowerShell 5.1, verify the
+exact path with `Test-Path -LiteralPath`; an empty
+`rg --files ... | rg '...$'` result is not proof that the skill is absent.
 
 ### C. Manual copy
 

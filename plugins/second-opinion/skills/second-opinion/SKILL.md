@@ -13,9 +13,15 @@ description: >
 
 # second-opinion — 외부 AI 어댑터
 
-**버전 0.9.2** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
+**버전 0.9.3** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
 
 이 스킬은 **아무것도 차단하지 않는다** — 중개(relay)만 한다. 디스패처는 커맨드 정합성을 위한 도구일 뿐이다. "Claude가 디스패처를 반드시 거치게" 강제하는 것은 **부르는 쪽(caller)의 책임**이다 → [references/enforcement.md](references/enforcement.md).
+
+## 설치 경로 확인
+
+- 호스트가 제공한 available-skills 카탈로그의 root alias와 상대 경로를 **그대로 결합한 경로**가 정본이다. marketplace/plugin 이름이 캐시 경로에서 반복되어도 정상 구조일 수 있으므로, 경로를 추측해 한 단계를 제거하거나 버전 경로를 재구성하지 않는다.
+- 카탈로그 경로는 먼저 `Test-Path -LiteralPath`·`Get-Item -LiteralPath` 또는 직접 읽기로 확인한다. Windows PowerShell 5.1에서는 `rg --files ... | rg '...$'`가 CRLF 때문에 빈 결과를 낼 수 있으므로 부재 판정에 쓰지 않는다. 탐색이 필요하면 `rg --files <root> -g 'SKILL.md' -g 'dispatch.mjs'`처럼 한 프로세스에서 glob을 적용하거나 `Select-String`을 사용한다.
+- 정본 경로의 직접 확인이 실패했을 때만 스킬을 읽을 수 없다고 보고한다. 검색 결과가 비었다는 이유만으로 설치 누락이나 카탈로그 오류라고 단정하지 않는다.
 
 Claude Code 안에서 **다른 벤더의 AI**를 일상어로 부려 쓴다. Codex Desktop 등
 비-Claude 호스트에서도 동작한다 — 호스트별 상세·정확한 호출법은 아래 fast-path의
@@ -87,11 +93,23 @@ plan/review 권한을 자동 적용하지 않는다.
 
 ## 호출 fast-path (실측 검증된 채널 — 2026-07-03, Codex Desktop 실측 추가 2026-07-08)
 
-모델을 지정하고 벤더를 모르면 `--vendor`를 생략할 수 있다. 디스패처가 Codex의
-`models_cache.json`, `agy models`, `claude --help`의 현재 카탈로그를 대조해 정확히 한
-벤더만 잡힐 때 자동 라우팅한다. 0개면 unknown, 둘 이상이면 ambiguous로 실행 전에
-실패한다. 카탈로그 하나라도 읽지 못하면 불완전한 목록으로 추측하지 않고 `--vendor`를
-명시하라고 실패한다. `--vendor`를 명시하면 항상 그 값이 우선한다.
+모델을 지정하고 벤더를 모르면 `--vendor`를 생략할 수 있다. 디스패처가 Codex
+`models_cache.json`, `agy models`, Claude initialize control metadata를 대조해 자동
+라우팅한다. 모델 메타데이터만 `~/.second-opinion/model-catalog-v1.json`에 24시간
+캐시하므로 fresh hit에서는 공급자 프로세스를 실행하지 않는다. 이미 로컬 파일인 Codex
+카탈로그는 현재 `CODEX_HOME`에서 매번 다시 읽어 다른 환경의 cache가 섞이지 않게 한다.
+fresh cache에서 모델을 못 찾으면 한 번 즉시 갱신하고, 갱신 실패 시 last-known-good를
+사용하되 degraded cache는 5분 뒤 다시 확인한다. 정상 데이터가
+없는 공급자가 있거나 0개/동순위 복수 후보면 실행 전에 fail-closed한다. `--vendor`를
+명시하면 카탈로그를 읽지 않고 항상 그 값이 우선한다.
+
+대소문자와 공백·점·하이픈은 같은 이름으로 본다. 정확한 카탈로그 항목이 family/version
+추론보다 우선한다. 따라서 `opus`는 Claude 최신 alias, `opus 4.8`은 Claude Code,
+`opus 4.6`·`sonnet 4.6`은 정확한 항목을 가진 AGY로 간다. Claude Code의 4.6을 원하면
+`--vendor`를 생략하고 `Claude Code opus 4.6`이라고 쓰거나, `--vendor claude`와 정규
+모델 ID를 함께 명시한다. `terra`·`gpt 5.5`·
+`5.6 sol`은 Codex 정규 slug로 바뀐다. `opus terra`처럼 모델 둘을 한 값에 쓰면 추측하지
+않고 unknown으로 거부한다.
 
 ### Codex
 
@@ -108,11 +126,12 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor codex --operation text 
 timeout은 직접 자식에 `child.kill()`만 수행하므로 벤더가 만든 자손 프로세스가 남을 수 있다.
 
 - brief 내용은 stdin으로 전달된다(디스패처가 처리) — argv에 콘텐츠를 넣지 않는다.
-- `--model luna@high`처럼 model과 effort를 함께 쓰면 dispatcher가 마지막 `@` 뒤의
-  승인된 effort를 분리한다. Codex 모델 `luna`·`sol` 같은 논리 별칭은
-  `CODEX_HOME/models_cache.json`(기본 `~/.codex/models_cache.json`)에서 exact slug 또는
-  유일한 `-별칭` suffix가 있을 때만 정식 slug로 바꾼다. 0개·복수·깨진 cache면 추측하지
-  않고 원문을 넘긴다. receipt의 `modelRequested`는 입력 원문, `model`은 실행에 전달한
+- `--model 5.6 sol@ultra`처럼 model과 effort를 함께 쓰면 dispatcher가 마지막 `@` 뒤의
+  승인된 effort를 분리한다. `light`→`low`, `very-high`→`xhigh`, `maximum`→`max`도
+  정규화하며 Codex는 선택 모델이 광고한 `low, medium, high, xhigh, max, ultra` 중
+  지원값만 허용한다. Codex 모델은
+  `CODEX_HOME/models_cache.json`(기본 `~/.codex/models_cache.json`)의 slug·display name·
+  논리 별칭과 대조한다. receipt의 `modelRequested`는 입력 원문, `model`은 실행에 전달한
   정규화 결과다.
 - codex는 로컬 파일을 읽는다(전 sandbox 모드 실측). 큰 내용은 파일로 두고 경로를 지시할 수 있다.
   과거 CryptUnprotectData 오류는 elevated sandbox 계정의 DPAPI stale 버그로 상위 수정됐다 —

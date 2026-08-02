@@ -41,6 +41,10 @@ dispatcher는 provider exit 0을 성공으로 승격하지 않고 exit 4로 닫�
   `gemini-3.5-flash-{high,medium,low}` (Gemini 3.5 Flash) ·
   `gemini-3.1-pro-{high,low}` (Gemini 3.1 Pro) · `claude-sonnet-4-6` ·
   `claude-opus-4-6-thinking` · `gpt-oss-120b-medium`
+- 자동 라우팅에서 bare `opus 4.6`과 `sonnet 4.6`은 이 정확한 AGY 항목으로 정규화된다.
+  Claude Code의 같은 version family보다 exact catalog match가 우선하기 때문이다. Claude
+  Code를 지명하려면 `--vendor`를 생략한 `Claude Code opus 4.6`, 또는 명시적
+  `--vendor claude --model claude-opus-4-6`을 쓴다.
 - ⚠️ `antigravity chat`은 이 스킬의 headless 채널이 아니다 — IDE 채팅 디스패치이며
   `--model` 표면이 `agy`와 다르다. headless second-opinion에는 반드시 `agy`를 쓸 것
 - ⚠️ quota: 사용량이 여러 모델에서 **동일 %로 동반 상승**하는 것이 관측됨 (2026-07-03
