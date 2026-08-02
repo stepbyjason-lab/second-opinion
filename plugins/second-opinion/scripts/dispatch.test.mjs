@@ -6,6 +6,7 @@ import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, sym
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { PassThrough, Writable } from "node:stream";
+import { fileURLToPath } from "node:url";
 import {
   AGY_NATIVE_READONLY_PROFILE,
   PolicyError,
@@ -18,6 +19,7 @@ import {
 } from "./vendor-policy.mjs";
 import { executeCli, parseCli, resolveCodexModelAlias, resolveModelRoute, resolveVendorForModel, run, splitModelEffort, usageText } from "./dispatch.mjs";
 
+const scriptsDirectory = dirname(fileURLToPath(import.meta.url));
 const tempDirs = [];
 function makeTempDir(prefix, parent = tmpdir()) {
   const dir = mkdtempSync(join(parent, prefix));
@@ -40,14 +42,15 @@ test("skill resolves the catalog path directly before declaring it missing", () 
   assert.match(skill, /검색 결과가 비었다는 이유만으로 설치 누락이나 카탈로그 오류라고 단정하지 않는다/);
 });
 
-test("0.9.3 public help and documentation describe cache-first ranked routing", () => {
+test("0.9.4 public help and documentation describe cache-first ranked routing", () => {
   const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
   const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
-  const englishReadme = readFileSync(new URL("../../../README.md", import.meta.url), "utf8");
-  const readme = readFileSync(new URL("../../../README.ko.md", import.meta.url), "utf8");
-  assert.equal(plugin.version, "0.9.3");
-  for (const text of [skill, englishReadme, readme]) {
-    assert.match(text, /0\.9\.3/);
+  const publicReadmeUrls = [new URL("../../../README.md", import.meta.url), new URL("../../../README.ko.md", import.meta.url)];
+  const publicReadmes = publicReadmeUrls.filter((url) => existsSync(url)).map((url) => readFileSync(url, "utf8"));
+  assert.equal(plugin.version, "0.9.4");
+  assert.ok(publicReadmes.length === 0 || publicReadmes.length === 2, "public snapshot must carry both README files");
+  for (const text of [skill, ...publicReadmes]) {
+    assert.match(text, /0\.9\.4/);
     assert.match(text, /model-catalog-v1\.json/);
     assert.match(text, /opus 4\.6/);
   }
@@ -79,7 +82,7 @@ function createDirectoryLink(t, target, link) {
 }
 
 test("dispatch runs its main module guard through a junction or symlink", (t) => {
-  const scripts = resolve("plugins/second-opinion/scripts");
+  const scripts = scriptsDirectory;
   const link = join(root, "scripts-link");
   if (!createDirectoryLink(t, scripts, link)) return;
   const result = spawnSync("node", [join(link, "dispatch.mjs"), "--vendor", "codex", "--operation", "text", "--brief", brief, "--dry-run"], {
@@ -1297,7 +1300,7 @@ test("brief and synchronous spawn failures write uninvoked receipts", async () =
 
 test("executable resolution failure writes an uninvoked receipt", () => {
   const receipt = join(root, "executable-resolution.jsonl");
-  const result = spawnSync(process.execPath, [resolve("plugins/second-opinion/scripts/dispatch.mjs"), "--vendor", "codex", "--operation", "text", "--brief", brief], {
+  const result = spawnSync(process.execPath, [join(scriptsDirectory, "dispatch.mjs"), "--vendor", "codex", "--operation", "text", "--brief", brief], {
     cwd: root,
     encoding: "utf8",
     env: { ...process.env, PATH: "", SECOND_OPINION_RECEIPT: receipt },

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.4 — 2026-08-02
+
+- 설치된 Codex/Claude 플러그인 캐시에서도 테스트 모음이 저장소 작업 디렉터리나
+  루트 README에 의존하지 않고 실행되도록 경로 확인을 모듈 위치 기준으로 변경했습니다.
+  공개 소스 스냅샷에서는 영문·한글 README 쌍을 계속 검증합니다. 런타임 라우팅
+  동작, CLI 도움말, 영수증 형식에는 변경이 없습니다.
+
 ## 0.9.3 — 2026-08-02
 
 - **Cache-first provider catalogs.** Automatic routing caches model-only metadata
