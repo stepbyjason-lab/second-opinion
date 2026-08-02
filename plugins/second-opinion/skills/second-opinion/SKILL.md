@@ -13,7 +13,7 @@ description: >
 
 # second-opinion — 외부 AI 어댑터
 
-**버전 0.9.4** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
+**버전 0.9.5** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
 
 이 스킬은 **아무것도 차단하지 않는다** — 중개(relay)만 한다. 디스패처는 커맨드 정합성을 위한 도구일 뿐이다. "Claude가 디스패처를 반드시 거치게" 강제하는 것은 **부르는 쪽(caller)의 책임**이다 → [references/enforcement.md](references/enforcement.md).
 
@@ -185,7 +185,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor claude --operation text
   --out claude-result.json --err claude-stderr.txt
 ```
 
-- 짧은 raw timeout은 없다. 공통 1800초 값은 정상 작업 한계가 아니라 runaway backstop이다.
+- 짧은 raw timeout은 없다. 공통 2700초 값은 정상 작업 한계가 아니라 runaway backstop이다.
 - child는 `--safe-mode`로 실행해 대상 프로젝트의 CLAUDE.md·hook·plugin·MCP가
   review brief를 바꾸지 못하게 한다. OAuth와 명시한 model·effort는 유지된다.
   `--safe-mode`는 **구성 격리이지 filesystem sandbox가 아니며** default의 full-access와

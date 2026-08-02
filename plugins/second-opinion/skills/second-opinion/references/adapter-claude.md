@@ -55,7 +55,7 @@ PowerShell도 동일한 `node ... dispatch.mjs` argv를 사용한다. brief 내�
 
 ## Timeout과 hang
 
-Claude argv에는 짧은 작업 timeout을 넣지 않는다. dispatcher 기본 1800초는 정상 추론을
+Claude argv에는 짧은 작업 timeout을 넣지 않는다. dispatcher 기본 2700초는 정상 추론을
 중단시키는 작업 예산이 아니라 비정상 hang을 회수하는 runaway backstop이다. 도달하면
 Windows에서는 `taskkill /T /F`, POSIX에서는 강제 종료로 자식 트리까지 회수하고 receipt
 exit를 `timeout`으로 기록한다. 중단된 리뷰는 resume하지 않고 같은 brief로 처음부터 다시

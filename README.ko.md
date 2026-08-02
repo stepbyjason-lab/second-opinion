@@ -5,7 +5,7 @@
 Claude Code 안에서 **다른 벤더의 AI**(Codex/GPT, Antigravity/Gemini)를 일상어로 부려 쓰는
 어댑터 스킬 — 점검·리뷰·의견부터 작업 오프로드, 이미지 생성까지.
 
-**버전 0.9.4**
+**버전 0.9.5**
 
 > "이 설계 코덱스로 점검받고 싶어" / "안티그래비티한테 물어봐" / "교차 검증해줘"
 > "코덱스한테 로고 시안 이미지 만들어달라고 해줘" / "클로드 사용량 아끼게 이 번역은 제미나이로"
@@ -58,7 +58,8 @@ Claude가 만든 것을 Claude가 검토하면 결함을 과소보고한다 — 
   선택적 `--expect-output <ASCII token>` 호출은 token 자체를 기록·전송하지 않고
   `outputCheckStatus`만 남긴다. token이 없으면 raw output을 보존하고 exit 4다.
   `--vendor claude`도 같은 dispatcher를 사용하며, 폐기된 280초
-  셸 timeout을 쓰지 않는다. Claude result JSON의 실제 model·token usage·cost를
+  셸 timeout을 쓰지 않는다. 기본 45분(2700초) runaway backstop을 사용하며 더 짧은
+  제한이 필요한 호출자는 `--timeout`을 명시할 수 있다. Claude result JSON의 실제 model·token usage·cost를
   `vendorUsage`에 결속하고 빈/깨진/다른 모델 출력은 exit 4로 거부한다. 디스패처는 중립
   broker로서 동일 벤더 호출을 기계 차단하지 않으며, 리뷰 독립성 인정 여부는 호출자
   방법론(Madi 등)이 영수증을 대조해 판정한다. Claude child는 `--safe-mode`로 실행해

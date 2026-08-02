@@ -2,7 +2,7 @@
 
 **English** | [한국어](./README.ko.md)
 
-![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.4-informational)
+![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.5-informational)
 
 **Use other AI vendors from inside Claude Code — in plain language.**
 Second opinions, task offloading, and vendor capabilities like image generation.
@@ -79,7 +79,9 @@ extracted from:
   without recording or sending the token itself; a missing token returns exit 4
   while preserving the raw output file.
   The `--vendor claude` channel uses the same dispatcher without the
-  obsolete 280-second shell timeout. Claude result JSON binds the observed model
+  obsolete 280-second shell timeout. The dispatcher uses a 45-minute (2700-second)
+  runaway backstop by default; callers can still set a tighter `--timeout`.
+  Claude result JSON binds the observed model
   family, token usage, and cost into `vendorUsage`; empty, malformed, or
   wrong-model output returns exit 4. The Claude child runs in `--safe-mode`, so
   project instructions, hooks, plugins, and MCP servers cannot override the inline

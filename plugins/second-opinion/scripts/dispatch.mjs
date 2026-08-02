@@ -99,6 +99,7 @@ export function usageText() {
     "  --cwd is the vendor's workspace; omitted, it is this process's directory.",
     "  --brief/--input/--out/--err resolve from THIS process's directory, not --cwd.",
     "  Vendor-native flags (agy --add-dir, codex -s) are assembled internally.",
+    "  Default --timeout is 2700s (45m), a runaway backstop rather than a work budget.",
     "  --dry-run prints the argv without running the vendor.",
     "",
     "  Which flags a given vendor/operation/mode actually requires is enforced by",
@@ -522,9 +523,9 @@ export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
   // Default is a large runaway-backstop, NOT a work limit. A short fixed timeout
   // kills legitimate heavy reasoning (codex high/xhigh reading several files) and
   // the child is SIGTERM'd before its final message reaches stdout — the recurring
-  // "exit 124, empty out, reasoning stranded in stderr" failure. 30min only catches
+  // "exit 124, empty out, reasoning stranded in stderr" failure. 45min usually catches
   // a genuine hang; callers wanting a tighter bound pass --timeout explicitly.
-  const timeout = raw.timeout === undefined ? 1800 : Number(raw.timeout);
+  const timeout = raw.timeout === undefined ? 2700 : Number(raw.timeout);
   if (!Number.isInteger(timeout) || timeout < 1 || timeout > 3600) throw new CliError("--timeout must be an integer from 1 to 3600");
   const conflicts = outputConflicts({ brief, inputs, out, err });
   if (conflicts.brief) throw new CliError("--out/--err must not equal --brief");

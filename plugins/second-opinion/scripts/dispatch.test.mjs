@@ -42,19 +42,25 @@ test("skill resolves the catalog path directly before declaring it missing", () 
   assert.match(skill, /검색 결과가 비었다는 이유만으로 설치 누락이나 카탈로그 오류라고 단정하지 않는다/);
 });
 
-test("0.9.4 public help and documentation describe cache-first ranked routing", () => {
+test("0.9.5 public help and documentation describe cache-first ranked routing", () => {
   const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
   const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
   const publicReadmeUrls = [new URL("../../../README.md", import.meta.url), new URL("../../../README.ko.md", import.meta.url)];
   const publicReadmes = publicReadmeUrls.filter((url) => existsSync(url)).map((url) => readFileSync(url, "utf8"));
-  assert.equal(plugin.version, "0.9.4");
+  assert.equal(plugin.version, "0.9.5");
   assert.ok(publicReadmes.length === 0 || publicReadmes.length === 2, "public snapshot must carry both README files");
   for (const text of [skill, ...publicReadmes]) {
-    assert.match(text, /0\.9\.4/);
+    assert.match(text, /0\.9\.5/);
     assert.match(text, /model-catalog-v1\.json/);
     assert.match(text, /opus 4\.6/);
   }
   assert.match(usageText(), /cached for 24h.*model-catalog-v1\.json/s);
+  assert.match(usageText(), /Default --timeout is 2700s \(45m\), a runaway backstop/);
+  assert.match(skill, /공통 2700초 값/);
+  if (publicReadmes.length === 2) {
+    assert.match(publicReadmes[0], /45-minute \(2700-second\)\s+runaway backstop/);
+    assert.match(publicReadmes[1], /기본 45분\(2700초\) runaway backstop/);
+  }
 });
 
 const root = makeTempDir("second-opinion-r030-");
@@ -1411,9 +1417,9 @@ test("timeout escalates to a forced tree-kill and stays bounded when close never
   assert.equal(receiptLines(receipt)[0].exit, "timeout");
 });
 
-test("default timeout is a large runaway-backstop, not a short work limit", () => {
+test("default timeout is a 45-minute runaway-backstop, not a short work limit", () => {
   const parsed = parseCli(["--vendor", "codex", "--operation", "text", "--brief", brief], root);
-  assert.equal(parsed.timeout, 1800);
+  assert.equal(parsed.timeout, 2700);
 });
 
 test("relative file paths normalize against start cwd, not vendor cwd", () => {
