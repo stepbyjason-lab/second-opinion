@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.6 — 2026-08-11
+
+- **문서: `--mode review`의 강도가 벤더마다 다르다는 사실을 명시**. 표와 산문이
+  "읽기 전용 리뷰"를 세 벤더 공통인 것처럼 서술해, 호출자가 Codex 리뷰도 권한이
+  제한된다고 오해했다. 실제로는 Claude만 `--tools` allowlist로, AGY만 native plan +
+  읽기 전용 입력 프로필로 쓰기 도구를 없앤다.
+- **Codex는 권한을 제한하지 않는다 — Codex CLI의 한계다.** 권한을 좁히는 수단이
+  샌드박스(`-s read-only`)뿐인데 이 프로젝트는 샌드박스를 쓰지 않는다(맥락 전달이
+  어렵고 결과 품질이 떨어진다). `codex exec review --help`의 옵션도 `--uncommitted`·
+  `--base`처럼 대상 지정뿐이라, `exec review`는 워크플로 선택이지 권한 수준이 아니다.
+- 실측 계기: `--mode review`로 부른 Codex 호출의 영수증에 `sandbox: danger-full-access`가
+  그대로 찍혔다. 그 값은 mode가 아니라 `~/.codex/config.toml`의 `sandbox_mode`에서 온다.
+  Codex 리뷰에서 파일을 지키는 것은 brief의 금지 지시뿐이다.
+- 코드 변경 없음. SKILL.md·adapter-codex.md·README 양본만 수정.
+
 ## 0.9.5 — 2026-08-02
 
 - 긴 코드베이스의 고추론 작업이 완료 직전에 잘리지 않도록 공통 기본 timeout을

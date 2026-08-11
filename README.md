@@ -2,7 +2,7 @@
 
 **English** | [한국어](./README.ko.md)
 
-![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.5-informational)
+![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.6-informational)
 
 **Use other AI vendors from inside Claude Code — in plain language.**
 Second opinions, task offloading, and vendor capabilities like image generation.
@@ -94,10 +94,22 @@ extracted from:
   Off by default; when unset, nothing is written.
 
   Callers may explicitly add `--mode plan` or `--mode review` to text dispatches.
-  These modes keep the same real project cwd and use provider-specific read-only
-  behavior; they do not create a sandbox, worktree, snapshot, or reduced review
-  packet. For Claude, plan/review identities remain distinct in the receipt but both
-  use only the closed `Read,Glob,Grep` tool allowlist—without native plan workflow.
+  These modes keep the same real project cwd; they do not create a sandbox,
+  worktree, snapshot, or reduced review packet. For Claude, plan/review identities
+  remain distinct in the receipt but both use only the closed `Read,Glob,Grep` tool
+  allowlist—without native plan workflow.
+
+  **How much a mode actually restricts depends on the vendor, and for Codex it
+  restricts nothing.** Claude removes the write tools through its `--tools`
+  allowlist and AGY through native plan plus a read-only input profile, but the
+  Codex CLI has no such layer — its only way to narrow permissions is the sandbox
+  (`-s read-only`), which this project does not use. Codex's `exec review` selects
+  a review workflow, not a permission level (`codex exec review --help` offers only
+  target selectors like `--uncommitted` and `--base`). Measured: a `--mode review`
+  Codex call still recorded `sandbox: danger-full-access`, which comes from
+  `~/.codex/config.toml`, not from the mode. For Codex reviews, the brief's own
+  prohibitions are the only thing keeping files untouched — do not count
+  `--mode review` as a safety mechanism there.
   Omitting `--mode` preserves the existing default call, which for Claude is the
   **full-access** one: all built-in tools plus non-interactive execution, in the
   caller's real cwd. Read-only comes only from an explicit `--mode plan|review`;

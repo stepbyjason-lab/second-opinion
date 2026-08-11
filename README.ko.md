@@ -5,7 +5,7 @@
 Claude Code 안에서 **다른 벤더의 AI**(Codex/GPT, Antigravity/Gemini)를 일상어로 부려 쓰는
 어댑터 스킬 — 점검·리뷰·의견부터 작업 오프로드, 이미지 생성까지.
 
-**버전 0.9.5**
+**버전 0.9.6**
 
 > "이 설계 코덱스로 점검받고 싶어" / "안티그래비티한테 물어봐" / "교차 검증해줘"
 > "코덱스한테 로고 시안 이미지 만들어달라고 해줘" / "클로드 사용량 아끼게 이 번역은 제미나이로"
@@ -70,10 +70,19 @@ Claude가 만든 것을 Claude가 검토하면 결함을 과소보고한다 — 
   기본값은 꺼짐이며, 설정 안 하면 아무것도 쓰지 않는다.
 
   text 호출에는 caller가 `--mode plan` 또는 `--mode review`를 명시할 수 있다. 두 mode는
-  같은 실제 project cwd 전체를 유지하고 provider별 읽기 전용 동작을 사용한다.
-  Claude는 plan/review identity를 receipt에 각각 보존하되 native plan workflow 없이 closed
-  `Read,Glob,Grep` allowlist만 사용한다. sandbox·worktree·snapshot·축약 packet을 만들지
-  않는다. `--mode`를 생략하면 기존 default 호출이며, Claude에서는 이것이 **full-access**
+  같은 실제 project cwd 전체를 유지한다. Claude는 plan/review identity를 receipt에 각각
+  보존하되 native plan workflow 없이 closed `Read,Glob,Grep` allowlist만 사용한다.
+  sandbox·worktree·snapshot·축약 packet을 만들지 않는다.
+
+  **mode가 실제로 얼마나 조이는지는 벤더마다 다르고, Codex에서는 아무것도 조이지 않는다.**
+  Claude는 `--tools` allowlist로, AGY는 native plan + 읽기 전용 입력 프로필로 쓰기 도구를
+  없앤다. 그런데 Codex CLI에는 그 층이 없다 — 권한을 좁히는 수단이 샌드박스
+  (`-s read-only`)뿐이고 이 프로젝트는 샌드박스를 쓰지 않는다. Codex의 `exec review`는
+  리뷰 워크플로를 고르는 것이지 권한 수준이 아니다(`codex exec review --help`의 옵션도
+  `--uncommitted`·`--base` 같은 대상 지정뿐이다). 실측: `--mode review`로 부른 Codex
+  호출의 영수증에 `sandbox: danger-full-access`가 그대로 찍혔고, 그 값은 mode가 아니라
+  `~/.codex/config.toml`에서 온다. Codex 리뷰에서 파일을 지키는 것은 brief의 금지 지시뿐이니
+  `--mode review`를 안전장치로 계산하지 말 것. `--mode`를 생략하면 기존 default 호출이며, Claude에서는 이것이 **full-access**
   호출이다 — 모든 기본 도구와 비대화형 실행을 caller가 준 실제 cwd에서 갖는다. 읽기 전용은
   명시적 `--mode plan|review`에서만 생기고, 권한 분리는 오직 flag 조합으로만 이뤄진다.
   receipt에는

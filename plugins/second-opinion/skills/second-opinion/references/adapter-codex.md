@@ -30,6 +30,18 @@ worktree, snapshot, packet 분리를 만들지 않는다. mode 생략은 기존 
 Codex CLI에는 이 계약이 요구하는 non-sandbox native plan mapping이 없으므로
 `--mode plan`은 호출 전 `mode_unsupported`로 실패하며 default로 폴백하지 않는다.
 
+⚠ **Codex의 `--mode review`는 권한을 제한하지 않는다 — Codex CLI의 한계다.**
+Claude는 `--tools` allowlist로, AGY는 native plan + 읽기 전용 입력 프로필로 쓰기 도구를
+실제로 없앤다. Codex에는 그 층이 없다 — 권한을 좁히는 수단이 샌드박스(`-s read-only`)
+뿐인데 이 프로젝트는 샌드박스를 쓰지 않는다(맥락 전달이 어렵고 결과 품질이 떨어진다).
+`codex exec review --help`가 내놓는 옵션도 `--uncommitted`·`--base`처럼 **무엇을 볼지**를
+고르는 것이지 권한이 아니다. 실측: `--mode review`로 부른 호출의 영수증에
+`sandbox: danger-full-access`가 그대로 찍혔고, 그 값은 mode가 아니라
+`~/.codex/config.toml`의 `sandbox_mode`에서 온다.
+→ **Codex 리뷰에서 파일을 지키는 것은 brief의 금지 지시뿐이다.** `--mode review`를
+읽기 전용 보증으로 계산하지 말고, 쓰기 금지가 중요하면 brief에 명시하고 호출 후
+`git status`로 확인한다.
+
 - 비-git cwd는 디스패처가 `--skip-git-repo-check`를 자동 판정·삽입한다
 - 출력 머리에 taskkill 한글 잡음(프로세스 정리 메시지)이 섞일 수 있음 — 본문만 취하면 됨
 - codex는 로컬 파일을 읽는다(전 sandbox 모드 실측). 큰 내용은 파일로 두고 경로를 지시한다.

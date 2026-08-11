@@ -106,6 +106,12 @@ export function usageText() {
     "  validation, not repeated here — run the call and the error names exactly",
     "  what is missing or unsupported.",
     "",
+    // Stated here because no error can teach it: a Codex --mode review call
+    // succeeds and looks restricted while running at full access.
+    "  --mode plan|review narrows permissions on Claude and AGY only. Codex has no",
+    "  tool allowlist — its review runs at whatever sandbox_mode its own config",
+    "  sets, so the brief's prohibitions are the only guard there.",
+    "",
     "LOCATING THIS FILE — never hardcode a version directory:",
     "  Claude Code : \"$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs\", or installPath from",
     "                ~/.claude/plugins/installed_plugins.json",

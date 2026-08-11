@@ -42,18 +42,31 @@ test("skill resolves the catalog path directly before declaring it missing", () 
   assert.match(skill, /검색 결과가 비었다는 이유만으로 설치 누락이나 카탈로그 오류라고 단정하지 않는다/);
 });
 
-test("0.9.5 public help and documentation describe cache-first ranked routing", () => {
+test("0.9.6 public help and documentation describe cache-first ranked routing", () => {
   const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
   const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
   const publicReadmeUrls = [new URL("../../../README.md", import.meta.url), new URL("../../../README.ko.md", import.meta.url)];
   const publicReadmes = publicReadmeUrls.filter((url) => existsSync(url)).map((url) => readFileSync(url, "utf8"));
-  assert.equal(plugin.version, "0.9.5");
+  assert.equal(plugin.version, "0.9.6");
   assert.ok(publicReadmes.length === 0 || publicReadmes.length === 2, "public snapshot must carry both README files");
   for (const text of [skill, ...publicReadmes]) {
-    assert.match(text, /0\.9\.5/);
+    assert.match(text, /0\.9\.6/);
     assert.match(text, /model-catalog-v1\.json/);
     assert.match(text, /opus 4\.6/);
   }
+  // Callers cannot learn this from an error: a Codex --mode review call succeeds
+  // and looks restricted while running at whatever sandbox_mode the config sets.
+  // One caller dispatched Codex that way, called it read-only, and only found
+  // `sandbox: danger-full-access` afterwards in the receipt.
+  assert.match(usageText(), /narrows permissions on Claude and AGY only/);
+  assert.match(usageText(), /Codex has no\s+tool allowlist/);
+  for (const text of [skill, ...publicReadmes]) {
+    assert.ok(
+      /권한을 제한하지 않는다|restricts nothing|아무것도 조이지 않는다/.test(text),
+      "docs must state that a Codex review does not restrict permissions",
+    );
+  }
+
   assert.match(usageText(), /cached for 24h.*model-catalog-v1\.json/s);
   assert.match(usageText(), /Default --timeout is 2700s \(45m\), a runaway backstop/);
   assert.match(skill, /공통 2700초 값/);

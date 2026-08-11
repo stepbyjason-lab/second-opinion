@@ -127,6 +127,13 @@ export function buildVendorArgv(options) {
   const inputs = options.inputs ?? [];
   const isGitRepo = options.isGitRepo ?? true;
   if (vendor === "codex") {
+    // `exec review` picks a review workflow, not a permission level — unlike the
+    // Claude branch below, nothing here narrows what the vendor may touch. The
+    // Codex CLI has no tool allowlist; its only way to restrict is the sandbox
+    // (`-s read-only`), which this project does not use, so a --mode review call
+    // still runs at whatever `sandbox_mode` the user's config sets. Measured: a
+    // review dispatch recorded `sandbox: danger-full-access`. Callers must treat
+    // the brief's own prohibitions as the only guard here.
     const argv = effectiveMode === "review" ? ["exec", "review"] : ["exec"];
     if (operation === "image-generate") argv.push("-s", "workspace-write");
     if (!isGitRepo) argv.push("--skip-git-repo-check");

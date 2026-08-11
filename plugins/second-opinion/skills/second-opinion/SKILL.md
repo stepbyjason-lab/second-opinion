@@ -13,7 +13,7 @@ description: >
 
 # second-opinion — 외부 AI 어댑터
 
-**버전 0.9.5** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
+**버전 0.9.6** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
 
 이 스킬은 **아무것도 차단하지 않는다** — 중개(relay)만 한다. 디스패처는 커맨드 정합성을 위한 도구일 뿐이다. "Claude가 디스패처를 반드시 거치게" 강제하는 것은 **부르는 쪽(caller)의 책임**이다 → [references/enforcement.md](references/enforcement.md).
 
@@ -43,11 +43,21 @@ plan/review 권한을 자동 적용하지 않는다.
 |---|---|---|
 | mode 생략 | 기존 범용 호출 | AGY·Codex는 기존 argv 불변; Claude는 모든 기본 도구 + 비대화형 실행 |
 | `--mode plan` | 같은 실제 project cwd를 전체 탐색하는 읽기 전용 계획 | AGY native plan; Claude는 plan identity를 유지한 closed `Read,Glob,Grep`; Codex는 지원하지 않아 호출 전 실패 |
-| `--mode review` | 같은 실제 project cwd를 전체 탐색하는 읽기 전용 리뷰 | AGY native plan; Claude는 review identity를 유지한 closed `Read,Glob,Grep`; Codex native `exec review` |
+| `--mode review` | 같은 실제 project cwd를 전체 탐색하는 리뷰 | AGY native plan; Claude는 review identity를 유지한 closed `Read,Glob,Grep`; Codex native `exec review` — **권한 제한 없음(아래 주의)** |
 
 - 이번 mode는 text operation 전용이다.
 - **읽기 전용은 명시적 plan/review뿐이다.** mode 생략은 좁은 호출이 아니라 범용
   full-access 호출이며, 권한을 좁히려면 mode를 명시해야 한다.
+- ⚠ **`--mode review`의 강도는 벤더마다 다르다 — Codex에서는 권한을 제한하지 않는다.**
+  Claude는 `--tools` allowlist로, AGY는 native plan + 입력 프로필로 **쓰기 도구 자체를
+  없앤다**. 반면 **Codex CLI에는 그런 층이 없다** — 권한을 좁히는 수단이 샌드박스
+  (`-s read-only`)뿐이고, 이 프로젝트는 샌드박스를 쓰지 않는다(맥락 전달이 어렵고 결과
+  품질이 떨어진다). 그래서 Codex의 `exec review`는 **"무엇을 볼지"를 정하는 워크플로**이지
+  권한 축소가 아니다(`codex exec review --help`의 옵션도 `--uncommitted`·`--base`처럼
+  대상 지정뿐이다). 실측: `--mode review`로 부른 Codex 호출의 영수증에 `sandbox:
+  danger-full-access`가 그대로 찍혔다 — 그 값은 mode가 아니라 `~/.codex/config.toml`의
+  `sandbox_mode`에서 온다. **Codex 리뷰에서 파일을 지키는 것은 brief의 금지 지시뿐이니,
+  `--mode review`를 안전장치로 계산하지 말 것.**
 - sandbox·worktree·snapshot·packet·분리 cwd를 만들지 않는다. 권한은 mode별 flag 조합으로만
   결정되고, 어느 mode든 caller가 준 실제 cwd에서 실행된다.
 - Madi 같은 caller가 review panel을 소집할 때만 `--mode review`를 붙인다.
@@ -117,8 +127,14 @@ fresh cache에서 모델을 못 찾으면 한 번 즉시 갱신하고, 갱신 �
 node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor codex --operation text --brief brief.txt --cwd <작업 repo 또는 임시 dir> --out out.txt --err err.txt
 ```
 
-읽기 전용 코드 리뷰는 같은 repo cwd에서 `--mode review`를 추가한다. `--mode plan`은
-승인된 non-sandbox native mapping이 없어 호출 전에 실패한다.
+코드 리뷰는 같은 repo cwd에서 `--mode review`를 추가한다 — native `exec review`로 번역된다.
+`--mode plan`은 승인된 non-sandbox native mapping이 없어 호출 전에 실패한다.
+
+⚠ **Codex의 `--mode review`는 권한을 제한하지 않는다** — 리뷰 워크플로를 고를 뿐이다.
+Codex CLI가 제공하는 권한 축소 수단은 샌드박스(`-s read-only`)뿐인데 이 프로젝트는 그걸
+쓰지 않으므로, Codex 리뷰는 실제로는 `~/.codex/config.toml`의 `sandbox_mode` 그대로
+돈다(실측: 영수증에 `danger-full-access`). 쓰기를 막는 것은 brief의 금지 지시뿐이다.
+Claude·AGY의 review와 강도가 다르니 같은 안전장치로 취급하지 말 것.
 
 이미지 과업은 `--operation image-analyze`(입력 `--input <파일>`)·`--operation image-generate` — 상세는 `references/adapter-codex.md`.
 
