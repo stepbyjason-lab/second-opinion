@@ -26,6 +26,15 @@
 //     node <dispatch> --vendor agy    --operation text --brief b.txt --cwd <dir> --model "gemini-3.6-flash-high" --out o.txt --err e.txt
 //     node <dispatch> --vendor claude --operation text --brief b.txt --cwd <dir> --model sonnet --effort low --out o.txt --err e.txt
 //
+//   RECEIPTS — SECOND_OPINION_RECEIPT remains private and keeps its raw v1
+//   locators. SECOND_OPINION_PORTABLE_RECEIPT is an independent, optional JSONL
+//   sink. Its closed emitter excludes dispatcher-owned locator fields, but free-
+//   form vendor vocabulary can still contain sensitive text, so review portable
+//   content before public sharing. Each configured sink is attempted independently
+//   after a dispatch; receipt I/O remains fail-open and the exit set stays
+//   0, 2, 3, 4, 124. `ts` is only a timestamp, not a correlation key. A dispatch
+//   is not guaranteed to write two rows.
+//
 //   Per-vendor requirements are not restated here or in --help. Validation
 //   reports them precisely when a call is wrong, and prose copies of those rules
 //   drift from the checks that enforce them.
@@ -35,6 +44,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DISPATCH_MODES, OPERATIONS, PolicyError, VENDORS, buildVendorArgv, composeVendorInput, effectiveInputProfile, effectiveVendorMode, executableName, normalizeVendor, resolveExecutable } from "./vendor-policy.mjs";
+import { appendPortableReceipt, buildPortableReceipt, preparePortableUsage } from "./portable-receipt.mjs";
 
 const MAX_BRIEF_BYTES = 8 * 1024 * 1024;
 const MAX_VENDOR_USAGE_BYTES = 64 * 1024 * 1024;
@@ -125,7 +135,15 @@ export function usageText() {
     "                On Windows PowerShell 5.1, verify catalog paths directly; an empty",
     "                rg --files ... | rg '...$' result is not proof of absence.",
     "",
-    "  Set SECOND_OPINION_RECEIPT to a path to record calls as JSON lines.",
+    "  Set SECOND_OPINION_RECEIPT to a path to record private calls as JSON lines;",
+    "  its locator-rich raw receipt must stay outside any repository.",
+    "  Set SECOND_OPINION_PORTABLE_RECEIPT independently for cumulative portable JSONL.",
+    "  Its closed emitter excludes dispatcher-owned locator fields. Free-form vendor",
+    "  vocabulary can still contain sensitive text, so review content before sharing.",
+    "  Raw and portable appends are independent and fail-open; the exit set remains",
+    "  0, 2, 3, 4, 124. A configured sink may have no row after an I/O failure, and one",
+    "  dispatch is not guaranteed to produce two rows. `ts` is only a timestamp,",
+    "  not a correlation key. Keep raw receipts outside repositories.",
   ].join("\n");
 }
 
@@ -549,6 +567,13 @@ function receiptPath(env) {
   const receipt = env.SECOND_OPINION_RECEIPT?.trim();
   return receipt ? absoluteFrom(process.cwd(), receipt) : undefined;
 }
+function portableReceiptPath(env) {
+  const portable = env.SECOND_OPINION_PORTABLE_RECEIPT?.trim();
+  return portable ? absoluteFrom(process.cwd(), portable) : undefined;
+}
+function hasEnvKey(env, expected) {
+  return Object.keys(env).some((key) => key.toUpperCase() === expected);
+}
 function sameFile(left, right) {
   try {
     const leftInfo = statSync(left);
@@ -570,6 +595,16 @@ function receiptConflicts(options, env) {
   const receipt = receiptPath(env);
   if (!receipt) return false;
   return [options.brief, ...(options.inputs ?? []), options.out, options.err].filter(Boolean).some((value) => sameFile(receipt, value));
+}
+function portableConfigError(options, env) {
+  const portable = portableReceiptPath(env);
+  if (!portable) return null;
+  const raw = receiptPath(env);
+  if (raw && sameFile(raw, portable)) return "SECOND_OPINION_RECEIPT and SECOND_OPINION_PORTABLE_RECEIPT must not refer to the same file";
+  if ([options.brief, ...(options.inputs ?? []), options.out, options.err].filter(Boolean).some((value) => sameFile(portable, value))) {
+    return "SECOND_OPINION_PORTABLE_RECEIPT must not refer to an input or output file";
+  }
+  return null;
 }
 function readBoundedRegularFile(path, tooLargeStatus = "file-too-large") {
   try {
@@ -760,6 +795,66 @@ function writeReceipt(stderr, options, exit, startedAt, invoked, outputCheckStat
     appendFileSync(receipt, `${separator}${JSON.stringify({ schemaVersion: 1, ts: new Date().toISOString(), vendor: options.vendor, operation: options.operation, requestedMode, effectiveMode, inputProfile, modelRequested: options.modelRequested ?? options.model ?? null, model: options.model ?? null, effort: options.effort ?? null, exit, durationSec: Number(duration), invoked, cwd: options.cwd, outPath: options.out ?? null, errPath: options.err ?? null, pid: process.pid, vendorUsage: vendorUsage.usage, vendorUsageStatus: vendorUsage.status, outputCheckStatus })}\n`);
   } catch { /* Receipt recording must not affect dispatch. */ }
 }
+
+function writePortableReceipt(stderr, options, exit, startedAt, invoked, outputCheckStatus, env = process.env, vendorObservation = null) {
+  try {
+    const target = portableReceiptPath(env);
+    if (!target) return;
+    const duration = Number(((Date.now() - startedAt) / 1000).toFixed(3));
+    const requestedMode = options.mode ?? "default";
+    let effectiveMode = "invalid";
+    let inputProfile = "invalid";
+    try { effectiveMode = effectiveVendorMode({ ...options, mode: requestedMode }); } catch { /* closed invalid marker */ }
+    try { inputProfile = effectiveInputProfile({ ...options, mode: requestedMode }); } catch { /* closed invalid marker */ }
+    let observedUsage = { usage: null, status: "read-failed" };
+    try { observedUsage = collectVendorUsage(options, invoked, env, vendorObservation); } catch { /* degraded below */ }
+    const preparedUsage = preparePortableUsage(observedUsage.usage, observedUsage.status);
+    const record = buildPortableReceipt(
+      new Date().toISOString(),
+      options.vendor,
+      options.operation,
+      requestedMode,
+      effectiveMode,
+      inputProfile,
+      portableVocabulary(options.modelRequested ?? options.model, 1024),
+      portableVocabulary(options.model, 1024),
+      portableVocabulary(options.effort, 64),
+      exit,
+      duration,
+      invoked,
+      Boolean(options.out),
+      Boolean(options.err),
+      preparedUsage.usage,
+      preparedUsage.status,
+      outputCheckStatus,
+    );
+    appendPortableReceipt(target, record);
+  } catch {
+    warnPortableReceiptFailure(stderr);
+  }
+}
+
+function portableVocabulary(value, maximum) {
+  if (value === undefined || value === null) return null;
+  return typeof value === "string" && value.length > 0 && value.length <= maximum && !/[\x00-\x1f\x7f]/.test(value)
+    ? value
+    : null;
+}
+
+function warnPortableReceiptFailure(stderr) {
+  try { stderr.write("dispatch portable receipt write failed\n"); } catch { /* Warning delivery is fail-open too. */ }
+}
+
+function writeDispatchReceipts(stderr, options, exit, startedAt, invoked, outputCheckStatus, env, vendorObservation, writers) {
+  try {
+    (writers?.raw ?? writeReceipt)(stderr, options, exit, startedAt, invoked, outputCheckStatus, env, vendorObservation);
+  } catch { /* An unexpected raw sink failure cannot affect dispatch or its sibling. */ }
+  try {
+    (writers?.portable ?? writePortableReceipt)(stderr, options, exit, startedAt, invoked, outputCheckStatus, env, vendorObservation);
+  } catch {
+    warnPortableReceiptFailure(stderr);
+  }
+}
 function openOutput(path) {
   const fd = openSync(path, "w");
   try { return createWriteStream(path, { fd, autoClose: true }); }
@@ -798,6 +893,7 @@ export async function run(options, deps = { spawn }) {
   const spawnImpl = deps.spawn;
   const parentStdout = deps.stdout ?? process.stdout;
   const parentStderr = deps.stderr ?? process.stderr;
+  const receiptWriters = deps.receiptWriters;
   const startedAt = Date.now();
   let vendorObservation = null;
   let outputCheckStatus = options.expectOutput ? "not-evaluated" : "not-requested";
@@ -818,9 +914,14 @@ export async function run(options, deps = { spawn }) {
     parentStderr.write("dispatch validation error: --out/--err must not equal SECOND_OPINION_RECEIPT\n");
     return 2;
   }
+  const portableError = portableConfigError(options, env);
+  if (portableError) {
+    parentStderr.write(`dispatch validation error: ${portableError}\n`);
+    return 2;
+  }
   if (options.vendor === "claude" && (!options.model || !options.effort || !options.out || !options.err)) {
     parentStderr.write("dispatch validation error: Claude requires model, effort, out, and err\n");
-    writeReceipt(parentStderr, options, 2, startedAt, false, outputCheckStatus, env);
+    writeDispatchReceipts(parentStderr, options, 2, startedAt, false, outputCheckStatus, env, undefined, receiptWriters);
     return 2;
   }
   const isGitRepo = options.isGitRepo ?? isGitRepository(options.cwd);
@@ -828,20 +929,21 @@ export async function run(options, deps = { spawn }) {
   try { argv = buildVendorArgv({ ...options, isGitRepo }); }
   catch (error) {
     const code = error instanceof PolicyError ? 2 : 3;
-    parentStderr.write(`dispatch validation error: ${error.message ?? "vendor mode resolution failed"}\n`);
-    writeReceipt(parentStderr, options, code, startedAt, false, outputCheckStatus, env);
+    const detail = error.message ?? "vendor mode resolution failed";
+    parentStderr.write(`dispatch validation error: ${detail}\n`);
+    writeDispatchReceipts(parentStderr, options, code, startedAt, false, outputCheckStatus, env, undefined, receiptWriters);
     return code;
   }
   if (options.dryRun) {
     parentStdout.write(`${JSON.stringify({ vendor: options.vendor, operation: options.operation, requestedMode: options.mode, effectiveMode: effectiveVendorMode(options), inputProfile: effectiveInputProfile(options), modelRequested: options.modelRequested ?? null, model: options.model ?? null, executable: executableName(options.vendor), argv, stdinMode: "brief-file", cwd: options.cwd })}\n`);
-    writeReceipt(parentStderr, options, 0, startedAt, false, outputCheckStatus, env);
+    writeDispatchReceipts(parentStderr, options, 0, startedAt, false, outputCheckStatus, env, undefined, receiptWriters);
     return 0;
   }
   let brief;
   try { brief = composeVendorInput(options, readFileSync(options.brief)); }
   catch (error) {
     parentStderr.write(`dispatch internal error: unable to read brief (${error.code ?? "read_failed"})\n`);
-    writeReceipt(parentStderr, options, 3, startedAt, false, outputCheckStatus, env);
+    writeDispatchReceipts(parentStderr, options, 3, startedAt, false, outputCheckStatus, env, undefined, receiptWriters);
     return 3;
   }
   let executable;
@@ -849,7 +951,7 @@ export async function run(options, deps = { spawn }) {
   catch (error) {
     const code = error instanceof PolicyError ? 2 : 3;
     parentStderr.write(`${error.message ?? "dispatch executable resolution failed"}\n`);
-    writeReceipt(parentStderr, options, code, startedAt, false, outputCheckStatus, env);
+    writeDispatchReceipts(parentStderr, options, code, startedAt, false, outputCheckStatus, env, undefined, receiptWriters);
     return code;
   }
   let stdoutStream;
@@ -861,7 +963,7 @@ export async function run(options, deps = { spawn }) {
     stdoutStream?.destroy();
     stderrStream?.destroy();
     parentStderr.write(`dispatch internal error: unable to open output file (${error.code ?? "open_failed"})\n`);
-    writeReceipt(parentStderr, options, 3, startedAt, false, outputCheckStatus, env);
+    writeDispatchReceipts(parentStderr, options, 3, startedAt, false, outputCheckStatus, env, undefined, receiptWriters);
     return 3;
   }
   return await new Promise((resolveRun) => {
@@ -887,16 +989,19 @@ export async function run(options, deps = { spawn }) {
           tooLarge: claudeOutputTooLarge,
         });
       }
-      writeReceipt(parentStderr, options, code === 124 ? "timeout" : code, startedAt, invoked, outputCheckStatus, env, vendorObservation);
+      writeDispatchReceipts(parentStderr, options, code === 124 ? "timeout" : code, startedAt, invoked, outputCheckStatus, env, vendorObservation, receiptWriters);
       resolveRun(code);
     };
     try {
       const spawnOptions = { cwd: options.cwd, shell: false, stdio: ["pipe", captureStdout ? "pipe" : "inherit", stderrStream ? "pipe" : "inherit"], windowsHide: true };
-      if (receiptPath(env) || options.vendor === "claude") {
+      const rawReceiptConfigured = Boolean(receiptPath(env));
+      if (rawReceiptConfigured || hasEnvKey(env, "SECOND_OPINION_PORTABLE_RECEIPT") || options.vendor === "claude") {
         spawnOptions.env = { ...env };
         for (const key of Object.keys(spawnOptions.env)) {
           const upper = key.toUpperCase();
-          if (upper === "SECOND_OPINION_RECEIPT" || (options.vendor === "claude" && upper === "CLAUDECODE")) {
+          if (upper === "SECOND_OPINION_PORTABLE_RECEIPT"
+            || (rawReceiptConfigured && upper === "SECOND_OPINION_RECEIPT")
+            || (options.vendor === "claude" && upper === "CLAUDECODE")) {
             delete spawnOptions.env[key];
           }
         }

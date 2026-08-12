@@ -45,6 +45,16 @@ PowerShell도 동일한 `node ... dispatch.mjs` argv를 사용한다. brief 내�
 - `--out`과 `--err`도 필수다. raw JSON·stderr가 증거 봉투의 backend output이 된다.
 - `SECOND_OPINION_RECEIPT=<JSONL 경로>`를 설정하면 요청 모델·실제 model family·token
   usage·cost·exit·duration·invoked 여부를 한 행으로 묶는다.
+- raw 영수증은 재현을 위한 `cwd`·출력 경로·process 식별자를 보존하므로 저장소 밖에 둔다.
+  `SECOND_OPINION_PORTABLE_RECEIPT`는 raw와 독립적으로 opt-in하는 누적 JSONL sink다. 닫힌
+  typed emitter가 raw를 필터링하지 않고 조립하므로 **디스패처가 소유한 locator 필드**가
+  구조적으로 배제된다. 자유 형식 vendor 문자열에는 민감한 텍스트가 남을 수 있으므로 공개
+  공유 전 내용을 검토해야 한다.
+  완료된 dispatch는 설정된 각 sink에 append를 한 번씩 독립 시도한다. portable I/O 실패는
+  경로 없는 고정 경고만 남기는 fail-open이며 다른 sink나 dispatch exit를 바꾸지 않는다.
+  정규화 후 같은 경로 또는 이미 존재하는 같은 파일은 spawn 전 exit 2로 거부하지만, 이는
+  보안 경계가 아닌 평범한 오설정 방지다. exit 집합은 `0`·`2`·`3`·`4`·`124` 그대로다.
+  `ts`는 타임스탬프일 뿐 상관 키가 아니다. 원자성·동일 행수·순서·행별 짝짓기와 항상 두 행을 보증하지 않는다.
 - Claude 결과가 exit 0이어도 빈 결과, 깨진 JSON, `is_error`, modelUsage 부재, 요청과 다른
   실제 model family는 exit 4로 fail-closed한다. raw output은 그대로 보존한다.
 - safe mode의 보조 Haiku classifier도 `modelUsage`에 남을 수 있다. 요청 모델 검증은

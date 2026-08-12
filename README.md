@@ -2,7 +2,7 @@
 
 **English** | [한국어](./README.ko.md)
 
-![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.6-informational)
+![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.7-informational)
 
 **Use other AI vendors from inside Claude Code — in plain language.**
 Second opinions, task offloading, and vendor capabilities like image generation.
@@ -78,6 +78,22 @@ extracted from:
   Optional `--expect-output <ASCII token>` calls also record `outputCheckStatus`
   without recording or sending the token itself; a missing token returns exit 4
   while preserving the raw output file.
+
+  The raw receipt deliberately keeps `cwd`, `outPath`, `errPath`, and `pid` for
+  reproduction, so keep it outside every repository. Independently set
+  `SECOND_OPINION_PORTABLE_RECEIPT` for a cumulative portable JSONL sink. Its closed
+  typed emitter excludes dispatcher-owned locator fields instead of filtering raw
+  rows. Free-form vendor vocabulary can still contain sensitive text, so review the
+  content before public sharing.
+
+  Each completed dispatch independently attempts one append to every configured
+  sink. Receipt I/O is fail-open: portable failure emits a fixed path-free warning
+  and neither sink can change the other sink or the dispatch exit. Normalized
+  same-target paths, and existing files with equal file identity, are rejected with
+  exit 2 before spawn as ordinary misconfiguration protection, not a security
+  boundary. The exit set remains `0`, `2`, `3`, `4`, and `124`. `ts` is only a
+  timestamp, not a correlation key; there is no cross-file atomicity, equal-count,
+  ordering, or row-pairing guarantee, and a dispatch is not promised to write two rows.
   The `--vendor claude` channel uses the same dispatcher without the
   obsolete 280-second shell timeout. The dispatcher uses a 45-minute (2700-second)
   runaway backstop by default; callers can still set a tighter `--timeout`.

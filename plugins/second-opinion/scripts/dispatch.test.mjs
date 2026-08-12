@@ -42,15 +42,15 @@ test("skill resolves the catalog path directly before declaring it missing", () 
   assert.match(skill, /검색 결과가 비었다는 이유만으로 설치 누락이나 카탈로그 오류라고 단정하지 않는다/);
 });
 
-test("0.9.6 public help and documentation describe cache-first ranked routing", () => {
+test("0.9.7 public help and documentation describe cache-first ranked routing", () => {
   const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
   const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
   const publicReadmeUrls = [new URL("../../../README.md", import.meta.url), new URL("../../../README.ko.md", import.meta.url)];
   const publicReadmes = publicReadmeUrls.filter((url) => existsSync(url)).map((url) => readFileSync(url, "utf8"));
-  assert.equal(plugin.version, "0.9.6");
+  assert.equal(plugin.version, "0.9.7");
   assert.ok(publicReadmes.length === 0 || publicReadmes.length === 2, "public snapshot must carry both README files");
   for (const text of [skill, ...publicReadmes]) {
-    assert.match(text, /0\.9\.6/);
+    assert.match(text, /0\.9\.7/);
     assert.match(text, /model-catalog-v1\.json/);
     assert.match(text, /opus 4\.6/);
   }
@@ -1147,13 +1147,14 @@ test("run injection strips every receipt env spelling and respects trimmed recei
     });
   };
   const stderr = memoryWriter();
-  const env = caseInsensitiveEnv({ second_opinion_receipt: receipt, [preservedKey]: "preserved" });
+  const portable = join(root, "child-env-portable.jsonl");
+  const env = caseInsensitiveEnv({ second_opinion_receipt: receipt, second_opinion_portable_receipt: portable, [preservedKey]: "preserved" });
   const code = await run({ ...fixture, brief, cwd: root, timeout: 2, dryRun: false }, { spawn: spawnFake, stderr: stderr.stream, env });
   assert.equal(code, 0);
   assert.equal(captured.executable, "codex");
   assert.deepEqual(captured.argv, fixture.argv);
   assert.equal(captured.options.shell, false);
-  assert.deepEqual(Object.keys(captured.options.env).filter((key) => key.toUpperCase() === "SECOND_OPINION_RECEIPT"), []);
+  assert.deepEqual(Object.keys(captured.options.env).filter((key) => ["SECOND_OPINION_RECEIPT", "SECOND_OPINION_PORTABLE_RECEIPT"].includes(key.toUpperCase())), []);
   assert.equal(captured.options.env[preservedKey], "preserved");
   assert.equal(stdin, "brief with spaces and quotes: \"complete\"\n");
 
@@ -2011,4 +2012,398 @@ test("P3: vendor usage retries until a delayed rollout appears", async () => {
   await writerExit;
   assert.equal(row.vendorUsageStatus, "ok");
   assert.equal(row.vendorUsage.totalTokens, USAGE_TOKENS.total_tokens);
+});
+
+function portableValues(overrides = {}) {
+  const values = {
+    ts: "2026-08-12T00:00:00.000Z", vendor: "codex", operation: "text", requestedMode: "default",
+    effectiveMode: "default", inputProfile: "none", modelRequested: "gpt-5.6-sol", model: "gpt-5.6-sol",
+    effort: "high", exit: 0, durationSec: 0.125, invoked: true, stdoutDeclared: true, stderrDeclared: true,
+    vendorUsage: {
+      source: "codex-rollout", actualModels: ["gpt-5.6-sol"], inputTokens: 10, cachedInputTokens: 2,
+      cacheCreationInputTokens: null, cacheReadInputTokens: null, outputTokens: 4, reasoningOutputTokens: 1,
+      totalTokens: 14, totalCostUsd: null, contextWindow: 128000, quotaUsedPercent: 12.5,
+    },
+    vendorUsageStatus: "ok", outputCheckStatus: "not-requested", ...overrides,
+  };
+  return [
+    values.ts, values.vendor, values.operation, values.requestedMode, values.effectiveMode, values.inputProfile,
+    values.modelRequested, values.model, values.effort, values.exit, values.durationSec, values.invoked,
+    values.stdoutDeclared, values.stderrDeclared, values.vendorUsage, values.vendorUsageStatus, values.outputCheckStatus,
+  ];
+}
+async function portableModule() { return await import("./portable-receipt.mjs"); }
+function successfulSpawn(capture) {
+  return (_executable, _argv, options) => {
+    if (capture) capture.options = options;
+    return fakeChild((child) => {
+      child.stdin.on("end", () => {
+        child.stdout.end(); child.stderr.end();
+        queueMicrotask(() => child.emit("close", 0, null));
+      });
+      child.stdin.resume();
+    });
+  };
+}
+function childDispatch(args, env) {
+  return new Promise((resolveChild, rejectChild) => {
+    const child = spawn(process.execPath, [join(scriptsDirectory, "dispatch.mjs"), ...args], {
+      cwd: root, env, stdio: ["ignore", "pipe", "pipe"], shell: false, windowsHide: true,
+    });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", rejectChild);
+    child.once("close", (status, signal) => resolveChild({ status, signal, stdout, stderr }));
+  });
+}
+
+test("Design E portable-only sink cumulatively appends one valid row per successful dispatch", async () => {
+  const portable = join(makeTempDir("second-opinion-design-e-red-"), "portable.jsonl");
+  const env = { SECOND_OPINION_PORTABLE_RECEIPT: portable };
+  for (let index = 0; index < 2; index += 1) {
+    assert.equal(await run({ ...FIXTURES[0], brief, cwd: root, timeout: 2, dryRun: false }, {
+      spawn: successfulSpawn(), stderr: memoryWriter().stream, env,
+    }), 0);
+  }
+  assert.equal(existsSync(portable), true, "portable-only configuration must create its independent sink");
+  const rows = receiptLines(portable);
+  assert.equal(rows.length, 2);
+  assert.ok(rows.every((row) => row.schemaVersion === 2 && row.receiptKind === "portable"));
+});
+
+test("closed portable emitter has an exact key set and no locator input seam", async () => {
+  const { buildPortableReceipt } = await portableModule();
+  const pathLikeVocabulary = "D:\\private-model-name";
+  const row = buildPortableReceipt(...portableValues({ model: pathLikeVocabulary }));
+  assert.equal(buildPortableReceipt.length, 17);
+  assert.deepEqual(Object.keys(row), [
+    "schemaVersion", "receiptKind", "ts", "vendor", "operation", "requestedMode", "effectiveMode", "inputProfile",
+    "modelRequested", "model", "effort", "exit", "durationSec", "invoked", "outputDeclared", "vendorUsage",
+    "vendorUsageStatus", "outputCheckStatus",
+  ]);
+  assert.deepEqual(Object.keys(row.outputDeclared), ["stdout", "stderr"]);
+  assert.deepEqual(Object.keys(row.vendorUsage), [
+    "source", "actualModels", "inputTokens", "cachedInputTokens", "cacheCreationInputTokens", "cacheReadInputTokens",
+    "outputTokens", "reasoningOutputTokens", "totalTokens", "totalCostUsd", "contextWindow", "quotaUsedPercent",
+  ]);
+  const allKeys = [row, row.outputDeclared, row.vendorUsage].flatMap((value) => Object.keys(value));
+  assert.equal(allKeys.some((key) => /^(?:cwd|outPath|errPath|pid)$|(?:Path|Pid|Id|Index|Offset)$/i.test(key)), false);
+  assert.equal(row.model, pathLikeVocabulary);
+  const source = readFileSync(new URL("./portable-receipt.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /\b(?:cwd|outPath|errPath|pid)\b/);
+  assert.doesNotMatch(source, /\.\.\.\s*(?:values|record|receipt|input)/);
+});
+
+test("portable call site passes declarations but not live locator values", async () => {
+  const evidenceRoot = makeTempDir("second-opinion-portable-seam-");
+  const portable = join(evidenceRoot, "portable.jsonl");
+  const privateOut = join(evidenceRoot, "private-out.txt");
+  const privateErr = join(evidenceRoot, "private-err.txt");
+  const privateWorkspace = join(evidenceRoot, "private-workspace");
+  mkdirSync(privateWorkspace);
+  assert.equal(await run({
+    ...FIXTURES[0], brief, cwd: privateWorkspace, out: privateOut, err: privateErr, timeout: 2, dryRun: true,
+  }, { stderr: memoryWriter().stream, env: { SECOND_OPINION_PORTABLE_RECEIPT: portable } }), 0);
+  const row = receiptLines(portable)[0];
+  const leaves = (value) => value && typeof value === "object" ? Object.values(value).flatMap(leaves) : [value];
+  for (const value of [privateWorkspace, privateOut, privateErr, process.pid]) assert.equal(leaves(row).includes(value), false, String(value));
+  assert.deepEqual(row.outputDeclared, { stdout: true, stderr: true });
+});
+
+test("a 1025-character caller model preserves raw evidence and degrades only portable model fields", async () => {
+  const evidenceRoot = makeTempDir("second-opinion-portable-vocabulary-");
+  const controlRaw = join(evidenceRoot, "control-raw.jsonl");
+  const raw = join(evidenceRoot, "raw.jsonl");
+  const portable = join(evidenceRoot, "portable.jsonl");
+  const model = "m".repeat(1025);
+  const options = { ...FIXTURES[0], brief, cwd: root, model, timeout: 2, dryRun: true };
+
+  const rawOnlyExit = await run(options, {
+    stderr: memoryWriter().stream,
+    env: { SECOND_OPINION_RECEIPT: controlRaw },
+  });
+  const dualExit = await run(options, {
+    stderr: memoryWriter().stream,
+    env: { SECOND_OPINION_RECEIPT: raw, SECOND_OPINION_PORTABLE_RECEIPT: portable },
+  });
+
+  assert.equal(rawOnlyExit, 0);
+  assert.equal(dualExit, rawOnlyExit, "adding the portable sink must not change dispatch exit");
+  assert.equal(receiptLines(raw).length, 1);
+  assert.equal(receiptLines(portable).length, 1);
+  assert.equal(receiptLines(raw)[0].modelRequested, model, "raw v1 keeps its caller vocabulary bytes");
+  assert.equal(receiptLines(raw)[0].model, model, "raw v1 model remains unchanged");
+  assert.equal(receiptLines(portable)[0].modelRequested, null);
+  assert.equal(receiptLines(portable)[0].model, null);
+});
+
+test("malformed optional usage degrades to a closed marker and keeps a valid row", async () => {
+  const { appendPortableReceipt, buildPortableReceipt, preparePortableUsage } = await portableModule();
+  const prepared = preparePortableUsage({ source: "codex-rollout", inputTokens: { malformed: true } }, "ok");
+  assert.deepEqual(prepared, { usage: null, status: "invalid-token-fields" });
+  const row = buildPortableReceipt(...portableValues({ vendorUsage: prepared.usage, vendorUsageStatus: prepared.status }));
+  assert.equal(row.vendorUsage, null);
+  assert.equal(row.vendorUsageStatus, "invalid-token-fields");
+  const target = join(makeTempDir("second-opinion-degraded-"), "portable.jsonl");
+  appendPortableReceipt(target, row);
+  assert.deepEqual(receiptLines(target), [row]);
+});
+
+test("dual sinks each append one independent row", async () => {
+  const evidenceRoot = makeTempDir("second-opinion-dual-sink-");
+  const raw = join(evidenceRoot, "raw.jsonl"), portable = join(evidenceRoot, "portable.jsonl");
+  assert.equal(await run({ ...FIXTURES[0], brief, cwd: root, timeout: 2, dryRun: false }, {
+    spawn: successfulSpawn(), stderr: memoryWriter().stream,
+    env: { SECOND_OPINION_RECEIPT: raw, SECOND_OPINION_PORTABLE_RECEIPT: portable },
+  }), 0);
+  assert.equal(receiptLines(raw).length, 1);
+  assert.equal(receiptLines(portable).length, 1);
+  assert.equal(receiptLines(raw)[0].schemaVersion, 1);
+  assert.equal(receiptLines(portable)[0].schemaVersion, 2);
+});
+
+test("portable I/O failure warns without a path and preserves raw row and exit", async () => {
+  const evidenceRoot = makeTempDir("second-opinion-portable-fail-");
+  const raw = join(evidenceRoot, "raw.jsonl"), portableDirectory = join(evidenceRoot, "portable-directory");
+  mkdirSync(portableDirectory);
+  const stderr = memoryWriter();
+  assert.equal(await run({ ...FIXTURES[0], brief, cwd: root, timeout: 2, dryRun: true }, {
+    stderr: stderr.stream, env: { SECOND_OPINION_RECEIPT: raw, SECOND_OPINION_PORTABLE_RECEIPT: portableDirectory },
+  }), 0);
+  assert.equal(receiptLines(raw).length, 1);
+  assert.match(stderr.value(), /dispatch portable receipt write failed/);
+  assert.equal(stderr.value().includes(portableDirectory), false);
+});
+
+test("raw I/O failure remains fail-open while the portable sink succeeds", async () => {
+  const evidenceRoot = makeTempDir("second-opinion-raw-fail-");
+  const rawDirectory = join(evidenceRoot, "raw-directory"), portable = join(evidenceRoot, "portable.jsonl");
+  mkdirSync(rawDirectory);
+  assert.equal(await run({ ...FIXTURES[0], brief, cwd: root, timeout: 2, dryRun: true }, {
+    stderr: memoryWriter().stream, env: { SECOND_OPINION_RECEIPT: rawDirectory, SECOND_OPINION_PORTABLE_RECEIPT: portable },
+  }), 0);
+  assert.equal(receiptLines(portable).length, 1);
+});
+
+test("an unexpected raw sink exception cannot block portable evidence or change vendor exit", async () => {
+  const portable = join(makeTempDir("second-opinion-raw-throw-"), "portable.jsonl");
+  const code = await run({ ...FIXTURES[0], brief, cwd: root, timeout: 2, dryRun: false }, {
+    spawn: successfulSpawn(),
+    stderr: memoryWriter().stream,
+    env: { SECOND_OPINION_RECEIPT: "configured-raw.jsonl", SECOND_OPINION_PORTABLE_RECEIPT: portable },
+    receiptWriters: { raw: () => { throw new Error("injected raw failure"); } },
+  });
+  assert.equal(code, 0);
+  assert.equal(receiptLines(portable).length, 1);
+});
+
+test("an unexpected portable sink exception cannot block raw evidence or change vendor exit", async () => {
+  const evidenceRoot = makeTempDir("second-opinion-portable-throw-");
+  const raw = join(evidenceRoot, "raw.jsonl");
+  const stderr = memoryWriter();
+  const code = await run({ ...FIXTURES[0], brief, cwd: root, timeout: 2, dryRun: false }, {
+    spawn: successfulSpawn(),
+    stderr: stderr.stream,
+    env: { SECOND_OPINION_RECEIPT: raw, SECOND_OPINION_PORTABLE_RECEIPT: join(evidenceRoot, "portable.jsonl") },
+    receiptWriters: { portable: () => { throw new Error("injected portable failure"); } },
+  });
+  assert.equal(code, 0);
+  assert.equal(receiptLines(raw).length, 1);
+  assert.match(stderr.value(), /dispatch portable receipt write failed/);
+});
+
+test("a throwing portable warning stream remains fail-open", async () => {
+  let rawAttempted = false;
+  const throwingStderr = { write() { throw new Error("injected warning failure"); } };
+  const code = await run({ ...FIXTURES[0], brief, cwd: root, timeout: 2, dryRun: false }, {
+    spawn: successfulSpawn(),
+    stderr: throwingStderr,
+    env: { SECOND_OPINION_PORTABLE_RECEIPT: "configured-portable.jsonl" },
+    receiptWriters: {
+      raw: () => { rawAttempted = true; },
+      portable: () => { throw new Error("injected portable failure"); },
+    },
+  });
+  assert.equal(code, 0);
+  assert.equal(rawAttempted, true);
+});
+
+test("same-target normalized strings are rejected before spawn", async () => {
+  const evidenceRoot = makeTempDir("second-opinion-same-target-");
+  const target = join(evidenceRoot, "same.jsonl");
+  const relativeTarget = relative(process.cwd(), join(evidenceRoot, "nested", "..", "same.jsonl"));
+  let spawned = false;
+  const stderr = memoryWriter();
+  const code = await run({ ...FIXTURES[0], brief, cwd: root, timeout: 2, dryRun: false }, {
+    spawn: () => { spawned = true; throw new Error("must not spawn"); }, stderr: stderr.stream,
+    env: { SECOND_OPINION_RECEIPT: relativeTarget, SECOND_OPINION_PORTABLE_RECEIPT: target },
+  });
+  assert.equal(code, 2);
+  assert.equal(spawned, false);
+  assert.match(stderr.value(), /must not refer to the same file/);
+  assert.equal(stderr.value().includes(target), false);
+});
+
+test("existing dev-ino aliases are rejected before spawn", async () => {
+  const evidenceRoot = makeTempDir("second-opinion-hardlink-target-");
+  const raw = join(evidenceRoot, "raw.jsonl"), portable = join(evidenceRoot, "portable.jsonl");
+  writeFileSync(raw, "");
+  linkSync(raw, portable);
+  let spawned = false;
+  assert.equal(await run({ ...FIXTURES[0], brief, cwd: root, timeout: 2, dryRun: false }, {
+    spawn: () => { spawned = true; throw new Error("must not spawn"); }, stderr: memoryWriter().stream,
+    env: { SECOND_OPINION_RECEIPT: raw, SECOND_OPINION_PORTABLE_RECEIPT: portable },
+  }), 2);
+  assert.equal(spawned, false);
+});
+
+test("portable sink cannot alias a caller input or output", async () => {
+  const evidenceRoot = makeTempDir("second-opinion-portable-conflict-");
+  const input = join(evidenceRoot, "input.png"), output = join(evidenceRoot, "output.txt");
+  writeFileSync(input, "image");
+  for (const [label, options, target] of [
+    ["brief", { ...FIXTURES[0], brief }, brief],
+    ["input", { ...FIXTURES[1], brief, inputs: [input] }, input],
+    ["out", { ...FIXTURES[0], brief, out: output }, output],
+  ]) {
+    let spawned = false;
+    const code = await run({ ...options, cwd: root, timeout: 2, dryRun: false }, {
+      spawn: () => { spawned = true; throw new Error("must not spawn"); }, stderr: memoryWriter().stream,
+      env: { SECOND_OPINION_PORTABLE_RECEIPT: target },
+    });
+    assert.equal(code, 2, label);
+    assert.equal(spawned, false, label);
+  }
+});
+
+test("this-machine parallel observation leaves 12 of 12 parseable portable rows", async () => {
+  const portable = join(makeTempDir("second-opinion-parallel-portable-"), "portable.jsonl");
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (["SECOND_OPINION_RECEIPT", "SECOND_OPINION_PORTABLE_RECEIPT"].includes(key.toUpperCase())) delete env[key];
+  env.SECOND_OPINION_PORTABLE_RECEIPT = portable;
+  const args = ["--vendor", "codex", "--operation", "text", "--brief", brief, "--model", "parallel-model", "--effort", "high", "--dry-run"];
+  const results = await Promise.all(Array.from({ length: 12 }, () => childDispatch(args, env)));
+  assert.deepEqual(results.map((result) => result.status), Array(12).fill(0), results.map((result) => result.stderr).join("\n"));
+  const rows = receiptLines(portable);
+  // This is useful evidence from the current machine/filesystem, not a portable
+  // concurrent-append guarantee across operating systems or filesystems.
+  assert.equal(rows.length, 12, "observed 12/12 on this machine; no portable append guarantee is claimed");
+  assert.ok(rows.every((row) => row.schemaVersion === 2 && row.receiptKind === "portable"));
+});
+
+test("raw-only rows and fail-open behavior match the installed 0.9.6 build", () => {
+  const installed = join(homedir(), ".claude", "plugins", "cache", "second-opinion", "second-opinion", "0.9.6", "scripts", "dispatch.mjs");
+  assert.equal(existsSync(installed), true, "installed second-opinion 0.9.6 baseline build is required");
+  const currentDispatch = join(scriptsDirectory, "dispatch.mjs");
+  const evidenceRoot = makeTempDir("second-opinion-raw-compat-");
+  const args = ["--vendor", "codex", "--operation", "text", "--brief", brief, "--model", "comparison-model", "--effort", "high", "--dry-run"];
+  const invoke = (script, receipt, callArgs = args) => {
+    const env = { ...process.env, SECOND_OPINION_RECEIPT: receipt };
+    for (const key of Object.keys(env)) if (key.toUpperCase() === "SECOND_OPINION_PORTABLE_RECEIPT") delete env[key];
+    return spawnSync(process.execPath, [script, ...callArgs], { cwd: root, env, encoding: "utf8", shell: false, windowsHide: true });
+  };
+  const installedReceipt = join(evidenceRoot, "installed.jsonl"), currentReceipt = join(evidenceRoot, "current.jsonl");
+  const portableWouldBe = join(evidenceRoot, "portable-must-remain-absent.jsonl");
+  const installedRun = invoke(installed, installedReceipt), currentRun = invoke(currentDispatch, currentReceipt);
+  assert.equal(installedRun.status, 0, installedRun.stderr);
+  assert.equal(currentRun.status, 0, currentRun.stderr);
+  const stableStderr = (value) => value.replace(/duration=\d+\.\d{3}s/g, "duration=<dynamic>s");
+  assert.equal(stableStderr(currentRun.stderr), stableStderr(installedRun.stderr), "portable-unset stderr delta must be zero");
+  assert.equal(existsSync(portableWouldBe), false, "portable-unset compatibility must not create a portable file");
+  const installedRow = receiptLines(installedReceipt)[0], currentRow = receiptLines(currentReceipt)[0];
+  assert.deepEqual(Object.keys(currentRow), Object.keys(installedRow));
+  for (const key of Object.keys(installedRow).filter((key) => !["ts", "durationSec", "pid"].includes(key))) assert.deepEqual(currentRow[key], installedRow[key], key);
+  const stableBytes = (row) => JSON.stringify({ ...row, ts: "<dynamic>", durationSec: "<dynamic>", pid: "<dynamic>" });
+  assert.equal(stableBytes(currentRow), stableBytes(installedRow));
+  const longArgs = ["--vendor", "codex", "--operation", "text", "--brief", brief, "--model", "m".repeat(1025), "--dry-run"];
+  const installedLongReceipt = join(evidenceRoot, "installed-long.jsonl"), currentLongReceipt = join(evidenceRoot, "current-long.jsonl");
+  const installedLong = invoke(installed, installedLongReceipt, longArgs), currentLong = invoke(currentDispatch, currentLongReceipt, longArgs);
+  assert.equal(currentLong.status, installedLong.status);
+  assert.equal(stableStderr(currentLong.stderr), stableStderr(installedLong.stderr), "portable-unset long-model stderr delta must be zero");
+  assert.equal(stableBytes(receiptLines(currentLongReceipt)[0]), stableBytes(receiptLines(installedLongReceipt)[0]));
+  const installedDirectory = join(evidenceRoot, "installed-unwritable"), currentDirectory = join(evidenceRoot, "current-unwritable");
+  mkdirSync(installedDirectory); mkdirSync(currentDirectory);
+  const installedFailure = invoke(installed, installedDirectory), currentFailure = invoke(currentDispatch, currentDirectory);
+  assert.equal(currentFailure.status, installedFailure.status);
+  assert.equal(currentFailure.stdout, installedFailure.stdout);
+  assert.equal(stableStderr(currentFailure.stderr), stableStderr(installedFailure.stderr), "portable-unset fail-open stderr delta must be zero");
+  assert.equal(existsSync(portableWouldBe), false, "portable-unset runs must leave the portable target absent");
+});
+
+test("portable sink environment is removed from every child spelling", async () => {
+  const evidenceRoot = makeTempDir("second-opinion-portable-env-");
+  const capture = {}, preservedKey = "SECOND_OPINION_PORTABLE_TEST_PRESERVED";
+  const env = caseInsensitiveEnv({
+    second_opinion_receipt: join(evidenceRoot, "raw.jsonl"),
+    second_opinion_portable_receipt: join(evidenceRoot, "portable.jsonl"),
+    [preservedKey]: "preserved",
+  });
+  assert.equal(await run({ ...FIXTURES[0], brief, cwd: root, timeout: 2, dryRun: false }, {
+    spawn: successfulSpawn(capture), stderr: memoryWriter().stream, env,
+  }), 0);
+  const childKeys = Object.keys(capture.options.env).map((key) => key.toUpperCase());
+  assert.equal(childKeys.includes("SECOND_OPINION_RECEIPT"), false);
+  assert.equal(childKeys.includes("SECOND_OPINION_PORTABLE_RECEIPT"), false);
+  assert.equal(capture.options.env[preservedKey], "preserved");
+});
+
+test("whitespace portable env spellings are stripped while raw blank-key behavior is unchanged", async () => {
+  const capture = {};
+  const rawKey = "second_opinion_receipt";
+  const portableKeys = ["SECOND_OPINION_PORTABLE_RECEIPT", "second_opinion_portable_receipt", "Second_Opinion_Portable_Receipt"];
+  const env = { [rawKey]: " \t ", preserved: "yes" };
+  for (const key of portableKeys) env[key] = " \t ";
+
+  assert.equal(await run({ ...FIXTURES[0], brief, cwd: root, timeout: 2, dryRun: false }, {
+    spawn: successfulSpawn(capture), stderr: memoryWriter().stream, env,
+  }), 0);
+  const childKeys = Object.keys(capture.options.env);
+  assert.deepEqual(childKeys.filter((key) => key.toUpperCase() === "SECOND_OPINION_PORTABLE_RECEIPT"), []);
+  assert.equal(capture.options.env[rawKey], " \t ", "raw blank-key behavior must remain unchanged");
+  assert.equal(capture.options.env.preserved, "yes");
+});
+
+test("retired per-call protocol is absent from product code and tests", () => {
+  const retiredWord = ["pro", "jection"].join(""), retiredFile = "receipt-" + retiredWord + ".mjs";
+  const paths = [
+    new URL("./dispatch.mjs", import.meta.url), new URL("./dispatch.test.mjs", import.meta.url),
+    new URL("./portable-receipt.mjs", import.meta.url), new URL("../skills/second-opinion/SKILL.md", import.meta.url),
+    new URL("../skills/second-opinion/references/adapter-claude.md", import.meta.url),
+    new URL("../../../README.md", import.meta.url), new URL("../../../README.ko.md", import.meta.url),
+    new URL("../../../CHANGELOG.md", import.meta.url),
+  ];
+  for (const path of paths) assert.equal(readFileSync(path, "utf8").toLowerCase().includes(retiredWord), false, fileURLToPath(path));
+  assert.equal(existsSync(new URL("./" + retiredFile, import.meta.url)), false);
+  assert.equal(existsSync(new URL("./portable-receipt.mjs", import.meta.url)), true);
+  const dispatchSource = readFileSync(new URL("./dispatch.mjs", import.meta.url), "utf8");
+  const retiredTokens = [
+    ["w", "x"].join(""), ["exit", "\\s*", String(5)].join(""),
+    ["source", "Receipt", "Schema", "Version"].join(""), ["canonical", "Candidate"].join(""),
+  ];
+  for (const token of retiredTokens) assert.doesNotMatch(dispatchSource, new RegExp(token, "i"));
+});
+
+test("help, comments, skill, READMEs, Claude adapter, changelog, and version teach Design E", () => {
+  const dispatchSource = readFileSync(new URL("./dispatch.mjs", import.meta.url), "utf8");
+  const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
+  const readme = readFileSync(new URL("../../../README.md", import.meta.url), "utf8");
+  const koreanReadme = readFileSync(new URL("../../../README.ko.md", import.meta.url), "utf8");
+  const adapter = readFileSync(new URL("../skills/second-opinion/references/adapter-claude.md", import.meta.url), "utf8");
+  const changelog = readFileSync(new URL("../../../CHANGELOG.md", import.meta.url), "utf8");
+  const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
+  const surfaces = [dispatchSource.slice(0, dispatchSource.indexOf("import { spawn")), usageText(), skill, readme, koreanReadme, adapter, changelog];
+  for (const [index, text] of surfaces.entries()) {
+    assert.match(text, /SECOND_OPINION_PORTABLE_RECEIPT/, `surface ${index}`);
+    assert.ok(/dispatcher-owned locator|디스패처가 소유한\s+locator/i.test(text), `surface ${index}`);
+    assert.ok(/review.*before.*sharing|공유 전.*검토|공유하기 전.*검토/is.test(text), `surface ${index}`);
+    assert.ok(/ts.{0,80}(?:not a correlation key|상관 키가 (?:아님|아니다))/is.test(text), `surface ${index}`);
+    const exitAnchor = text.search(/exit set (?:remains|stays)|exit 집합(?:은)?(?: 계속)?/i);
+    assert.notEqual(exitAnchor, -1, `surface ${index} exit-set declaration`);
+    const exitSet = new Set(text.slice(exitAnchor, exitAnchor + 180).match(/\b(?:0|2|3|4|124)\b/g) ?? []);
+    assert.deepEqual(exitSet, new Set(["0", "2", "3", "4", "124"]), `surface ${index} exit set`);
+    assert.ok(/two rows.{0,30}(?:never|not)|(?:not|never).{0,30}two rows|항상 두 행.{0,30}(?:않|아니)/is.test(text), `surface ${index}`);
+  }
+  const changelogRelease = changelog.match(/^##\s+(\d+\.\d+\.\d+)\b/m)?.[1];
+  assert.equal(plugin.version, changelogRelease);
 });

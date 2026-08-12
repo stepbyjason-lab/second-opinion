@@ -13,7 +13,7 @@ description: >
 
 # second-opinion — 외부 AI 어댑터
 
-**버전 0.9.6** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
+**버전 0.9.7** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
 
 이 스킬은 **아무것도 차단하지 않는다** — 중개(relay)만 한다. 디스패처는 커맨드 정합성을 위한 도구일 뿐이다. "Claude가 디스패처를 반드시 거치게" 강제하는 것은 **부르는 쪽(caller)의 책임**이다 → [references/enforcement.md](references/enforcement.md).
 
@@ -268,6 +268,16 @@ ffmpeg로 프레임을 추출한 뒤 그 프레임들을 `-i`로 전달한다(�
    Claude 호출은 result JSON의 실제 model·token usage·cost를 `vendorUsage`에 남기며
    요청 model과 실제 family가 다르면 exit 4다. 선택적 `--expect-output` 호출은 영수증의 `outputCheckStatus`에 `matched`·`missing`·
    `not-requested`·`not-evaluated` 중 하나를 남긴다. challenge token 자체는 남기지 않는다.
+7. **portable 영수증** — raw 영수증은 재현용 locator를 보존하므로 저장소 밖에 둔다.
+   `SECOND_OPINION_PORTABLE_RECEIPT`는 raw와 독립적으로 opt-in하는 누적 JSONL sink다. 닫힌
+   typed emitter가 raw를 필터링하지 않고 조립해 **디스패처가 소유한 locator 필드**를 구조적으로
+   배제한다. 자유 형식 vendor 문자열에는 민감한 텍스트가 남을 수 있으므로 공개 공유 전 내용을
+   검토해야 한다.
+   완료된 dispatch는 설정된 각 sink에 append를 한 번씩 독립 시도한다. portable I/O 실패는
+   경로 없는 고정 경고만 남기는 fail-open이며 다른 sink나 dispatch exit를 바꾸지 않는다.
+   정규화 후 같은 경로 또는 이미 존재하는 같은 파일은 spawn 전 exit 2지만, 이는 보안 경계가
+   아닌 평범한 오설정 방지다. exit 집합은 `0`·`2`·`3`·`4`·`124` 그대로다. `ts`는
+   타임스탬프일 뿐 상관 키가 아니다. 원자성·동일 행수·순서·행별 짝짓기와 항상 두 행을 보증하지 않는다.
 
 ## 사용량 (선택)
 

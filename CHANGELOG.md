@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.7 — 2026-08-12
+
+- **독립 portable JSONL sink 추가.** `SECOND_OPINION_PORTABLE_RECEIPT`는 raw와 별개로 opt-in하는
+  누적 형제 sink다. 완료된 dispatch는 설정된 각 sink에 append를 한 번씩 독립 시도하며, 한쪽
+  I/O 실패는 경로 없는 고정 경고만 남기고 다른 쪽과 dispatch exit를 바꾸지 않는다.
+- raw `SECOND_OPINION_RECEIPT`의 v1 키·값·locator·append·fail-open 동작은 설치된 0.9.6과
+  동일하다. portable은 raw를 필터링하지 않고 닫힌 typed emitter로 조립해 **디스패처가 소유한
+  locator 필드**를 구조적으로 배제한다. 자유 형식 vendor 문자열에는 민감한 텍스트가 남을 수
+  있으므로 공개 공유 전 내용 검토가 필요하다.
+- raw와 portable이 정규화 후 같은 경로이거나 이미 존재하는 같은 파일이면 spawn 전 exit 2로
+  거부한다. 이는 평범한 오설정 방지이며 보안 경계가 아니다. exit 집합은 계속
+  `0`·`2`·`3`·`4`·`124`다.
+- `ts`는 타임스탬프일 뿐 상관 키가 아니다. 두 파일의 원자성·동일 행수·순서·행별 짝짓기를
+  보증하지 않으며, 한 dispatch가 항상 두 행을 만든다고 주장하지 않는다.
+
 ## 0.9.6 — 2026-08-11
 
 - **문서: `--mode review`의 강도가 벤더마다 다르다는 사실을 명시**. 표와 산문이

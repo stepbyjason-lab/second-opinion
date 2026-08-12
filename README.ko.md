@@ -5,7 +5,7 @@
 Claude Code 안에서 **다른 벤더의 AI**(Codex/GPT, Antigravity/Gemini)를 일상어로 부려 쓰는
 어댑터 스킬 — 점검·리뷰·의견부터 작업 오프로드, 이미지 생성까지.
 
-**버전 0.9.6**
+**버전 0.9.7**
 
 > "이 설계 코덱스로 점검받고 싶어" / "안티그래비티한테 물어봐" / "교차 검증해줘"
 > "코덱스한테 로고 시안 이미지 만들어달라고 해줘" / "클로드 사용량 아끼게 이 번역은 제미나이로"
@@ -57,6 +57,19 @@ Claude가 만든 것을 Claude가 검토하면 결함을 과소보고한다 — 
   실측 토큰(입력·캐시된 입력·출력·추론·총계·컨텍스트창·쿼터 소진율)도 함께 남는다.
   선택적 `--expect-output <ASCII token>` 호출은 token 자체를 기록·전송하지 않고
   `outputCheckStatus`만 남긴다. token이 없으면 raw output을 보존하고 exit 4다.
+
+  raw 영수증은 재현을 위해 `cwd`·`outPath`·`errPath`·`pid`를 그대로 보존하므로 반드시
+  저장소 밖에 둔다. `SECOND_OPINION_PORTABLE_RECEIPT`는 raw와 독립적으로 설정하는 누적
+  portable JSONL sink다. 닫힌 typed emitter가 raw를 필터링하지 않고 조립하므로
+  **디스패처가 소유한 locator 필드**가 구조적으로 배제된다. 다만 자유 형식 vendor 문자열에는
+  민감한 텍스트가 남을 수 있으므로 공개 공유 전 내용을 검토해야 한다.
+
+  완료된 dispatch는 설정된 각 sink에 append를 한 번씩 독립 시도한다. portable I/O 실패는
+  경로 없는 고정 경고만 남기는 fail-open이며 다른 sink나 dispatch exit를 바꾸지 않는다.
+  정규화 후 같은 경로이거나 이미 존재하는 같은 파일이면 spawn 전 exit 2로 거부하지만 이는
+  평범한 오설정 방지이지 보안 경계가 아니다. exit 집합은 `0`·`2`·`3`·`4`·`124` 그대로다.
+  `ts`는 타임스탬프일 뿐 상관 키가 아니다. 두 파일의 원자성·동일 행수·순서·행별 짝짓기를
+  보증하지 않으며 한 dispatch가 항상 두 행을 만든다고 주장하지 않는다.
   `--vendor claude`도 같은 dispatcher를 사용하며, 폐기된 280초
   셸 timeout을 쓰지 않는다. 기본 45분(2700초) runaway backstop을 사용하며 더 짧은
   제한이 필요한 호출자는 `--timeout`을 명시할 수 있다. Claude result JSON의 실제 model·token usage·cost를
