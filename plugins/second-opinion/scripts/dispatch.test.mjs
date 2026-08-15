@@ -18,6 +18,7 @@ import {
   resolveExecutable,
 } from "./vendor-policy.mjs";
 import { executeCli, parseCli, resolveCodexModelAlias, resolveModelRoute, resolveVendorForModel, run, splitModelEffort, usageText } from "./dispatch.mjs";
+import { HTTP_PROVIDERS, createSubscriptionAdapter, dispatchGeneration, executeGenerationCli } from "./generation-dispatch.mjs";
 
 const scriptsDirectory = dirname(fileURLToPath(import.meta.url));
 const tempDirs = [];
@@ -32,6 +33,500 @@ process.on("exit", () => {
   }
 });
 
+test("generation retries only the requested provider and reports its exact identity", async () => {
+  const calls = [];
+  const result = await dispatchGeneration({
+    schema_version: 1,
+    operation: "generate",
+    provider: "nvidia_nim",
+    model: "google/gemma-4-31b-it",
+    system: "system role",
+    user: "user role",
+    stream: false,
+    max_retries: 1,
+  }, {
+    env: { NVIDIA_NIM_API_KEY: "fixture", OPENROUTER_API_KEY: "configured-but-forbidden" },
+    openAiAdapter: async (config, request) => {
+      calls.push({ provider: config.provider, model: config.model, system: request.system, user: request.user });
+      if (calls.length === 1) {
+        throw Object.assign(new Error("HTTP 429 fixture"), { statusCode: 429, retryable: true });
+      }
+      return {
+        text: "requested-provider body",
+        model: "google/gemma-4-31b-it",
+        usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 },
+        finishReason: "stop",
+      };
+    },
+  });
+  assert.deepEqual(calls.map((call) => call.provider), ["nvidia_nim", "nvidia_nim"]);
+  assert.deepEqual(calls.map((call) => [call.system, call.user]), [["system role", "user role"], ["system role", "user role"]]);
+  assert.equal(result.provider, "nvidia_nim");
+  assert.equal(result.model, "google/gemma-4-31b-it");
+  assert.equal(result.model_reported, "observed");
+  assert.deepEqual(result.usage, { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 });
+  assert.equal(result.attempts, 2);
+  assert.equal(Object.hasOwn(result, "fallback_chain"), false);
+});
+
+function generationFixtureRequest(provider, overrides = {}) {
+  return {
+    schema_version: 1,
+    operation: "generate",
+    provider,
+    model: "fixture-model",
+    user: "u",
+    max_retries: 1,
+    timeout_seconds: 400,
+    ...overrides,
+  };
+}
+
+async function captureRejection(action) {
+  let caught = null;
+  try { await action(); } catch (error) { caught = error; }
+  assert.ok(caught, "expected the generation call to reject");
+  return caught;
+}
+
+function assertEmptyRetry(error, calls) {
+  assert.equal(calls, 2);
+  assert.equal(error.code, "vendor_error");
+  assert.equal(error.failureClass, "vendor-error");
+  assert.equal(error.failureActor, "vendor");
+  assert.equal(error.attempts, 2);
+}
+
+function assertPermanentInvalid(error, calls) {
+  assert.equal(calls, 1);
+  assert.equal(error.code, "invalid_response");
+  assert.equal(error.failureClass, "invalid-response");
+  assert.equal(error.failureActor, "vendor");
+  assert.equal(error.attempts, 1);
+}
+
+test("C-2 rollback guard SSE: parsed empty string retries, absent text is permanent", async () => {
+  const run = async (delta) => {
+    let calls = 0;
+    const error = await captureRejection(() => dispatchGeneration(
+      generationFixtureRequest("nvidia_nim", { stream: true }),
+      {
+        env: { NVIDIA_NIM_API_KEY: "fixture" }, now: () => 0, sleep: async () => {},
+        fetch: async () => {
+          calls += 1;
+          const event = { choices: [{ delta, finish_reason: "stop" }], model: "fixture-model", usage: { prompt_tokens: 1, completion_tokens: 0, total_tokens: 1 } };
+          return new Response(`data: ${JSON.stringify(event)}\n\ndata: [DONE]\n\n`, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+        },
+      },
+    ));
+    return { calls, error };
+  };
+
+  const empty = await run({ content: "" });
+  assertEmptyRetry(empty.error, empty.calls);
+  const absent = await run({});
+  assertPermanentInvalid(absent.error, absent.calls);
+});
+
+test("C-2 rollback guard OpenAI: parsed empty string retries, content null is permanent", async () => {
+  const run = async (content) => {
+    let calls = 0;
+    const error = await captureRejection(() => dispatchGeneration(
+      generationFixtureRequest("zhipu"),
+      {
+        env: { ZHIPU_API_KEY: "fixture" }, now: () => 0, sleep: async () => {},
+        fetch: async () => {
+          calls += 1;
+          return new Response(JSON.stringify({
+            choices: [{ message: { content }, finish_reason: "stop" }],
+            model: "fixture-model",
+            usage: { prompt_tokens: 1, completion_tokens: 0, total_tokens: 1 },
+          }), { status: 200, headers: { "Content-Type": "application/json" } });
+        },
+      },
+    ));
+    return { calls, error };
+  };
+
+  const empty = await run("");
+  assertEmptyRetry(empty.error, empty.calls);
+  const nullContent = await run(null);
+  assertPermanentInvalid(nullContent.error, nullContent.calls);
+});
+
+test("C-2 rollback guard Gemini: parsed empty string retries, missing content and malformed JSON are permanent", async () => {
+  const run = async (body) => {
+    let calls = 0;
+    const error = await captureRejection(() => dispatchGeneration(
+      generationFixtureRequest("gemini"),
+      {
+        env: { GEMINI_API_KEY: "fixture" }, now: () => 0, sleep: async () => {},
+        fetch: async () => {
+          calls += 1;
+          return new Response(typeof body === "string" ? body : JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+        },
+      },
+    ));
+    return { calls, error };
+  };
+  const metadata = { modelVersion: "fixture-model", usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 0, totalTokenCount: 1 } };
+
+  const empty = await run({ ...metadata, candidates: [{ content: { parts: [{ text: "" }] }, finishReason: "STOP" }] });
+  assertEmptyRetry(empty.error, empty.calls);
+  const missing = await run({ ...metadata, candidates: [{ content: null, finishReason: "STOP" }] });
+  assertPermanentInvalid(missing.error, missing.calls);
+  const malformed = await run("{not-json");
+  assertPermanentInvalid(malformed.error, malformed.calls);
+});
+
+test("C-2 rollback guard coordinator: empty string retries, undefined text and response are permanent", async () => {
+  const run = async (factory) => {
+    let calls = 0;
+    const error = await captureRejection(() => dispatchGeneration(
+      generationFixtureRequest("nvidia_nim"),
+      {
+        env: { NVIDIA_NIM_API_KEY: "fixture" }, now: () => 0, sleep: async () => {},
+        openAiAdapter: async () => { calls += 1; return factory(); },
+      },
+    ));
+    return { calls, error };
+  };
+  const usage = { prompt_tokens: 1, completion_tokens: 0, total_tokens: 1 };
+
+  const empty = await run(() => ({ text: "", model: "fixture-model", usage }));
+  assertEmptyRetry(empty.error, empty.calls);
+  const missingText = await run(() => ({ text: undefined, model: "fixture-model", usage }));
+  assertPermanentInvalid(missingText.error, missingText.calls);
+  const missingResponse = await run(() => undefined);
+  assertPermanentInvalid(missingResponse.error, missingResponse.calls);
+});
+
+test("C-2 rollback guard subscription: parsed empty output retries at the subscription boundary", async () => {
+  let calls = 0;
+  const subscriptionAdapter = createSubscriptionAdapter(async (options, deps) => {
+    calls += 1;
+    writeFileSync(options.out, "", "utf8");
+    writeFileSync(options.err, "", "utf8");
+    writeFileSync(deps.internalReceiptPath, `${JSON.stringify({ vendorUsage: { inputTokens: 1, outputTokens: 0, totalTokens: 1 } })}\n`, "utf8");
+    return 0;
+  });
+  const error = await captureRejection(() => dispatchGeneration(
+    generationFixtureRequest("codex"),
+    { env: {}, now: () => 0, sleep: async () => {}, subscriptionAdapter },
+  ));
+  assertEmptyRetry(error, calls);
+});
+
+test("generation provider catalog has no routing chain surface", () => {
+  const source = readFileSync(new URL("./generation-dispatch.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /FALLBACK_CHAINS|max_provider_attempts|max_http_attempts|max_subscription_attempts/);
+});
+
+test("codex subscription adapter buffers until accepted, preserves role fields, and returns standard usage", async () => {
+  let publishedAfterRun = false;
+  let runCompleted = false;
+  let serializedBrief = "";
+  const adapter = createSubscriptionAdapter(async (options, deps) => {
+    serializedBrief = readFileSync(options.brief, "utf8");
+    deps.onStdoutChunk(Buffer.from("first"));
+    writeFileSync(options.out, "codex body", "utf8");
+    writeFileSync(options.err, "session id: 00000000-0000-0000-0000-000000000000\n", "utf8");
+    writeFileSync(deps.internalReceiptPath, `${JSON.stringify({ vendorUsage: { inputTokens: 11, outputTokens: 5, totalTokens: 16 } })}\n`, "utf8");
+    runCompleted = true;
+    return 0;
+  });
+  const chunks = [];
+  const result = await adapter(
+    { provider: "codex", model: "gpt-5.6-luna" },
+    { system: "separate-system", user: "separate-user", timeoutSeconds: 30, maxCompletionTokens: 4096, lensId: null },
+    { onChunk: (chunk) => { publishedAfterRun = runCompleted; chunks.push(chunk); }, env: {} },
+  );
+  assert.equal(publishedAfterRun, true);
+  assert.deepEqual(chunks, ["first"]);
+  assert.match(serializedBrief, /<system>\nseparate-system\n<\/system>/);
+  assert.match(serializedBrief, /<user>\nseparate-user\n<\/user>/);
+  assert.deepEqual(result.usage, { prompt_tokens: 11, completion_tokens: 5, total_tokens: 16 });
+  assert.equal(result.model, null, "the adapter must not pretend the requested model was vendor-reported");
+});
+
+test("codex subscription adapter fails closed when standard usage is unavailable", async () => {
+  const adapter = createSubscriptionAdapter(async (options, deps) => {
+    writeFileSync(options.out, "partial success", "utf8");
+    writeFileSync(options.err, "", "utf8");
+    writeFileSync(deps.internalReceiptPath, `${JSON.stringify({ vendorUsage: null })}\n`, "utf8");
+    return 0;
+  });
+  await assert.rejects(
+    adapter({ provider: "codex", model: "gpt-5.6-luna" }, { system: "s", user: "u", timeoutSeconds: 30, maxCompletionTokens: 4096, lensId: null }, { env: {} }),
+    /codex usage was not available/,
+  );
+});
+
+test("P0 generation rejects untrusted bases for every HTTP provider", async () => {
+  for (const [provider, definition] of Object.entries(HTTP_PROVIDERS)) {
+    let fetched = false;
+    await assert.rejects(
+      dispatchGeneration({
+        schema_version: 1, operation: "generate", provider, model: "fixture-model", user: "u",
+      }, {
+        env: { [definition.key]: "sk-review-secret", [definition.base]: "https://attacker.invalid/v1" },
+        fetch: async () => { fetched = true; throw new Error("must not fetch"); },
+      }),
+      (error) => error.code === "invalid_request" && /base URL/.test(error.message),
+      provider,
+    );
+    assert.equal(fetched, false, provider);
+  }
+});
+
+test("P0 generation never reflects provider response bodies", async () => {
+  const reflected = "provider-reflected-sk-review-secret";
+  await assert.rejects(
+    dispatchGeneration({
+      schema_version: 1, operation: "generate", provider: "nvidia_nim", model: "fixture-model", user: "u",
+      max_retries: 0,
+    }, {
+      env: { NVIDIA_NIM_API_KEY: "sk-review-secret" },
+      fetch: async () => new Response(reflected, { status: 500 }),
+    }),
+    (error) => {
+      assert.equal(JSON.stringify(error).includes(reflected), false);
+      assert.equal(error.message.includes(reflected), false);
+      return true;
+    },
+  );
+});
+
+test("P0 generation response target cannot alias request, env file, or either receipt sink", async () => {
+  const cases = ["request", "env", "raw", "portable"];
+  for (const label of cases) {
+    const root = makeTempDir(`second-opinion-generation-path-${label}-`);
+    const requestPath = join(root, "request.json");
+    const envPath = join(root, "provider.env");
+    const raw = join(root, "raw.jsonl");
+    const portable = join(root, "portable.jsonl");
+    const request = {
+      schema_version: 1, operation: "generate", provider: "codex", model: "fixture-model", user: "u", env_file: envPath,
+    };
+    writeFileSync(envPath, "NVIDIA_NIM_API_KEY=fixture\n", "utf8");
+    writeFileSync(raw, "raw-sentinel\n", "utf8");
+    writeFileSync(portable, "portable-sentinel\n", "utf8");
+    writeFileSync(requestPath, `${JSON.stringify(request)}\n`, "utf8");
+    const target = { request: requestPath, env: envPath, raw, portable }[label];
+    const before = readFileSync(target, "utf8");
+    let invoked = false;
+    const code = await executeGenerationCli(["--request-json", requestPath, "--response-json", target], {
+      env: { SECOND_OPINION_RECEIPT: raw, SECOND_OPINION_PORTABLE_RECEIPT: portable },
+      subscriptionAdapter: async () => {
+        invoked = true;
+        return { text: "body", usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } };
+      },
+      stderr: memoryWriter().stream,
+    });
+    assert.equal(code, 2, label);
+    assert.equal(invoked, false, label);
+    assert.equal(readFileSync(target, "utf8"), before, label);
+  }
+});
+
+test("P0 generation atomic response replacement never reuses a predictable sibling file", async () => {
+  const root = makeTempDir("second-opinion-generation-atomic-");
+  const requestPath = join(root, "request.json");
+  const responsePath = join(root, "response.json");
+  const predictableSibling = `${responsePath}.${process.pid}.tmp`;
+  writeFileSync(requestPath, `${JSON.stringify({
+    schema_version: 1, operation: "generate", provider: "codex", model: "fixture-model", user: "u",
+  })}\n`, "utf8");
+  writeFileSync(responsePath, "old-response\n", "utf8");
+  writeFileSync(predictableSibling, "credential-sentinel\n", "utf8");
+  const code = await executeGenerationCli(["--request-json", requestPath, "--response-json", responsePath], {
+    env: {},
+    subscriptionAdapter: async () => ({ text: "body", usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }),
+    stderr: memoryWriter().stream,
+  });
+  assert.equal(code, 0);
+  assert.equal(JSON.parse(readFileSync(responsePath, "utf8")).text, "body");
+  assert.equal(readFileSync(predictableSibling, "utf8"), "credential-sentinel\n");
+});
+
+test("P0 generation sends the unchanged completion-token limit on every retry", async () => {
+  const caps = [];
+  const result = await dispatchGeneration({
+    schema_version: 1,
+    operation: "generate",
+    provider: "nvidia_nim",
+    model: "google/gemma-4-31b-it",
+    user: "u",
+    max_completion_tokens: 12,
+    max_retries: 2,
+  }, {
+    env: { NVIDIA_NIM_API_KEY: "fixture", OPENROUTER_API_KEY: "fixture" },
+    openAiAdapter: async (config, request) => {
+      caps.push(request.maxCompletionTokens);
+      if (caps.length < 3) throw Object.assign(new Error("retry"), { statusCode: 500, retryable: true });
+      return {
+        text: "accounted",
+        model: "google/gemma-4-31b-it",
+        usage: { prompt_tokens: 2, completion_tokens: request.maxCompletionTokens, total_tokens: 2 + request.maxCompletionTokens },
+      };
+    },
+  });
+  assert.equal(result.text, "accounted");
+  assert.equal(caps.length, 3);
+  assert.deepEqual(caps, [12, 12, 12]);
+});
+
+test("P0 generation SSE bounds incomplete frames and cancels the reader", async () => {
+  let reads = 0, cancelled = false;
+  const oversized = new Uint8Array((8 * 1024 * 1024) + 1).fill(0x61);
+  const response = {
+    ok: true,
+    body: {
+      getReader: () => ({
+        read: async () => reads++ === 0 ? { done: false, value: oversized } : { done: true },
+        cancel: async () => { cancelled = true; },
+      }),
+    },
+  };
+  await assert.rejects(
+    dispatchGeneration({
+      schema_version: 1, operation: "generate", provider: "nvidia_nim", model: "fixture-model", user: "u", stream: true,
+      max_retries: 0,
+    }, { env: { NVIDIA_NIM_API_KEY: "fixture" }, fetch: async () => response }),
+    (error) => error.failureClass === "oversized-response",
+  );
+  assert.equal(cancelled, true);
+});
+
+test("P1 every generation adapter fails closed when normalized usage is unavailable", async () => {
+  for (const fixture of [
+    {
+      provider: "nvidia_nim",
+      model: "fixture-model",
+      deps: { env: { NVIDIA_NIM_API_KEY: "fixture" }, openAiAdapter: async () => ({ text: "unaccounted", usage: null }) },
+    },
+    {
+      provider: "agy",
+      model: "fixture-model",
+      deps: { env: {}, subscriptionAdapter: async () => ({ text: "unaccounted", usage: null }) },
+    },
+  ]) {
+    await assert.rejects(
+      dispatchGeneration({
+        schema_version: 1, operation: "generate", provider: fixture.provider, model: fixture.model, user: "u",
+        max_retries: 0,
+      }, fixture.deps),
+      (error) => error.failureClass === "usage-unavailable",
+      fixture.provider,
+    );
+  }
+});
+
+test("P1 generation keeps its internal usage receipt separate and honors both caller sinks", async () => {
+  const evidenceRoot = makeTempDir("second-opinion-generation-receipts-");
+  const codexHome = join(evidenceRoot, "codex-home");
+  const sessionId = "00000000-0000-0000-0000-000000000111";
+  const sessionRoot = join(codexHome, "sessions", "2026", "08", "14");
+  mkdirSync(sessionRoot, { recursive: true });
+  writeFileSync(join(sessionRoot, `rollout-fixture-${sessionId}.jsonl`), `${JSON.stringify({
+    payload: { type: "token_count", info: { total_token_usage: { input_tokens: 4, cached_input_tokens: 0, output_tokens: 2, reasoning_output_tokens: 0, total_tokens: 6 } } },
+  })}\n`, "utf8");
+  const raw = join(evidenceRoot, "caller-raw.jsonl");
+  const portable = join(evidenceRoot, "caller-portable.jsonl");
+  const adapter = createSubscriptionAdapter(async (options, runDeps) => await run(options, {
+    ...runDeps,
+    spawn: () => fakeChild((child) => {
+      child.stdin.on("end", () => {
+        child.stdout.end("accounted body");
+        child.stderr.end(`session id: ${sessionId}\n`);
+        queueMicrotask(() => child.emit("close", 0, null));
+      });
+      child.stdin.resume();
+    }),
+  }));
+  const result = await adapter(
+    { provider: "codex", model: "gpt-5.6-luna" },
+    { system: "s", user: "u", timeoutSeconds: 30, maxCompletionTokens: 4096, lensId: null },
+    { env: { CODEX_HOME: codexHome, SECOND_OPINION_RECEIPT: raw, SECOND_OPINION_PORTABLE_RECEIPT: portable }, stderr: memoryWriter().stream },
+  );
+  assert.deepEqual(result.usage, { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 });
+  assert.equal(receiptLines(raw).length, 1);
+  assert.equal(receiptLines(portable).length, 1);
+  assert.equal(receiptLines(portable)[0].receiptKind, "portable");
+});
+
+test("P1 generation writes HTTP raw and portable receipts", async () => {
+  const evidenceRoot = makeTempDir("second-opinion-generation-http-receipt-");
+  const requestPath = join(evidenceRoot, "request.json");
+  const responsePath = join(evidenceRoot, "response.json");
+  const raw = join(evidenceRoot, "raw.jsonl");
+  const portable = join(evidenceRoot, "portable.jsonl");
+  writeFileSync(requestPath, `${JSON.stringify({
+    schema_version: 1, operation: "generate", provider: "nvidia_nim", model: "fixture-model", user: "u",
+  })}\n`, "utf8");
+  let invoked = false;
+  const stderr = memoryWriter();
+  const code = await executeGenerationCli(["--request-json", requestPath, "--response-json", responsePath], {
+    env: { NVIDIA_NIM_API_KEY: "fixture", SECOND_OPINION_RECEIPT: raw, SECOND_OPINION_PORTABLE_RECEIPT: portable },
+    openAiAdapter: async () => {
+      invoked = true;
+      return { text: "body", model: "fixture-model", usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } };
+    },
+    runSubscription: async () => 0,
+    stderr: stderr.stream,
+  });
+  assert.equal(code, 0);
+  assert.equal(invoked, true);
+  assert.equal(receiptLines(raw)[0].transport, "api");
+  assert.equal(receiptLines(portable)[0].provider, "nvidia_nim");
+});
+
+test("P1 generation publishes chunks only after the winning attempt is accepted", async () => {
+  const chunks = [];
+  let attempt = 0;
+  const result = await dispatchGeneration({
+    schema_version: 1, operation: "generate", provider: "nvidia_nim", model: "fixture-model", user: "u", stream: true,
+    max_retries: 1,
+  }, {
+    env: { NVIDIA_NIM_API_KEY: "fixture" },
+    onChunk: (chunk) => chunks.push(chunk),
+    openAiAdapter: async (_config, request, deps) => {
+      attempt += 1;
+      deps.onChunk(attempt === 1 ? "discard-me" : "accepted");
+      if (attempt === 1) throw Object.assign(new Error("HTTP 500 fixture"), { statusCode: 500, retryable: true });
+      return { text: "accepted", model: "fixture-model", usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } };
+    },
+  });
+  assert.equal(result.text, "accepted");
+  assert.deepEqual(chunks, ["accepted"]);
+});
+
+test("generation help and documentation teach the repaired safety contracts", () => {
+  assert.match(usageText(), /same-provider retry/);
+  assert.match(usageText(), /Only a parsed, present empty string is transient; missing\/non-string text and malformed JSON\/SSE are permanent/);
+  assert.match(usageText(), /accepted-only streaming/);
+  assert.match(usageText(), /HTTP generation records them/);
+  const readme = readFileSync(new URL("../../../README.md", import.meta.url), "utf8");
+  const koreanReadme = readFileSync(new URL("../../../README.ko.md", import.meta.url), "utf8");
+  const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
+  const codexAdapter = readFileSync(new URL("../skills/second-opinion/references/adapter-codex.md", import.meta.url), "utf8");
+  const changelog = readFileSync(new URL("../../../CHANGELOG.md", import.meta.url), "utf8");
+  for (const text of [readme, koreanReadme, skill]) {
+    assert.match(text, /max_completion_tokens/);
+    assert.match(text, /HTTPS/);
+    assert.match(text, /closed.portable/s);
+  }
+  assert.match(codexAdapter, /usage.*검증된 뒤/s);
+  assert.match(codexAdapter, /shipped closed portable emitter/);
+  assert.match(changelog, /same-provider retry/);
+  for (const text of [readme, changelog]) {
+    assert.match(text, /(?:present empty string|text exists as a string but is empty).*retried.*(?:missing\/non-string text|missing or non-string text).*malformed JSON\/SSE/is);
+  }
+  for (const text of [koreanReadme, skill]) assert.match(text, /문자열로 존재하지만 공백뿐.*재시도.*필드 부재·비문자열.*malformed JSON\/SSE/s);
+  assert.match(codexAdapter, /문자열로 존재하지만 공백뿐.*재시도.*malformed/s);
+  assert.match(changelog, /HTTP generation receipts/);
+});
+
 test("skill resolves the catalog path directly before declaring it missing", () => {
   // This is a user-facing operations contract, not prose decoration. A PS 5.1
   // `rg --files | rg '...$'` false negative previously produced a false install error.
@@ -42,15 +537,15 @@ test("skill resolves the catalog path directly before declaring it missing", () 
   assert.match(skill, /검색 결과가 비었다는 이유만으로 설치 누락이나 카탈로그 오류라고 단정하지 않는다/);
 });
 
-test("0.9.7 public help and documentation describe cache-first ranked routing", () => {
+test("0.9.8 public help and documentation describe cache-first ranked routing", () => {
   const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
   const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
   const publicReadmeUrls = [new URL("../../../README.md", import.meta.url), new URL("../../../README.ko.md", import.meta.url)];
   const publicReadmes = publicReadmeUrls.filter((url) => existsSync(url)).map((url) => readFileSync(url, "utf8"));
-  assert.equal(plugin.version, "0.9.7");
+  assert.equal(plugin.version, "0.9.8");
   assert.ok(publicReadmes.length === 0 || publicReadmes.length === 2, "public snapshot must carry both README files");
   for (const text of [skill, ...publicReadmes]) {
-    assert.match(text, /0\.9\.7/);
+    assert.match(text, /0\.9\.8/);
     assert.match(text, /model-catalog-v1\.json/);
     assert.match(text, /opus 4\.6/);
   }
@@ -1188,9 +1683,12 @@ test("opt-in receipt appends typed JSONL for dry-run and invoked children", asyn
   assert.equal(dryRun.invoked, false);
   assert.equal(completed.invoked, true);
   for (const row of [dryRun, completed]) {
-    assert.deepEqual(Object.keys(row).sort(), ["cwd", "durationSec", "effectiveMode", "effort", "errPath", "exit", "inputProfile", "invoked", "model", "modelRequested", "operation", "outPath", "outputCheckStatus", "pid", "requestedMode", "schemaVersion", "ts", "vendor", "vendorUsage", "vendorUsageStatus"].sort());
+    assert.deepEqual(Object.keys(row).sort(), ["attemptWaitsMs", "attempts", "completionTokenLimit", "cwd", "durationSec", "effectiveMode", "effort", "errPath", "exit", "failureActor", "failureClass", "inputProfile", "invoked", "lensId", "model", "modelRequested", "operation", "outPath", "outputCheckStatus", "pid", "provider", "remedy", "requestedMode", "schemaVersion", "successfulAttempt", "transport", "ts", "vendor", "vendorUsage", "vendorUsageStatus"].sort());
     assert.equal(row.schemaVersion, 1);
     assert.equal(row.vendor, "codex");
+    assert.equal(row.transport, "cli");
+    assert.equal(row.provider, null);
+    assert.equal(row.lensId, null);
     assert.equal(row.operation, "text");
     assert.equal(row.requestedMode, "default");
     assert.equal(row.effectiveMode, "default");
@@ -1733,7 +2231,7 @@ test("P0: receipt paths matching --out or --err are rejected before output opens
       const stderr = memoryWriter();
       const status = await executeCli(["--vendor", "codex", "--operation", "text", "--brief", brief, flag, shared], { cwd: root, stderr: stderr.stream });
       assert.equal(status, 2);
-      assert.match(stderr.value(), /SECOND_OPINION_RECEIPT/);
+      assert.match(stderr.value(), /raw receipt sink/);
     });
     assert.equal(readFileSync(shared, "utf8"), original);
   }
@@ -2078,9 +2576,10 @@ test("closed portable emitter has an exact key set and no locator input seam", a
   const row = buildPortableReceipt(...portableValues({ model: pathLikeVocabulary }));
   assert.equal(buildPortableReceipt.length, 17);
   assert.deepEqual(Object.keys(row), [
-    "schemaVersion", "receiptKind", "ts", "vendor", "operation", "requestedMode", "effectiveMode", "inputProfile",
-    "modelRequested", "model", "effort", "exit", "durationSec", "invoked", "outputDeclared", "vendorUsage",
-    "vendorUsageStatus", "outputCheckStatus",
+    "schemaVersion", "receiptKind", "ts", "transport", "vendor", "provider", "operation", "requestedMode",
+    "effectiveMode", "inputProfile", "modelRequested", "model", "effort", "lensId", "exit", "durationSec",
+    "invoked", "outputDeclared", "vendorUsage", "vendorUsageStatus", "outputCheckStatus", "attempts",
+    "attemptWaitsMs", "successfulAttempt", "completionTokenLimit", "failureClass", "failureActor", "remedy",
   ]);
   assert.deepEqual(Object.keys(row.outputDeclared), ["stdout", "stderr"]);
   assert.deepEqual(Object.keys(row.vendorUsage), [
@@ -2088,7 +2587,8 @@ test("closed portable emitter has an exact key set and no locator input seam", a
     "outputTokens", "reasoningOutputTokens", "totalTokens", "totalCostUsd", "contextWindow", "quotaUsedPercent",
   ]);
   const allKeys = [row, row.outputDeclared, row.vendorUsage].flatMap((value) => Object.keys(value));
-  assert.equal(allKeys.some((key) => /^(?:cwd|outPath|errPath|pid)$|(?:Path|Pid|Id|Index|Offset)$/i.test(key)), false);
+  assert.equal(allKeys.some((key) => /^(?:cwd|outPath|errPath|pid)$|(?:Path|Pid|Index|Offset)$/i.test(key)), false);
+  assert.equal(row.lensId, null);
   assert.equal(row.model, pathLikeVocabulary);
   const source = readFileSync(new URL("./portable-receipt.mjs", import.meta.url), "utf8");
   assert.doesNotMatch(source, /\b(?:cwd|outPath|errPath|pid)\b/);
@@ -2292,7 +2792,7 @@ test("this-machine parallel observation leaves 12 of 12 parseable portable rows"
   assert.ok(rows.every((row) => row.schemaVersion === 2 && row.receiptKind === "portable"));
 });
 
-test("raw-only rows and fail-open behavior match the installed 0.9.6 build", () => {
+test("raw-only rows preserve every installed 0.9.6 field while adding identity evidence", () => {
   const installed = join(homedir(), ".claude", "plugins", "cache", "second-opinion", "second-opinion", "0.9.6", "scripts", "dispatch.mjs");
   assert.equal(existsSync(installed), true, "installed second-opinion 0.9.6 baseline build is required");
   const currentDispatch = join(scriptsDirectory, "dispatch.mjs");
@@ -2312,16 +2812,18 @@ test("raw-only rows and fail-open behavior match the installed 0.9.6 build", () 
   assert.equal(stableStderr(currentRun.stderr), stableStderr(installedRun.stderr), "portable-unset stderr delta must be zero");
   assert.equal(existsSync(portableWouldBe), false, "portable-unset compatibility must not create a portable file");
   const installedRow = receiptLines(installedReceipt)[0], currentRow = receiptLines(currentReceipt)[0];
-  assert.deepEqual(Object.keys(currentRow), Object.keys(installedRow));
   for (const key of Object.keys(installedRow).filter((key) => !["ts", "durationSec", "pid"].includes(key))) assert.deepEqual(currentRow[key], installedRow[key], key);
-  const stableBytes = (row) => JSON.stringify({ ...row, ts: "<dynamic>", durationSec: "<dynamic>", pid: "<dynamic>" });
-  assert.equal(stableBytes(currentRow), stableBytes(installedRow));
+  assert.deepEqual({ transport: currentRow.transport, vendor: currentRow.vendor, provider: currentRow.provider, lensId: currentRow.lensId },
+    { transport: "cli", vendor: "codex", provider: null, lensId: null });
+  const legacyStable = (row) => JSON.stringify(Object.fromEntries(Object.keys(installedRow).map((key) => [key,
+    ["ts", "durationSec", "pid"].includes(key) ? "<dynamic>" : row[key]])));
+  assert.equal(legacyStable(currentRow), legacyStable(installedRow));
   const longArgs = ["--vendor", "codex", "--operation", "text", "--brief", brief, "--model", "m".repeat(1025), "--dry-run"];
   const installedLongReceipt = join(evidenceRoot, "installed-long.jsonl"), currentLongReceipt = join(evidenceRoot, "current-long.jsonl");
   const installedLong = invoke(installed, installedLongReceipt, longArgs), currentLong = invoke(currentDispatch, currentLongReceipt, longArgs);
   assert.equal(currentLong.status, installedLong.status);
   assert.equal(stableStderr(currentLong.stderr), stableStderr(installedLong.stderr), "portable-unset long-model stderr delta must be zero");
-  assert.equal(stableBytes(receiptLines(currentLongReceipt)[0]), stableBytes(receiptLines(installedLongReceipt)[0]));
+  assert.equal(legacyStable(receiptLines(currentLongReceipt)[0]), legacyStable(receiptLines(installedLongReceipt)[0]));
   const installedDirectory = join(evidenceRoot, "installed-unwritable"), currentDirectory = join(evidenceRoot, "current-unwritable");
   mkdirSync(installedDirectory); mkdirSync(currentDirectory);
   const installedFailure = invoke(installed, installedDirectory), currentFailure = invoke(currentDispatch, currentDirectory);

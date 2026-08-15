@@ -1,0 +1,8 @@
+# 공개 배포판 빌드 산출물 (make-dist.sh)
+dist/
+
+# API 키 — 실제 값이 든 파일은 절대 추적하지 않는다.
+# .sample만 예외로 커밋한다(값 없는 템플릿).
+.env
+.env.*
+!.env.*.sample

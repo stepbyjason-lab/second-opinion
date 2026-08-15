@@ -6,6 +6,25 @@
 
 ## 텍스트 과업 세부
 
+### 통합 생성 adapter 계약
+
+`--request-json/--response-json` 경로에서 Codex adapter는 request의 `system`과 `user`를
+서로 다른 필드로 받은 뒤 단일-stdin CLI의 명시적 tagged 경계로 직렬화한다. stdout
+chunk는 해당 시도가 완료되고 usage까지 검증된 뒤에만 상위 streaming observer에 전달한다.
+재시도하더라도 `max_completion_tokens`를 나누거나 바꾸지 않는다. Codex CLI에는 이 상한을
+전달할 provider-native 인자가 없으므로 영수증의 `completionTokenLimit`는 요청값과
+`not-applicable-cli`를 명시한다.
+정상 종료한 구독 어댑터의 출력이 문자열로 존재하지만 공백뿐이면 `vendor-error`/`vendor`
+일시 실패로 같은 provider를 재시도한다. 형식 파싱이 실패한 malformed 응답은 영구 실패다.
+완료 뒤 Codex rollout
+영수증의 token count를 `prompt_tokens`·`completion_tokens`·`total_tokens`로 표준화하며,
+usage가 없으면 성공처럼 반환하지 않는다. Codex CLI가 응답 model을 직접 보고하지 않으므로
+이 경로의 `model_reported`는 정직하게 `none`이다. usage를 읽는 내부 임시 receipt는 caller가
+설정한 `SECOND_OPINION_RECEIPT`·`SECOND_OPINION_PORTABLE_RECEIPT`와 분리되며, caller sink는
+기존 raw writer와 shipped closed portable emitter가 그대로 기록한다.
+두 영수증 모두 `transport=cli`, `vendor=codex`, `provider=null`, 호출자가 준 `lensId`(없으면
+`null`)를 기록한다. HTTP provider로의 폴백은 없고 Codex 실패는 다른 벤더 호출로 이어지지 않는다.
+
 ### 모델 입력 정규화
 
 dispatcher는 `--effort`가 따로 없을 때 `--model 5.6 sol@ultra`의 마지막 `@ultra`를

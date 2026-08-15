@@ -9,13 +9,22 @@ import { AGY_NATIVE_READONLY_PROFILE, DISPATCH_MODES, OPERATIONS, VENDORS } from
 const MAX_FREE_STRING = 1024;
 const MODES = new Set([...DISPATCH_MODES, "invalid"]);
 const PROFILES = new Set(["none", AGY_NATIVE_READONLY_PROFILE, "invalid"]);
-const USAGE_SOURCES = new Set(["codex-rollout", "claude-result-json"]);
+const TRANSPORTS = new Set(["cli", "api"]);
+const USAGE_SOURCES = new Set(["codex-rollout", "claude-result-json", "api-response"]);
 const USAGE_STATUSES = new Set([
   "not-invoked", "ok", "unsupported-vendor", "no-err-file", "no-session-id", "read-failed", "not-regular-file", "file-too-large",
   "no-rollout-file", "ambiguous-rollout-file", "no-token-count", "invalid-token-fields", "output-too-large", "empty-output", "invalid-json",
   "vendor-reported-error", "empty-result", "missing-model-usage", "model-mismatch",
 ]);
 const OUTPUT_STATUSES = new Set(["not-requested", "not-evaluated", "matched", "missing"]);
+const FAILURE_CLASSES = new Set([
+  "bad-invocation", "unknown-vendor", "vendor-discovery-unavailable", "vendor-unknown", "vendor-ambiguous",
+  "unsupported-capability", "model-unknown", "model-ambiguous", "auth-failed", "executable-not-found",
+  "vendor-state-corrupt", "rate-limited", "vendor-error", "no-output-timeout", "vendor-internal-timeout",
+  "oversized-response", "invalid-response", "usage-unavailable", "unclassified",
+]);
+const FAILURE_ACTORS = new Set(["dispatcher", "caller", "user", "vendor"]);
+const COMPLETION_STATUSES = new Set(["not-applicable-cli", "applied-unchanged"]);
 const USAGE_KEYS = new Set([
   "source", "actualModels", "inputTokens", "cachedInputTokens", "cacheCreationInputTokens", "cacheReadInputTokens", "outputTokens",
   "reasoningOutputTokens", "totalTokens", "totalCostUsd", "contextWindow", "quotaUsedPercent",
@@ -48,6 +57,24 @@ function finite(value, { nullable = false, maximum = Number.MAX_VALUE } = {}) {
 function boolean(value) {
   if (typeof value !== "boolean") invalid();
   return value;
+}
+function integer(value, { nullable = false, maximum = 0xffff_ffff } = {}) {
+  if (nullable && (value === null || value === undefined)) return null;
+  if (!Number.isInteger(value) || value < 0 || value > maximum) invalid();
+  return value;
+}
+function providerLabel(value) {
+  const result = string(value, { max: 64 });
+  if (!/^[a-z0-9_]+$/.test(result)) invalid();
+  return result;
+}
+function completionLimit(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
+  if (Object.keys(value).some((key) => !new Set(["requested", "status"]).has(key))) invalid();
+  return {
+    requested: finite(value.requested, { nullable: true, maximum: 1_000_000 }),
+    status: label(value.status, COMPLETION_STATUSES),
+  };
 }
 function usageRecord(value) {
   if (value === null) return null;
@@ -102,23 +129,46 @@ export function buildPortableReceipt(
   vendorUsage,
   vendorUsageStatus,
   outputCheckStatus,
+  transport = "cli",
+  provider = null,
+  lensId = null,
+  attempts = invoked ? 1 : 0,
+  successfulAttempt = invoked && exit === 0 ? 1 : null,
+  attemptWaitsMs = invoked ? [0] : [],
+  completionTokenLimit = { requested: null, status: "not-applicable-cli" },
+  failureClass = null,
+  failureActor = null,
+  remedy = null,
 ) {
   const timestamp = string(ts, { max: 32 });
   try { if (new Date(timestamp).toISOString() !== timestamp) invalid(); } catch { invalid(); }
   const exitValue = exit === "timeout" ? "timeout" : exit;
   if (exitValue !== "timeout" && (!Number.isInteger(exitValue) || exitValue < 0 || exitValue > 0xffff_ffff)) invalid();
+  const transportValue = label(transport, TRANSPORTS);
+  const vendorValue = transportValue === "cli" ? label(vendor, new Set(VENDORS)) : null;
+  const providerValue = transportValue === "api" ? providerLabel(provider) : null;
+  const operationValue = transportValue === "api" ? label(operation, new Set(["generate"])) : label(operation, new Set(OPERATIONS));
+  const attemptsValue = integer(attempts, { maximum: 17 });
+  const successfulAttemptValue = integer(successfulAttempt, { nullable: true, maximum: 17 });
+  if (successfulAttemptValue !== null && (successfulAttemptValue < 1 || successfulAttemptValue > attemptsValue)) invalid();
+  if (!Array.isArray(attemptWaitsMs) || attemptWaitsMs.length !== attemptsValue) invalid();
+  const waitValues = attemptWaitsMs.map((value) => finite(value, { maximum: 3_600_000 }));
+  if ((failureClass === null) !== (failureActor === null) || (failureClass === null) !== (remedy === null)) invalid();
   return {
     schemaVersion: 2,
     receiptKind: "portable",
     ts: timestamp,
-    vendor: label(vendor, new Set(VENDORS)),
-    operation: label(operation, new Set(OPERATIONS)),
+    transport: transportValue,
+    vendor: vendorValue,
+    provider: providerValue,
+    operation: operationValue,
     requestedMode: label(requestedMode, MODES),
     effectiveMode: label(effectiveMode, MODES),
     inputProfile: label(inputProfile, PROFILES),
     modelRequested: string(modelRequested, { nullable: true }),
     model: string(model, { nullable: true }),
     effort: string(effort, { nullable: true, max: 64 }),
+    lensId: string(lensId, { nullable: true, max: 64 }),
     exit: exitValue,
     durationSec: finite(durationSec),
     invoked: boolean(invoked),
@@ -126,6 +176,13 @@ export function buildPortableReceipt(
     vendorUsage: usageRecord(vendorUsage),
     vendorUsageStatus: label(vendorUsageStatus, USAGE_STATUSES),
     outputCheckStatus: label(outputCheckStatus, OUTPUT_STATUSES),
+    attempts: attemptsValue,
+    attemptWaitsMs: waitValues,
+    successfulAttempt: successfulAttemptValue,
+    completionTokenLimit: completionLimit(completionTokenLimit),
+    failureClass: failureClass === null ? null : label(failureClass, FAILURE_CLASSES),
+    failureActor: failureActor === null ? null : label(failureActor, FAILURE_ACTORS),
+    remedy: string(remedy, { nullable: true }),
   };
 }
 

@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.9.8 — 2026-08-15
+
+- Corrected the unified `--request-json/--response-json` generation scope: one request
+  now contacts exactly its named provider. Cross-provider order, fallback, attempt
+  budgets, and token slicing were removed; bounded same-provider retry remains
+  (default 5 retries, 2s exponential backoff capped at 60s, `Retry-After`, separate
+  30s connect/120s read limits, and one absolute deadline). Only successfully parsed
+  JSON/SSE with a present empty string is retried as a transient vendor failure;
+  missing/non-string text (including `content: null`) and malformed JSON/SSE remain
+  permanent invalid responses.
+- Generation rejects caller `budget`, accepts `max_retries` and opaque `lens_id`, returns
+  `attempts` instead of `fallback_chain`, preserves the same completion-token limit on
+  every API attempt, and fails closed on incomplete usage or an HTTP model mismatch.
+- Accepted streaming content is buffered up to 16 MiB before publication; overflow is
+  a permanent `oversized-response`. Failure results and receipts record class, actor,
+  remedy, attempts, actual waits, and the successful attempt.
+- Provider base overrides are restricted to each provider's trusted HTTPS origin and
+  HTTP response bodies are excluded from external errors. Response output is atomic
+  and cannot alias the request, env file, or raw/portable receipt sinks.
+- HTTP generation receipts now use the same raw and closed-portable sinks. They cover
+  both CLI and HTTP transports, separate
+  CLI `vendor` from API `provider`, preserve `lensId`, and mark nonexistent HTTP process
+  fields as `null`. Sink resolution is env > `~/.second-opinion/config.json` > none;
+  missing or malformed config remains fail-open. UTF-8 BOM on provider env files is
+  stripped before the existing parser runs.
+
 ## 0.9.7 — 2026-08-12
 
 - **독립 portable JSONL sink 추가.** `SECOND_OPINION_PORTABLE_RECEIPT`는 raw와 별개로 opt-in하는

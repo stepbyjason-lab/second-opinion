@@ -5,7 +5,7 @@
 Claude Code 안에서 **다른 벤더의 AI**(Codex/GPT, Antigravity/Gemini)를 일상어로 부려 쓰는
 어댑터 스킬 — 점검·리뷰·의견부터 작업 오프로드, 이미지 생성까지.
 
-**버전 0.9.7**
+**버전 0.9.8**
 
 > "이 설계 코덱스로 점검받고 싶어" / "안티그래비티한테 물어봐" / "교차 검증해줘"
 > "코덱스한테 로고 시안 이미지 만들어달라고 해줘" / "클로드 사용량 아끼게 이 번역은 제미나이로"
@@ -27,6 +27,26 @@ Claude가 만든 것을 Claude가 검토하면 결함을 과소보고한다 — 
 
 ## 무엇을 주나
 
+### 통합 생성 API
+
+소비 프로젝트는 `dispatch.mjs --request-json <파일> --response-json <파일>`로 호출할 수
+있다. 요청은 `system`과 `user`를 별도 JSON 필드로 유지하고 요청 provider/model만
+지정한다. 디스패처는 provider를 바꾸지 않고 같은 provider만 제한적으로 재시도한다.
+`max_retries` 기본값은 5(허용 0~16), 백오프는 2초에서 2배씩 늘어 60초에서 멈추며
+`Retry-After`를 하한으로 쓴다. 연결 30초·읽기 120초를 분리하되 전체 요청은 하나의 절대
+마감시한을 넘지 않는다. JSON/SSE 파싱에 성공하고 텍스트가 문자열로 존재하지만 공백뿐인
+응답만 벤더의 일시 실패로 재시도한다. 텍스트 필드 부재·비문자열(`content: null` 포함)과
+malformed JSON/SSE는 영구 `invalid-response`로 둔다. 벤더 간 라우팅과 예산은
+호출자 소유라 `budget` 필드는 거부하고,
+모든 API 시도에는 같은 `max_completion_tokens`를 보낸다. 응답은 요청한
+`provider`/`model`, `model_reported`, 표준화된 `usage`, `attempts`를 반환하며
+`fallback_chain`은 없다. 완전한 usage가 없거나 HTTP 응답 model이 요청과 다르면 실패한다.
+스트림은 채택된 시도의 chunk만 공개하고 공개 전 채택 버퍼를 16 MiB로 제한한다(기존 미완성
+frame 8 MiB·전체 stream 64 MiB 가드도 유지). provider base override는 해당 provider의
+신뢰된 HTTPS origin 안에서만 허용하고 redirect는 거부한다. response target은
+request·provider env file·두 receipt sink와 겹칠 수 없고 원자적으로 교체된다. HTTP와 구독
+생성 모두 설정된 raw·closed-portable 영수증을 기록한다.
+
 - **자연어 트리거** — "코덱스로 점검", "제미나이로 봐줘", "다른 AI 시각으로", "second opinion"
 - **벤더 자동 제안** — 지정 안 하면 작업 성격으로 고른다: 코드 리뷰·기술 감사 → Codex /
   빠른 다각 점검·문서 검토·볼륨 호출 → Gemini / 중요 판단 → 둘 다 병렬 후 대조
@@ -46,7 +66,7 @@ Claude가 만든 것을 Claude가 검토하면 결함을 과소보고한다 — 
 | "이상 없음"은 약한 신호(특히 Gemini의 false-negative 편향) | "문제를 못 찾음 ≠ 문제 없음" 명시 전달 |
 
 - **실행 영수증** — 벤더를 부른 뒤 관측한 것을 한 줄로 남긴다: 요청한 벤더·모델,
-  알 수 있으면 실제 응답 backend, exit/timeout 상태, 폴백·강등이 있었으면 그 사실.
+  알 수 있으면 실제 응답 backend, exit/timeout 상태, 거부된 대체가 있었으면 그 사실.
   **요청과 실행은 다르다** — 모델 라벨이 조용히 무시돼 계정 기본값으로 강등된 경우가
   여기서 드러난다.
 
@@ -63,6 +83,15 @@ Claude가 만든 것을 Claude가 검토하면 결함을 과소보고한다 — 
   portable JSONL sink다. 닫힌 typed emitter가 raw를 필터링하지 않고 조립하므로
   **디스패처가 소유한 locator 필드**가 구조적으로 배제된다. 다만 자유 형식 vendor 문자열에는
   민감한 텍스트가 남을 수 있으므로 공개 공유 전 내용을 검토해야 한다.
+
+  sink 해석은 환경변수 > `~/.second-opinion/config.json`의 `receipt`·`portableReceipt` >
+  없음 순서다. config 부재·파손은 무시하고 기본 경로를 만들지 않으며 드라이브 정책도 강제하지
+  않는다. 해석된 경로에는 기존 입출력 충돌 가드가 그대로 적용된다. 모든 행은
+  `transport`(`cli`|`api`)를 기록하고 CLI에서만 `vendor`, API에서만 `provider`가 채워진다.
+  HTTP에 없는 `pid`·`argv`·`executable`은 `null`이다. `lensId`는 `--lens-id` 또는 JSON
+  `lens_id`를 해석 없이 보존하며 미지정이면 `null`이다. 시도 수·실제 대기·성공 시도·토큰 상한
+  적용 여부·실패 class/actor/remedy도 남긴다. core adapter 실패 어휘에 H10이 더한 class는
+  `oversized-response`·`invalid-response`·`usage-unavailable` 셋이다.
 
   완료된 dispatch는 설정된 각 sink에 append를 한 번씩 독립 시도한다. portable I/O 실패는
   경로 없는 고정 경고만 남기는 fail-open이며 다른 sink나 dispatch exit를 바꾸지 않는다.
@@ -116,6 +145,35 @@ Claude가 만든 것을 Claude가 검토하면 결함을 과소보고한다 — 
   Windows CMD: `curl -fsSL https://antigravity.google/cli/install.cmd -o install.cmd && install.cmd && del install.cmd`) 후 Google 계정 로그인.
   **v1.0.15 이상 필수** — 그 이전 버전은 Windows 비-TTY에서 출력이 조용히 유실된다(수정된 버그)
 - 둘 중 하나만 있어도 그 벤더는 동작한다
+
+### API provider (생성 경로 전용) — 선택
+
+위 CLI 벤더는 각 CLI가 자체 인증을 쓰므로 **키가 필요 없다.** 키는 `--request-json`의
+**API transport**에만 쓰인다 — HTTP provider 하나에 직접 붙는 경로다. 6종을 지원한다.
+
+| provider | 키 변수 | 기본 base URL |
+|---|---|---|
+| OpenRouter | `OPENROUTER_API_KEY` | `https://openrouter.ai/api/v1` |
+| NVIDIA NIM | `NVIDIA_NIM_API_KEY` | `https://integrate.api.nvidia.com/v1` |
+| Gemini (AI Studio) | `GEMINI_API_KEY` | `https://generativelanguage.googleapis.com/v1beta` |
+| Mistral | `MISTRAL_API_KEY` | `https://api.mistral.ai/v1` |
+| GitHub Models | `GITHUB_MODELS_API_KEY` | `https://models.github.ai/inference` |
+| Zhipu (Z.ai / GLM) | `ZHIPU_API_KEY` | `https://api.z.ai/api/paas/v4` |
+
+provider마다 `<PROVIDER>_MODEL`·`<PROVIDER>_BASE_URL`도 받는다. base URL 재정의는
+**그 provider의 신뢰 HTTPS origin 안에서만** 허용되고, 벗어나면 요청이 나가기 전에 거부된다.
+
+```bash
+cp .env.local.sample .env.local   # 쓰는 provider만 채운다
+```
+
+**디스패처는 `.env.local`을 스스로 읽지 않는다.** 요청 JSON의 `env_file`로 경로를 넘기면
+그때 읽는다. 키 **값**은 argv·영수증·로그·에러·문서 어디에도 실리지 않으며, 어댑터는 변수
+**이름**만 선언한다. `.env.local`은 함께 배포되는 `.gitignore`가 추적에서 제외하고,
+커밋되는 것은 `.sample` 템플릿뿐이다.
+
+필요한 것만 채우면 된다. 키가 없는 provider를 지목하면 `auth-failed`/`user`로 실패하며,
+**다른 provider로 넘어가지 않는다** — 설계상 폴백이 없다.
 
 ## 설치
 

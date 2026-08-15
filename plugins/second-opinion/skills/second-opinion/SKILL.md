@@ -13,7 +13,7 @@ description: >
 
 # second-opinion — 외부 AI 어댑터
 
-**버전 0.9.7** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
+**버전 0.9.8** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
 
 이 스킬은 **아무것도 차단하지 않는다** — 중개(relay)만 한다. 디스패처는 커맨드 정합성을 위한 도구일 뿐이다. "Claude가 디스패처를 반드시 거치게" 강제하는 것은 **부르는 쪽(caller)의 책임**이다 → [references/enforcement.md](references/enforcement.md).
 
@@ -102,6 +102,29 @@ plan/review 권한을 자동 적용하지 않는다.
   - 데이터 경계는 그대로다: 파일이든 인라인이든 "시크릿 금지·필요한 부분만 큐레이션"이 적용된다(파일로 넘기는 건 전달 방식일 뿐 "다 퍼줘라"가 아니다).
 
 ## 호출 fast-path (실측 검증된 채널 — 2026-07-03, Codex Desktop 실측 추가 2026-07-08)
+
+소비 애플리케이션의 텍스트 생성은 `dispatch.mjs --request-json <파일>
+--response-json <파일>` 통합 경로를 쓸 수 있다. request schema v1은 `operation=generate`,
+요청 provider/model, 분리된 `system`/`user`, stream, env-file 포인터,
+`max_retries`(기본 5, 0~16), `lens_id`(최대 64자)를 받는다. `budget`은 거부한다.
+한 요청은 지정 provider 하나만 접촉하며 같은 provider의 일시 실패만 2초·2배·최대 60초로
+재시도한다. `Retry-After`는 하한이고 연결 30초·읽기 120초·전체 절대 마감시한을 함께 지킨다.
+JSON/SSE 파싱에 성공하고 텍스트가 문자열로 존재하지만 공백뿐인 응답만
+`vendor-error`/`vendor` 일시 실패로 재시도한다. 텍스트 필드 부재·비문자열(`content: null`
+포함)과 malformed JSON/SSE는 영구 `invalid-response`로 둔다.
+벤더 간 라우팅과 예산은 호출자 소유다. 모든 API 시도는 요청의 `max_completion_tokens`를
+그대로 받고 CLI는 적용 불가 사실을 영수증에 남긴다. response schema v1은 요청한
+provider/model과 `model_reported`, `requested_*`, 표준 `usage`, `attempts`를 반환하며
+`fallback_chain`은 없다. 모든 adapter는 완전한 표준 usage가 없으면 성공을 반환하지 않고,
+HTTP 응답 model이 요청 model과 다르면 fail-closed다. stream은 채택된 시도의 chunk만 공개하며
+채택 전 16 MiB·미완성 frame 8 MiB·전체 64 MiB 상한을 적용한다. provider base override는
+신뢰된 provider HTTPS origin만 허용하고 redirect는 거부한다.
+response target은 request·env file·raw/portable receipt와 겹칠 수 없고 원자적으로 교체된다.
+구독 생성은 내부 usage receipt를 caller sink와 분리하고 기존 raw/closed-portable writer로 caller
+sink를 기록한다. HTTP 생성도 같은 raw/closed-portable sink를 기록한다. 영수증은
+`transport=cli|api`로 가르고 CLI의 `vendor`와 API의 `provider`는 배타적이다. 실패는 core adapter
+어휘에 `oversized-response`·`invalid-response`·`usage-unavailable`을 더한
+`failureClass`·`failureActor`·`remedy` 셋으로 반환한다.
 
 모델을 지정하고 벤더를 모르면 `--vendor`를 생략할 수 있다. 디스패처가 Codex
 `models_cache.json`, `agy models`, Claude initialize control metadata를 대조해 자동
@@ -264,7 +287,7 @@ ffmpeg로 프레임을 추출한 뒤 그 프레임들을 `-i`로 전달한다(�
 3. "이상 없음"은 약한 신호다(특히 Gemini는 false-negative 편향) — "문제를 못 찾았다"이지 "문제가 없다"가 아님을 한 줄로 명시한다.
 4. 실패(timeout·auth·빈 응답)는 그대로 보고 — 성공한 척 금지.
 5. 벤더 stderr/에러를 사용자에게 relay할 때만 32자 이상 연속 토큰을 `[REDACTED]`로 마스킹한다 — 정상 산출물·벤더 입력·로컬 파일 접근에는 적용하지 않는다(해시·ID 오탐 주의).
-6. **실행 영수증** — 벤더를 부른 뒤 한 줄로 관측을 남긴다: **요청 벤더·모델 → (알면) 실제 응답 backend → exit/timeout 상태 → 폴백·강등이 있었으면 그 사실**. "요청 = 실행"을 가정하지 말고 실제 벌어진 것을 적는다 — 라벨 오형식 silent-ignore(모델이 조용히 계정 기본값으로 강등)를 이 영수증이 드러낸다. 순서는 위대로 고정하되 사람이 읽는 한 줄이면 된다(엄격 `Key: Value` 스키마는 불필요). 부르는 쪽(madi 등)이 지정 모델이 실제로 불렸는지 확인할 유일한 신뢰 근거다. 파일 영수증은 opt-in이며 `SECOND_OPINION_RECEIPT`에 JSONL 경로를 설정한다. Codex 호출은 `vendorUsage`과 `vendorUsageStatus`에 rollout 실측을 남기며, `null`은 호출하지 않았다는 뜻이 아니라 수집 불가일 수도 있다. **동시 dispatch 호출마다 서로 다른 `--err` 경로를 사용한다** — 경로를 재사용하면 뒤 호출의 truncate와 앞 호출의 append가 `session id:`를 섞어 사용량을 잘못 귀속시킬 수 있다.
+6. **실행 영수증** — 벤더를 부른 뒤 한 줄로 관측을 남긴다: **요청 벤더·모델 → (알면) 실제 응답 backend → exit/timeout 상태 → 모델 대체가 거부됐으면 그 사실**. "요청 = 실행"을 가정하지 말고 실제 벌어진 것을 적는다 — 라벨 오형식 silent-ignore(모델이 조용히 계정 기본값으로 강등)를 이 영수증이 드러낸다. 순서는 위대로 고정하되 사람이 읽는 한 줄이면 된다(엄격 `Key: Value` 스키마는 불필요). 부르는 쪽(madi 등)이 지정 모델이 실제로 불렸는지 확인할 유일한 신뢰 근거다. 파일 영수증은 opt-in이며 `SECOND_OPINION_RECEIPT`에 JSONL 경로를 설정한다. Codex 호출은 `vendorUsage`과 `vendorUsageStatus`에 rollout 실측을 남기며, `null`은 호출하지 않았다는 뜻이 아니라 수집 불가일 수도 있다. **동시 dispatch 호출마다 서로 다른 `--err` 경로를 사용한다** — 경로를 재사용하면 뒤 호출의 truncate와 앞 호출의 append가 `session id:`를 섞어 사용량을 잘못 귀속시킬 수 있다.
    Claude 호출은 result JSON의 실제 model·token usage·cost를 `vendorUsage`에 남기며
    요청 model과 실제 family가 다르면 exit 4다. 선택적 `--expect-output` 호출은 영수증의 `outputCheckStatus`에 `matched`·`missing`·
    `not-requested`·`not-evaluated` 중 하나를 남긴다. challenge token 자체는 남기지 않는다.
@@ -278,6 +301,11 @@ ffmpeg로 프레임을 추출한 뒤 그 프레임들을 `-i`로 전달한다(�
    정규화 후 같은 경로 또는 이미 존재하는 같은 파일은 spawn 전 exit 2지만, 이는 보안 경계가
    아닌 평범한 오설정 방지다. exit 집합은 `0`·`2`·`3`·`4`·`124` 그대로다. `ts`는
    타임스탬프일 뿐 상관 키가 아니다. 원자성·동일 행수·순서·행별 짝짓기와 항상 두 행을 보증하지 않는다.
+   sink 해석 순서는 환경변수 > `~/.second-opinion/config.json`의 `receipt`·`portableReceipt` >
+   없음이다. config가 없거나 깨졌으면 fail-open으로 무시하고 기본 경로를 만들지 않는다. config의
+   정적 포인터와 실제 누적 JSONL 파일은 별개이며, 디스패처는 드라이브나 저장 위치 정책으로 경로를
+   거부하지 않는다(기존 입출력 충돌 가드는 적용). `--lens-id`/JSON `lens_id`는 해석 없이 양쪽
+   영수증에 기록하고 미지정이면 `null`이다.
 
 ## 사용량 (선택)
 

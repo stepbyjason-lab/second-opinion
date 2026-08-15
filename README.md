@@ -2,7 +2,7 @@
 
 **English** | [한국어](./README.ko.md)
 
-![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.7-informational)
+![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.8-informational)
 
 **Use other AI vendors from inside Claude Code — in plain language.**
 Second opinions, task offloading, and vendor capabilities like image generation.
@@ -37,6 +37,29 @@ extracted from:
 
 ## What you get
 
+### Unified generation API
+
+Consumer projects can call `dispatch.mjs --request-json <file> --response-json <file>`.
+That request keeps `system` and `user` in separate JSON fields and names only the
+requested provider/model. The dispatcher never changes provider: it applies bounded
+same-provider retries only (`max_retries` defaults to 5, range 0–16), with 2-second
+exponential backoff capped at 60 seconds, `Retry-After` as a lower bound, separate
+30-second connect and 120-second read timeouts, and one absolute request deadline.
+Only successfully parsed JSON/SSE whose text exists as a string but is empty is a
+transient vendor failure and is retried. Missing or non-string text (including
+`content: null`) and malformed JSON/SSE remain permanent invalid responses.
+Cross-provider routing and budgets belong to the caller; a request containing `budget`
+is rejected. Every API attempt receives the unchanged `max_completion_tokens` value.
+The response reports the requested `provider`/`model`, `model_reported`, normalized
+`usage`, and `attempts`; there is no `fallback_chain`. Every adapter fails closed without
+complete normalized usage, and an HTTP-reported model must exactly match the request.
+Streaming publishes only the accepted attempt and caps accepted pre-publication content
+at 16 MiB (with the existing 8 MiB incomplete-frame and 64 MiB total-stream guards).
+Provider base overrides must stay on the provider's trusted HTTPS origin and redirects
+are rejected. The response target is atomically replaced and cannot alias the request,
+provider env file, or either receipt sink. Both HTTP and subscription generation write
+configured raw and closed-portable receipts.
+
 - **Natural-language triggers** — "review this with Codex", "ask Gemini",
   "get a second opinion", "cross-check this with another AI". Korean triggers work too.
 - **Automatic vendor routing** when you don't name one:
@@ -66,7 +89,7 @@ extracted from:
 
 - **Execution receipts** — after every vendor call the skill states what was
   actually observed: the vendor and model requested, the real backend if known,
-  exit/timeout status, and any fallback or downgrade. Requesting a model is not
+  exit/timeout status, and any rejected substitution. Requesting a model is not
   the same as running it, and a silently-ignored model label shows up here.
 
   For callers that need this machine-readable, set `SECOND_OPINION_RECEIPT` to a
@@ -84,7 +107,19 @@ extracted from:
   `SECOND_OPINION_PORTABLE_RECEIPT` for a cumulative portable JSONL sink. Its closed
   typed emitter excludes dispatcher-owned locator fields instead of filtering raw
   rows. Free-form vendor vocabulary can still contain sensitive text, so review the
-  content before public sharing.
+  content before public sharing. Receipt resolution is environment first, then the
+  `receipt` and `portableReceipt` keys in `~/.second-opinion/config.json`, then no
+  sink. Missing or malformed config is ignored, no default path is invented, and the
+  dispatcher does not enforce a drive policy. Resolved paths still pass the existing
+  input/output collision guards.
+
+  Every row records `transport` (`cli` or `api`), with `vendor` populated only for CLI
+  and `provider` only for API. HTTP rows use `null` for nonexistent process fields such
+  as `pid`, `argv`, and `executable`. `lensId` records the caller's opaque `--lens-id` or
+  JSON `lens_id` unchanged and is `null` when omitted. Attempts, actual waits, the
+  successful attempt, completion-limit application, and failure class/actor/remedy are
+  recorded. The failure vocabulary extends the core adapter vocabulary with
+  `oversized-response`, `invalid-response`, and `usage-unavailable`.
 
   Each completed dispatch independently attempts one append to every configured
   sink. Receipt I/O is fail-open: portable failure emits a fixed path-free warning
@@ -152,6 +187,38 @@ extracted from:
   non-TTY contexts on Windows (fixed upstream).
 
 Having only one of the two is fine — that vendor works, the other is skipped.
+
+### API providers (generation path only) — optional
+
+The CLI vendors above need no keys; each CLI carries its own auth. Keys matter only
+for the **API transport** of `--request-json`, which contacts one HTTP provider
+directly. Six are supported:
+
+| Provider | Key variable | Default base URL |
+|---|---|---|
+| OpenRouter | `OPENROUTER_API_KEY` | `https://openrouter.ai/api/v1` |
+| NVIDIA NIM | `NVIDIA_NIM_API_KEY` | `https://integrate.api.nvidia.com/v1` |
+| Gemini (AI Studio) | `GEMINI_API_KEY` | `https://generativelanguage.googleapis.com/v1beta` |
+| Mistral | `MISTRAL_API_KEY` | `https://api.mistral.ai/v1` |
+| GitHub Models | `GITHUB_MODELS_API_KEY` | `https://models.github.ai/inference` |
+| Zhipu (Z.ai / GLM) | `ZHIPU_API_KEY` | `https://api.z.ai/api/paas/v4` |
+
+Each provider also accepts `<PROVIDER>_MODEL` and `<PROVIDER>_BASE_URL`. A base
+override must stay on that provider's trusted HTTPS origin; anything else is rejected
+before the request leaves.
+
+```bash
+cp .env.local.sample .env.local   # then fill in only the providers you use
+```
+
+**The dispatcher never reads `.env.local` on its own.** You pass the path as
+`env_file` inside the request JSON, and it is read at that moment. Key *values* never
+appear in argv, receipts, logs, errors, or documentation — adapters declare variable
+*names* only. `.env.local` is git-ignored by the shipped `.gitignore`; only the
+`.sample` template is tracked.
+
+Fill in only what you need. Naming a provider whose key is absent fails with
+`auth-failed`/`user` — the dispatcher does not fall back to another provider, by design.
 
 ## Install
 
