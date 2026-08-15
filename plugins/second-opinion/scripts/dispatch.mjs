@@ -107,12 +107,14 @@ export function usageText() {
     "",
     "  --brief is a FILE; its contents reach the vendor over stdin.",
     "  --request-json selects one named HTTP/subscription provider with same-provider retry,",
-    "  an absolute deadline, accepted-only streaming, complete usage, and provenance.",
+    "  an absolute deadline, accepted-only streaming, and provider attribution.",
     "  Cross-provider routing and budgets belong to the caller; budget is rejected.",
     "  Retry defaults: max_retries=5, 2s exponential backoff capped at 60s.",
     "  Only a parsed, present empty string is transient; missing/non-string text and malformed JSON/SSE are permanent.",
     "  --response-json cannot alias request/env/receipt files and is replaced atomically.",
     "  Subscription generation honors receipt sinks; HTTP generation records them too.",
+    "  Receipts retain requested/executed model, effort, stop, prompt-byte, and attempt evidence.",
+    "  Run provider-probe.mjs explicitly for a one-shot status/duration/failure-class table.",
     "  Without --vendor, --model is matched against a cache-first provider catalog.",
     "  Catalog metadata is cached for 24h at ~/.second-opinion/model-catalog-v1.json.",
     "  A fresh-cache miss refreshes once; refresh failure uses last-known-good data.",
@@ -501,6 +503,7 @@ export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
   const modelRequested = raw.model;
   const shorthand = splitModelEffort(raw.model, raw.effort);
   let model = shorthand.model;
+  const effortRequested = shorthand.effort;
   const effort = shorthand.effort === undefined ? undefined : normalizeEffort(shorthand.effort);
   validateModelValue(model);
   if (raw.vendor !== undefined && !VENDOR_INPUTS.includes(raw.vendor)) throw new CliError(`--vendor must be one of: ${VENDOR_INPUTS.join(", ")}`);
@@ -575,7 +578,7 @@ export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
   if (conflicts.input) throw new CliError("--out/--err must not equal --input");
   if (conflicts.outputs) throw new CliError("--out and --err must not refer to the same file");
   if (receiptConflicts({ brief, inputs, out, err }, deps.env ?? process.env)) throw new CliError("--out/--err must not equal the resolved raw receipt sink");
-  return { vendor, operation: raw.operation, mode, brief, cwd, modelRequested, model, effort, inputs, timeout, out, err, expectOutput, lensId, dryRun: raw.dryRun ?? false };
+  return { vendor, operation: raw.operation, mode, brief, cwd, modelRequested, model, effortRequested, effort, inputs, timeout, out, err, expectOutput, lensId, dryRun: raw.dryRun ?? false };
 }
 
 function isGitRepository(cwd) {
@@ -603,11 +606,11 @@ export function resolveReceiptSinks(env = process.env, configPath) {
   };
 }
 
-function receiptPath(env) {
-  return resolveReceiptSinks(env).receipt;
+function receiptPath(env, sinks) {
+  return sinks ? sinks.receipt : resolveReceiptSinks(env).receipt;
 }
-function portableReceiptPath(env) {
-  return resolveReceiptSinks(env).portableReceipt;
+function portableReceiptPath(env, sinks) {
+  return sinks ? sinks.portableReceipt : resolveReceiptSinks(env).portableReceipt;
 }
 function hasEnvKey(env, expected) {
   return Object.keys(env).some((key) => key.toUpperCase() === expected);
@@ -629,25 +632,25 @@ function outputConflicts(options) {
     outputs: Boolean(options.out && options.err && sameFile(options.out, options.err)),
   };
 }
-function receiptConflicts(options, env) {
-  const receipt = receiptPath(env);
+function receiptConflicts(options, env, sinks) {
+  const receipt = receiptPath(env, sinks);
   if (!receipt) return false;
   return [options.brief, ...(options.inputs ?? []), options.out, options.err].filter(Boolean).some((value) => sameFile(receipt, value));
 }
-function portableConfigError(options, env) {
-  const portable = portableReceiptPath(env);
+function portableConfigError(options, env, sinks) {
+  const portable = portableReceiptPath(env, sinks);
   if (!portable) return null;
-  const raw = receiptPath(env);
+  const raw = receiptPath(env, sinks);
   if (raw && sameFile(raw, portable)) return "SECOND_OPINION_RECEIPT and SECOND_OPINION_PORTABLE_RECEIPT must not refer to the same file";
   if ([options.brief, ...(options.inputs ?? []), options.out, options.err].filter(Boolean).some((value) => sameFile(portable, value))) {
     return "SECOND_OPINION_PORTABLE_RECEIPT must not refer to an input or output file";
   }
   return null;
 }
-export function generationPathConfigError({ requestPath, responsePath, envFile }, env = process.env) {
+export function generationPathConfigError({ requestPath, responsePath, envFile }, env = process.env, sinks) {
   const inputs = [requestPath, envFile].filter(Boolean);
-  const raw = receiptPath(env);
-  const portable = portableReceiptPath(env);
+  const raw = receiptPath(env, sinks);
+  const portable = portableReceiptPath(env, sinks);
   if (inputs.some((input) => sameFile(responsePath, input))) return "--response-json must not refer to the request or provider env file";
   if (raw && sameFile(responsePath, raw)) return "--response-json must not refer to SECOND_OPINION_RECEIPT";
   if (portable && sameFile(responsePath, portable)) return "--response-json must not refer to SECOND_OPINION_PORTABLE_RECEIPT";
@@ -814,7 +817,38 @@ function collectVendorUsage(options, invoked, env, observation) {
   }
   return { usage: null, status: result.status };
 }
-function writeReceipt(stderr, options, exit, startedAt, invoked, outputCheckStatus, env = process.env, vendorObservation = null) {
+function credentialValues(env) {
+  return Object.entries(env ?? {})
+    .filter(([key, value]) => /(?:API_KEY|TOKEN|SECRET|PASSWORD)$/i.test(key) && typeof value === "string" && value.length > 0)
+    .map(([, value]) => value);
+}
+function redactEvidenceValue(value, env) {
+  let result = String(value);
+  for (const secret of credentialValues(env)) result = result.split(secret).join("[REDACTED]");
+  return result;
+}
+function redactArgv(argv, env) {
+  return argv.map((value) => redactEvidenceValue(value, env));
+}
+function redactNullable(value, env) {
+  return value === null || value === undefined ? null : redactEvidenceValue(value, env);
+}
+function receiptEvidence(options, invoked, vendorUsage, env = {}) {
+  const stop = options.providerStopSignals ?? {};
+  return {
+    modelReported: options.modelReported === "observed" || vendorUsage?.actualModels?.length ? "observed" : "none",
+    effortRequested: redactNullable(options.effortRequested, env),
+    truncatedSuspected: typeof options.truncatedSuspected === "boolean" ? options.truncatedSuspected : null,
+    promptSource: redactNullable(options.promptSource, env),
+    promptBytes: invoked ? (options.promptBytes ?? null) : 0,
+    finish_reason: redactNullable(stop.finish_reason, env),
+    finishReason: redactNullable(stop.finishReason, env),
+    incomplete_details: stop.incomplete_details?.reason == null
+      ? null
+      : { reason: redactEvidenceValue(stop.incomplete_details.reason, env) },
+  };
+}
+function writeReceipt(stderr, options, exit, startedAt, invoked, outputCheckStatus, env = process.env, vendorObservation = null, sinks = null) {
   const duration = ((Date.now() - startedAt) / 1000).toFixed(3);
   const requestedMode = options.mode ?? "default";
   let effectiveMode = "invalid";
@@ -823,9 +857,9 @@ function writeReceipt(stderr, options, exit, startedAt, invoked, outputCheckStat
   catch { /* Validation errors still need a receipt with an explicit invalid mode. */ }
   try { inputProfile = effectiveInputProfile({ ...options, mode: requestedMode }); }
   catch { /* Validation errors still need a receipt with an explicit invalid profile. */ }
-  stderr.write(`[dispatch] vendor=${options.vendor} op=${options.operation} mode=${requestedMode}/${effectiveMode} model=${options.model ?? "-"} exit=${exit} duration=${duration}s\n`);
+  stderr.write(`[dispatch] vendor=${options.vendor} op=${options.operation} mode=${requestedMode}/${effectiveMode} model=${redactNullable(options.model, env) ?? "-"} exit=${exit} duration=${duration}s\n`);
   try {
-    const receipt = receiptPath(env);
+    const receipt = receiptPath(env, sinks);
     if (!receipt) return;
     if ([options.brief, ...(options.inputs ?? []), options.out, options.err].filter(Boolean).some((value) => sameFile(receipt, value))) return;
     mkdirSync(dirname(receipt), { recursive: true });
@@ -842,6 +876,7 @@ function writeReceipt(stderr, options, exit, startedAt, invoked, outputCheckStat
     let vendorUsage = { usage: null, status: "read-failed" };
     try { vendorUsage = collectVendorUsage(options, invoked, env, vendorObservation); }
     catch { /* Usage is additive; its own failure must not suppress the receipt. */ }
+    const evidence = receiptEvidence(options, invoked, vendorUsage.usage, env);
     appendFileSync(receipt, `${separator}${JSON.stringify({
       schemaVersion: 1,
       ts: new Date().toISOString(),
@@ -852,9 +887,10 @@ function writeReceipt(stderr, options, exit, startedAt, invoked, outputCheckStat
       requestedMode,
       effectiveMode,
       inputProfile,
-      modelRequested: options.modelRequested ?? options.model ?? null,
-      model: options.model ?? null,
-      effort: options.effort ?? null,
+      modelRequested: redactNullable(options.modelRequested ?? options.model, env),
+      model: redactNullable(options.model, env),
+      effort: redactNullable(options.effort, env),
+      ...evidence,
       lensId: options.lensId ?? null,
       exit,
       durationSec: Number(duration),
@@ -863,6 +899,8 @@ function writeReceipt(stderr, options, exit, startedAt, invoked, outputCheckStat
       outPath: options.out ?? null,
       errPath: options.err ?? null,
       pid: process.pid,
+      argv: options.receiptArgv ?? [],
+      executable: options.receiptExecutable ?? executableName(options.vendor),
       vendorUsage: vendorUsage.usage,
       vendorUsageStatus: vendorUsage.status,
       outputCheckStatus,
@@ -877,9 +915,9 @@ function writeReceipt(stderr, options, exit, startedAt, invoked, outputCheckStat
   } catch { /* Receipt recording must not affect dispatch. */ }
 }
 
-function writePortableReceipt(stderr, options, exit, startedAt, invoked, outputCheckStatus, env = process.env, vendorObservation = null) {
+function writePortableReceipt(stderr, options, exit, startedAt, invoked, outputCheckStatus, env = process.env, vendorObservation = null, sinks = null) {
   try {
-    const target = portableReceiptPath(env);
+    const target = portableReceiptPath(env, sinks);
     if (!target) return;
     const duration = Number(((Date.now() - startedAt) / 1000).toFixed(3));
     const requestedMode = options.mode ?? "default";
@@ -890,6 +928,7 @@ function writePortableReceipt(stderr, options, exit, startedAt, invoked, outputC
     let observedUsage = { usage: null, status: "read-failed" };
     try { observedUsage = collectVendorUsage(options, invoked, env, vendorObservation); } catch { /* degraded below */ }
     const preparedUsage = preparePortableUsage(observedUsage.usage, observedUsage.status);
+    const evidence = receiptEvidence(options, invoked, observedUsage.usage, env);
     const record = buildPortableReceipt(
       new Date().toISOString(),
       options.vendor,
@@ -897,9 +936,9 @@ function writePortableReceipt(stderr, options, exit, startedAt, invoked, outputC
       requestedMode,
       effectiveMode,
       inputProfile,
-      portableVocabulary(options.modelRequested ?? options.model, 1024),
-      portableVocabulary(options.model, 1024),
-      portableVocabulary(options.effort, 64),
+      portableVocabulary(redactNullable(options.modelRequested ?? options.model, env), 1024),
+      portableVocabulary(redactNullable(options.model, env), 1024),
+      portableVocabulary(redactNullable(options.effort, env), 64),
       exit,
       duration,
       invoked,
@@ -918,6 +957,7 @@ function writePortableReceipt(stderr, options, exit, startedAt, invoked, outputC
       null,
       null,
       null,
+      evidence,
     );
     appendPortableReceipt(target, record);
   } catch {
@@ -936,22 +976,26 @@ function warnPortableReceiptFailure(stderr) {
   try { stderr.write("dispatch portable receipt write failed\n"); } catch { /* Warning delivery is fail-open too. */ }
 }
 
-function writeDispatchReceipts(stderr, options, exit, startedAt, invoked, outputCheckStatus, env, vendorObservation, writers, internalReceipt) {
+function writeDispatchReceipts(stderr, options, exit, startedAt, invoked, outputCheckStatus, env, vendorObservation, writers, internalReceipt, sinks) {
   try {
-    (writers?.raw ?? writeReceipt)(stderr, options, exit, startedAt, invoked, outputCheckStatus, env, vendorObservation);
+    (writers?.raw ?? writeReceipt)(stderr, options, exit, startedAt, invoked, outputCheckStatus, env, vendorObservation, sinks);
   } catch { /* An unexpected raw sink failure cannot affect dispatch or its sibling. */ }
   try {
-    (writers?.portable ?? writePortableReceipt)(stderr, options, exit, startedAt, invoked, outputCheckStatus, env, vendorObservation);
+    (writers?.portable ?? writePortableReceipt)(stderr, options, exit, startedAt, invoked, outputCheckStatus, env, vendorObservation, sinks);
   } catch {
     warnPortableReceiptFailure(stderr);
   }
   if (internalReceipt) {
     try {
-      (writers?.raw ?? writeReceipt)({ write: () => true }, options, exit, startedAt, invoked, outputCheckStatus, {
+      const internalEnv = {
         ...env,
         SECOND_OPINION_RECEIPT: internalReceipt,
         SECOND_OPINION_PORTABLE_RECEIPT: "",
-      }, vendorObservation);
+      };
+      (writers?.raw ?? writeReceipt)({ write: () => true }, options, exit, startedAt, invoked, outputCheckStatus, internalEnv, vendorObservation, {
+        receipt: internalReceipt,
+        portableReceipt: undefined,
+      });
     } catch { /* A private usage receipt cannot affect the caller's configured sinks. */ }
   }
 }
@@ -989,16 +1033,20 @@ function apiPortableUsage(usage) {
   };
 }
 
-export function writeApiDispatchReceipts(stderr, options, exit, startedAt, env = process.env) {
+export function writeApiDispatchReceipts(stderr, options, exit, startedAt, env = process.env, sinks = null) {
   const durationSec = Number(((Date.now() - startedAt) / 1000).toFixed(3));
   const invoked = Array.isArray(options.attemptLog) && options.attemptLog.length > 0;
-  const attemptWaitsMs = (options.attemptLog ?? []).map((row) => Number.isFinite(row?.waitedMs) ? Math.max(0, row.waitedMs) : 0);
-  const actualAttempts = attemptWaitsMs.length;
+  const actualAttempts = Math.max(0, Number.isInteger(options.attempts) ? options.attempts : 0);
+  const attemptWaitsMs = Array.from({ length: actualAttempts }, (_, index) => {
+    const waitedMs = options.attemptLog?.[index]?.waitedMs;
+    return Number.isFinite(waitedMs) ? Math.max(0, waitedMs) : 0;
+  });
+  const evidence = receiptEvidence(options, invoked, null, env);
   try {
-    stderr.write(`[dispatch] provider=${options.provider} op=generate model=${options.model} exit=${exit} duration=${durationSec.toFixed(3)}s attempts=${options.attempts}\n`);
+    stderr.write(`[dispatch] provider=${options.provider} op=generate model=${redactNullable(options.model, env) ?? "-"} exit=${exit} duration=${durationSec.toFixed(3)}s attempts=${options.attempts}\n`);
   } catch { /* summary delivery never changes generation */ }
   try {
-    const target = receiptPath(env);
+    const target = receiptPath(env, sinks);
     if (target) {
       appendRawReceiptRecord(target, {
         schemaVersion: 1,
@@ -1010,9 +1058,10 @@ export function writeApiDispatchReceipts(stderr, options, exit, startedAt, env =
         requestedMode: "default",
         effectiveMode: "default",
         inputProfile: "none",
-        modelRequested: options.model,
-        model: options.model,
+        modelRequested: redactNullable(options.model, env),
+        model: redactNullable(options.model, env),
         effort: null,
+        ...evidence,
         lensId: options.lensId ?? null,
         exit,
         durationSec,
@@ -1024,7 +1073,7 @@ export function writeApiDispatchReceipts(stderr, options, exit, startedAt, env =
         argv: null,
         executable: null,
         vendorUsage: apiPortableUsage(options.usage),
-        vendorUsageStatus: options.usage ? "ok" : "vendor-reported-error",
+        vendorUsageStatus: options.usage ? "ok" : (exit === 0 ? "not-reported" : "vendor-reported-error"),
         outputCheckStatus: "not-requested",
         attempts: actualAttempts,
         attemptWaitsMs,
@@ -1037,9 +1086,9 @@ export function writeApiDispatchReceipts(stderr, options, exit, startedAt, env =
     }
   } catch { /* Raw receipt recording remains fail-open. */ }
   try {
-    const target = portableReceiptPath(env);
+    const target = portableReceiptPath(env, sinks);
     if (!target) return;
-    const prepared = preparePortableUsage(apiPortableUsage(options.usage), options.usage ? "ok" : "vendor-reported-error");
+    const prepared = preparePortableUsage(apiPortableUsage(options.usage), options.usage ? "ok" : (exit === 0 ? "not-reported" : "vendor-reported-error"));
     const record = buildPortableReceipt(
       new Date().toISOString(),
       null,
@@ -1047,8 +1096,8 @@ export function writeApiDispatchReceipts(stderr, options, exit, startedAt, env =
       "default",
       "default",
       "none",
-      portableVocabulary(options.model, 1024),
-      portableVocabulary(options.model, 1024),
+      portableVocabulary(redactNullable(options.model, env), 1024),
+      portableVocabulary(redactNullable(options.model, env), 1024),
       null,
       exit,
       durationSec,
@@ -1068,6 +1117,7 @@ export function writeApiDispatchReceipts(stderr, options, exit, startedAt, env =
       options.failureClass ?? null,
       options.failureActor ?? null,
       options.remedy ?? null,
+      evidence,
     );
     appendPortableReceipt(target, record);
   } catch { warnPortableReceiptFailure(stderr); }
@@ -1096,6 +1146,7 @@ function defaultForceKill(child) {
 
 export async function run(options, deps = { spawn }) {
   const env = deps.env ?? process.env;
+  const resolvedReceiptSinks = deps.receiptSinks ?? resolveReceiptSinks(env, deps.receiptConfigPath);
   const modelRequested = options.modelRequested ?? options.model;
   options = {
     ...options,
@@ -1129,18 +1180,18 @@ export async function run(options, deps = { spawn }) {
     parentStderr.write("dispatch validation error: --out and --err must not refer to the same file\n");
     return 2;
   }
-  if (receiptConflicts(options, env)) {
+  if (receiptConflicts(options, env, resolvedReceiptSinks)) {
     parentStderr.write("dispatch validation error: --out/--err must not equal SECOND_OPINION_RECEIPT\n");
     return 2;
   }
-  const portableError = portableConfigError(options, env);
+  const portableError = portableConfigError(options, env, resolvedReceiptSinks);
   if (portableError) {
     parentStderr.write(`dispatch validation error: ${portableError}\n`);
     return 2;
   }
   if (options.vendor === "claude" && (!options.model || !options.effort || !options.out || !options.err)) {
     parentStderr.write("dispatch validation error: Claude requires model, effort, out, and err\n");
-    writeDispatchReceipts(parentStderr, options, 2, startedAt, false, outputCheckStatus, env, undefined, receiptWriters, internalReceipt);
+    writeDispatchReceipts(parentStderr, options, 2, startedAt, false, outputCheckStatus, env, undefined, receiptWriters, internalReceipt, resolvedReceiptSinks);
     return 2;
   }
   const isGitRepo = options.isGitRepo ?? isGitRepository(options.cwd);
@@ -1150,29 +1201,39 @@ export async function run(options, deps = { spawn }) {
     const code = error instanceof PolicyError ? 2 : 3;
     const detail = error.message ?? "vendor mode resolution failed";
     parentStderr.write(`dispatch validation error: ${detail}\n`);
-    writeDispatchReceipts(parentStderr, options, code, startedAt, false, outputCheckStatus, env, undefined, receiptWriters, internalReceipt);
+    writeDispatchReceipts(parentStderr, options, code, startedAt, false, outputCheckStatus, env, undefined, receiptWriters, internalReceipt, resolvedReceiptSinks);
     return code;
   }
+  options = {
+    ...options,
+    receiptArgv: redactArgv(argv, env),
+    receiptExecutable: executableName(options.vendor),
+    receiptModelRequested: redactNullable(options.modelRequested ?? options.model, env),
+    receiptModel: redactNullable(options.model, env),
+    receiptEffort: redactNullable(options.effort, env),
+  };
   if (options.dryRun) {
-    parentStdout.write(`${JSON.stringify({ vendor: options.vendor, operation: options.operation, requestedMode: options.mode, effectiveMode: effectiveVendorMode(options), inputProfile: effectiveInputProfile(options), modelRequested: options.modelRequested ?? null, model: options.model ?? null, executable: executableName(options.vendor), argv, stdinMode: "brief-file", cwd: options.cwd })}\n`);
-    writeDispatchReceipts(parentStderr, options, 0, startedAt, false, outputCheckStatus, env, undefined, receiptWriters, internalReceipt);
+    parentStdout.write(`${JSON.stringify({ vendor: options.vendor, operation: options.operation, requestedMode: options.mode, effectiveMode: effectiveVendorMode(options), inputProfile: effectiveInputProfile(options), modelRequested: options.receiptModelRequested, model: options.receiptModel, executable: options.receiptExecutable, argv: options.receiptArgv, stdinMode: "brief-file", cwd: options.cwd })}\n`);
+    writeDispatchReceipts(parentStderr, options, 0, startedAt, false, outputCheckStatus, env, undefined, receiptWriters, internalReceipt, resolvedReceiptSinks);
     return 0;
   }
   let brief;
   try { brief = composeVendorInput(options, readFileSync(options.brief)); }
   catch (error) {
     parentStderr.write(`dispatch internal error: unable to read brief (${error.code ?? "read_failed"})\n`);
-    writeDispatchReceipts(parentStderr, options, 3, startedAt, false, outputCheckStatus, env, undefined, receiptWriters, internalReceipt);
+    writeDispatchReceipts(parentStderr, options, 3, startedAt, false, outputCheckStatus, env, undefined, receiptWriters, internalReceipt, resolvedReceiptSinks);
     return 3;
   }
+  options = { ...options, promptBytes: brief.byteLength };
   let executable;
   try { executable = spawnImpl === spawn ? resolveExecutable(options.vendor) : executableName(options.vendor); }
   catch (error) {
     const code = error instanceof PolicyError ? 2 : 3;
     parentStderr.write(`${error.message ?? "dispatch executable resolution failed"}\n`);
-    writeDispatchReceipts(parentStderr, options, code, startedAt, false, outputCheckStatus, env, undefined, receiptWriters, internalReceipt);
+    writeDispatchReceipts(parentStderr, options, code, startedAt, false, outputCheckStatus, env, undefined, receiptWriters, internalReceipt, resolvedReceiptSinks);
     return code;
   }
+  options = { ...options, receiptExecutable: redactEvidenceValue(executable, env) };
   let stdoutStream;
   let stderrStream;
   try {
@@ -1182,7 +1243,7 @@ export async function run(options, deps = { spawn }) {
     stdoutStream?.destroy();
     stderrStream?.destroy();
     parentStderr.write(`dispatch internal error: unable to open output file (${error.code ?? "open_failed"})\n`);
-    writeDispatchReceipts(parentStderr, options, 3, startedAt, false, outputCheckStatus, env, undefined, receiptWriters, internalReceipt);
+    writeDispatchReceipts(parentStderr, options, 3, startedAt, false, outputCheckStatus, env, undefined, receiptWriters, internalReceipt, resolvedReceiptSinks);
     return 3;
   }
   return await new Promise((resolveRun) => {
@@ -1208,12 +1269,12 @@ export async function run(options, deps = { spawn }) {
           tooLarge: claudeOutputTooLarge,
         });
       }
-      writeDispatchReceipts(parentStderr, options, code === 124 ? "timeout" : code, startedAt, invoked, outputCheckStatus, env, vendorObservation, receiptWriters, internalReceipt);
+      writeDispatchReceipts(parentStderr, options, code === 124 ? "timeout" : code, startedAt, invoked, outputCheckStatus, env, vendorObservation, receiptWriters, internalReceipt, resolvedReceiptSinks);
       resolveRun(code);
     };
     try {
       const spawnOptions = { cwd: options.cwd, shell: false, stdio: ["pipe", captureStdout ? "pipe" : "inherit", stderrStream ? "pipe" : "inherit"], windowsHide: true };
-      const rawReceiptConfigured = Boolean(receiptPath(env));
+      const rawReceiptConfigured = Boolean(receiptPath(env, resolvedReceiptSinks));
       if (rawReceiptConfigured || hasEnvKey(env, "SECOND_OPINION_PORTABLE_RECEIPT") || options.vendor === "claude") {
         spawnOptions.env = { ...env };
         for (const key of Object.keys(spawnOptions.env)) {
@@ -1246,11 +1307,8 @@ export async function run(options, deps = { spawn }) {
       escalateTimer = setTimeout(() => {                            // still not closed → force-kill the whole tree
         try { forceKill(child); } catch { /* best effort */ }
         reapTimer = setTimeout(() => finish(124), reapMs);         // bounded: resolve even if `close` never fires
-        reapTimer.unref?.();
       }, graceMs);
-      escalateTimer.unref?.();
     }, options.timeout * 1000);
-    timer.unref?.();
     const streamError = (error) => {
       parentStderr.write(`dispatch internal error: stdio failed (${error.code ?? "stdio_failed"})\n`);
       child.kill();

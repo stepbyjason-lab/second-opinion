@@ -398,28 +398,22 @@ test("P0 generation SSE bounds incomplete frames and cancels the reader", async 
   assert.equal(cancelled, true);
 });
 
-test("P1 every generation adapter fails closed when normalized usage is unavailable", async () => {
-  for (const fixture of [
-    {
-      provider: "nvidia_nim",
-      model: "fixture-model",
-      deps: { env: { NVIDIA_NIM_API_KEY: "fixture" }, openAiAdapter: async () => ({ text: "unaccounted", usage: null }) },
-    },
-    {
-      provider: "agy",
-      model: "fixture-model",
-      deps: { env: {}, subscriptionAdapter: async () => ({ text: "unaccounted", usage: null }) },
-    },
-  ]) {
-    await assert.rejects(
-      dispatchGeneration({
-        schema_version: 1, operation: "generate", provider: fixture.provider, model: fixture.model, user: "u",
-        max_retries: 0,
-      }, fixture.deps),
-      (error) => error.failureClass === "usage-unavailable",
-      fixture.provider,
-    );
-  }
+test("attribution evidence, not usage alone, gates generation success", async () => {
+  const http = await dispatchGeneration({
+    schema_version: 1, operation: "generate", provider: "nvidia_nim", model: "fixture-model", user: "u", max_retries: 0,
+  }, {
+    env: { NVIDIA_NIM_API_KEY: "fixture" },
+    openAiAdapter: async () => ({ text: "accounted by model", model: "fixture-model", usage: null }),
+  });
+  assert.equal(http.model_reported, "observed");
+  assert.equal(http.usage, null);
+
+  await assert.rejects(
+    dispatchGeneration({
+      schema_version: 1, operation: "generate", provider: "agy", model: "fixture-model", user: "u", max_retries: 0,
+    }, { env: {}, subscriptionAdapter: async () => ({ text: "unattributed", model: null, usage: null }) }),
+    (error) => error.failureClass === "attribution-unavailable",
+  );
 });
 
 test("P1 generation keeps its internal usage receipt separate and honors both caller sinks", async () => {
@@ -511,6 +505,7 @@ test("generation help and documentation teach the repaired safety contracts", ()
   const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
   const codexAdapter = readFileSync(new URL("../skills/second-opinion/references/adapter-codex.md", import.meta.url), "utf8");
   const changelog = readFileSync(new URL("../../../CHANGELOG.md", import.meta.url), "utf8");
+  const envSample = readFileSync(new URL("../../../.env.local.sample", import.meta.url), "utf8");
   for (const text of [readme, koreanReadme, skill]) {
     assert.match(text, /max_completion_tokens/);
     assert.match(text, /HTTPS/);
@@ -525,6 +520,24 @@ test("generation help and documentation teach the repaired safety contracts", ()
   for (const text of [koreanReadme, skill]) assert.match(text, /문자열로 존재하지만 공백뿐.*재시도.*필드 부재·비문자열.*malformed JSON\/SSE/s);
   assert.match(codexAdapter, /문자열로 존재하지만 공백뿐.*재시도.*malformed/s);
   assert.match(changelog, /HTTP generation receipts/);
+  assert.match(readme, /HTTP responses may succeed with `usage: null`.*subscription adapters still fail closed/is);
+  assert.match(koreanReadme, /HTTP는 응답 model이 귀속을 증명하면\s*`usage: null`이어도 성공.*subscription adapter는\s*usage가 없으면 계속 실패/s);
+  for (const text of [readme, koreanReadme, skill]) {
+    assert.match(text, /Zhipu.*16/is);
+    assert.match(text, /gemini-2\.5-flash.*16/is);
+    assert.match(text, /1 \+ max_retries.*6/is);
+    assert.match(text, /provider-probe\.mjs/);
+  }
+  for (const text of [readme, koreanReadme, skill, codexAdapter]) {
+    assert.match(text, /cachedInputTokens.*(?:API|api).*null/is);
+  }
+  for (const text of [readme, koreanReadme, envSample]) assert.doesNotMatch(text, /<PROVIDER>_MODEL|(?:OPENROUTER|NVIDIA_NIM|MISTRAL|GITHUB_MODELS|ZHIPU|GEMINI)_MODEL/);
+  const probeHelp = spawnSync(process.execPath, [fileURLToPath(new URL("./provider-probe.mjs", import.meta.url)), "--help"], {
+    encoding: "utf8", shell: false, windowsHide: true,
+  });
+  assert.equal(probeHelp.status, 0, probeHelp.stderr);
+  assert.match(probeHelp.stdout, /64-token, zero-retry request through/);
+  assert.match(probeHelp.stdout, /printed and not retained/);
 });
 
 test("skill resolves the catalog path directly before declaring it missing", () => {
@@ -537,15 +550,15 @@ test("skill resolves the catalog path directly before declaring it missing", () 
   assert.match(skill, /검색 결과가 비었다는 이유만으로 설치 누락이나 카탈로그 오류라고 단정하지 않는다/);
 });
 
-test("0.9.8 public help and documentation describe cache-first ranked routing", () => {
+test("0.9.9 public help and documentation describe cache-first ranked routing", () => {
   const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
   const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
   const publicReadmeUrls = [new URL("../../../README.md", import.meta.url), new URL("../../../README.ko.md", import.meta.url)];
   const publicReadmes = publicReadmeUrls.filter((url) => existsSync(url)).map((url) => readFileSync(url, "utf8"));
-  assert.equal(plugin.version, "0.9.8");
+  assert.equal(plugin.version, "0.9.9");
   assert.ok(publicReadmes.length === 0 || publicReadmes.length === 2, "public snapshot must carry both README files");
   for (const text of [skill, ...publicReadmes]) {
-    assert.match(text, /0\.9\.8/);
+    assert.match(text, /0\.9\.9/);
     assert.match(text, /model-catalog-v1\.json/);
     assert.match(text, /opus 4\.6/);
   }
@@ -1683,7 +1696,7 @@ test("opt-in receipt appends typed JSONL for dry-run and invoked children", asyn
   assert.equal(dryRun.invoked, false);
   assert.equal(completed.invoked, true);
   for (const row of [dryRun, completed]) {
-    assert.deepEqual(Object.keys(row).sort(), ["attemptWaitsMs", "attempts", "completionTokenLimit", "cwd", "durationSec", "effectiveMode", "effort", "errPath", "exit", "failureActor", "failureClass", "inputProfile", "invoked", "lensId", "model", "modelRequested", "operation", "outPath", "outputCheckStatus", "pid", "provider", "remedy", "requestedMode", "schemaVersion", "successfulAttempt", "transport", "ts", "vendor", "vendorUsage", "vendorUsageStatus"].sort());
+    assert.deepEqual(Object.keys(row).sort(), ["argv", "attemptWaitsMs", "attempts", "completionTokenLimit", "cwd", "durationSec", "effectiveMode", "effort", "effortRequested", "errPath", "executable", "exit", "failureActor", "failureClass", "finishReason", "finish_reason", "incomplete_details", "inputProfile", "invoked", "lensId", "model", "modelReported", "modelRequested", "operation", "outPath", "outputCheckStatus", "pid", "promptBytes", "promptSource", "provider", "remedy", "requestedMode", "schemaVersion", "successfulAttempt", "transport", "truncatedSuspected", "ts", "vendor", "vendorUsage", "vendorUsageStatus"].sort());
     assert.equal(row.schemaVersion, 1);
     assert.equal(row.vendor, "codex");
     assert.equal(row.transport, "cli");
@@ -2577,7 +2590,8 @@ test("closed portable emitter has an exact key set and no locator input seam", a
   assert.equal(buildPortableReceipt.length, 17);
   assert.deepEqual(Object.keys(row), [
     "schemaVersion", "receiptKind", "ts", "transport", "vendor", "provider", "operation", "requestedMode",
-    "effectiveMode", "inputProfile", "modelRequested", "model", "effort", "lensId", "exit", "durationSec",
+    "effectiveMode", "inputProfile", "modelRequested", "model", "effort", "modelReported", "effortRequested",
+    "truncatedSuspected", "promptSource", "promptBytes", "finish_reason", "finishReason", "incomplete_details", "lensId", "exit", "durationSec",
     "invoked", "outputDeclared", "vendorUsage", "vendorUsageStatus", "outputCheckStatus", "attempts",
     "attemptWaitsMs", "successfulAttempt", "completionTokenLimit", "failureClass", "failureActor", "remedy",
   ]);
@@ -2792,9 +2806,12 @@ test("this-machine parallel observation leaves 12 of 12 parseable portable rows"
   assert.ok(rows.every((row) => row.schemaVersion === 2 && row.receiptKind === "portable"));
 });
 
-test("raw-only rows preserve every installed 0.9.6 field while adding identity evidence", () => {
+test("raw-only rows preserve every installed 0.9.6 field while adding identity evidence", (t) => {
   const installed = join(homedir(), ".claude", "plugins", "cache", "second-opinion", "second-opinion", "0.9.6", "scripts", "dispatch.mjs");
-  assert.equal(existsSync(installed), true, "installed second-opinion 0.9.6 baseline build is required");
+  if (!existsSync(installed)) {
+    t.skip("optional installed second-opinion 0.9.6 comparison is unavailable");
+    return;
+  }
   const currentDispatch = join(scriptsDirectory, "dispatch.mjs");
   const evidenceRoot = makeTempDir("second-opinion-raw-compat-");
   const args = ["--vendor", "codex", "--operation", "text", "--brief", brief, "--model", "comparison-model", "--effort", "high", "--dry-run"];

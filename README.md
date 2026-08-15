@@ -2,7 +2,7 @@
 
 **English** | [한국어](./README.ko.md)
 
-![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.8-informational)
+![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.9-informational)
 
 **Use other AI vendors from inside Claude Code — in plain language.**
 Second opinions, task offloading, and vendor capabilities like image generation.
@@ -51,14 +51,22 @@ transient vendor failure and is retried. Missing or non-string text (including
 Cross-provider routing and budgets belong to the caller; a request containing `budget`
 is rejected. Every API attempt receives the unchanged `max_completion_tokens` value.
 The response reports the requested `provider`/`model`, `model_reported`, normalized
-`usage`, and `attempts`; there is no `fallback_chain`. Every adapter fails closed without
-complete normalized usage, and an HTTP-reported model must exactly match the request.
+`usage`, raw provider stop signals, and `attempts`; there is no `fallback_chain`.
+HTTP responses may succeed with `usage: null` when their reported model supplies
+attribution; subscription adapters still fail closed when usage is their only
+attribution channel. An HTTP-reported model must exactly match the request.
 Streaming publishes only the accepted attempt and caps accepted pre-publication content
 at 16 MiB (with the existing 8 MiB incomplete-frame and 64 MiB total-stream guards).
 Provider base overrides must stay on the provider's trusted HTTPS origin and redirects
 are rejected. The response target is atomically replaced and cannot alias the request,
 provider env file, or either receipt sink. Both HTTP and subscription generation write
 configured raw and closed-portable receipts.
+
+A very low `max_completion_tokens` can leave no text and exhaust same-provider retries
+(observed with Zhipu at 16 tokens). On `gemini-2.5-flash`, thinking tokens consumed the
+16-token completion budget before visible text was produced. A subscription empty-output retry launches the CLI again, for up to
+`1 + max_retries` processes (six with the default), so lower `max_retries` when repeated
+CLI launches are not worth that diagnostic cost.
 
 - **Natural-language triggers** — "review this with Codex", "ask Gemini",
   "get a second opinion", "cross-check this with another AI". Korean triggers work too.
@@ -114,12 +122,16 @@ configured raw and closed-portable receipts.
   input/output collision guards.
 
   Every row records `transport` (`cli` or `api`), with `vendor` populated only for CLI
-  and `provider` only for API. HTTP rows use `null` for nonexistent process fields such
-  as `pid`, `argv`, and `executable`. `lensId` records the caller's opaque `--lens-id` or
+  and `provider` only for API. Raw CLI rows record the measured, credential-redacted
+  `argv` and resolved `executable`; API rows use `null` because no process exists.
+  Receipts place `modelReported`, `effortRequested`, `truncatedSuspected`, raw stop
+  signals, `promptSource`, and measured `promptBytes` beside the existing normalized
+  values. `lensId` records the caller's opaque `--lens-id` or
   JSON `lens_id` unchanged and is `null` when omitted. Attempts, actual waits, the
   successful attempt, completion-limit application, and failure class/actor/remedy are
-  recorded. The failure vocabulary extends the core adapter vocabulary with
-  `oversized-response`, `invalid-response`, and `usage-unavailable`.
+  recorded. The failure vocabulary also distinguishes `oversized-response`,
+  `invalid-response`, `attribution-unavailable`, `model-unavailable`, and
+  `payload-incompatible`; the existing `usage-unavailable` label remains accepted.
 
   Each completed dispatch independently attempts one append to every configured
   sink. Receipt I/O is fail-open: portable failure emits a fixed path-free warning
@@ -170,8 +182,11 @@ configured raw and closed-portable receipts.
   applies the `agy-native-readonly/v1` input profile so an ordinary brief that mentions
   `git diff` is handled with native read/list/search instead of a headless shell command.
 
-  Comparing model cost? Use `(inputTokens - cachedInputTokens) + outputTokens`.
-  Do not add `reasoningOutputTokens` — it is already part of `outputTokens`.
+  Comparing model cost from a **CLI receipt**? Use
+  `(inputTokens - cachedInputTokens) + outputTokens`. Do not add
+  `reasoningOutputTokens` — it is already part of `outputTokens`. API providers do not
+  report cached-input usage (`cachedInputTokens` is absent in raw usage or `null` in the
+  portable shape), so do not copy this formula there or cached input may be charged twice.
 
 ## Requirements
 
@@ -203,9 +218,17 @@ directly. Six are supported:
 | GitHub Models | `GITHUB_MODELS_API_KEY` | `https://models.github.ai/inference` |
 | Zhipu (Z.ai / GLM) | `ZHIPU_API_KEY` | `https://api.z.ai/api/paas/v4` |
 
-Each provider also accepts `<PROVIDER>_MODEL` and `<PROVIDER>_BASE_URL`. A base
-override must stay on that provider's trusted HTTPS origin; anything else is rejected
-before the request leaves.
+Each provider also accepts `<PROVIDER>_BASE_URL`. The model always comes from the request
+JSON. A base override must stay on that provider's trusted HTTPS origin; anything else
+is rejected before the request leaves.
+
+For a one-shot provider diagnostic, prepare a JSON file with
+`{ "schema_version": 1, "providers": [{ "provider": "...", "model": "..." }], "env_file": "..." }`
+and run `node plugins/second-opinion/scripts/provider-probe.mjs --targets-json <file>`.
+It sends one 64-token, zero-retry request per listed provider through the existing
+`--request-json` path and prints provider, model, status, duration, and `failureClass`.
+It does not cache results or select a replacement model; ordinary configured receipts
+are the only durable evidence.
 
 ```bash
 cp .env.local.sample .env.local   # then fill in only the providers you use

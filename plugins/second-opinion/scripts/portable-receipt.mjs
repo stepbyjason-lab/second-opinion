@@ -14,14 +14,15 @@ const USAGE_SOURCES = new Set(["codex-rollout", "claude-result-json", "api-respo
 const USAGE_STATUSES = new Set([
   "not-invoked", "ok", "unsupported-vendor", "no-err-file", "no-session-id", "read-failed", "not-regular-file", "file-too-large",
   "no-rollout-file", "ambiguous-rollout-file", "no-token-count", "invalid-token-fields", "output-too-large", "empty-output", "invalid-json",
-  "vendor-reported-error", "empty-result", "missing-model-usage", "model-mismatch",
+  "vendor-reported-error", "not-reported", "empty-result", "missing-model-usage", "model-mismatch",
 ]);
 const OUTPUT_STATUSES = new Set(["not-requested", "not-evaluated", "matched", "missing"]);
 const FAILURE_CLASSES = new Set([
   "bad-invocation", "unknown-vendor", "vendor-discovery-unavailable", "vendor-unknown", "vendor-ambiguous",
   "unsupported-capability", "model-unknown", "model-ambiguous", "auth-failed", "executable-not-found",
   "vendor-state-corrupt", "rate-limited", "vendor-error", "no-output-timeout", "vendor-internal-timeout",
-  "oversized-response", "invalid-response", "usage-unavailable", "unclassified",
+  "oversized-response", "invalid-response", "usage-unavailable", "attribution-unavailable",
+  "model-unavailable", "payload-incompatible", "unclassified",
 ]);
 const FAILURE_ACTORS = new Set(["dispatcher", "caller", "user", "vendor"]);
 const COMPLETION_STATUSES = new Set(["not-applicable-cli", "applied-unchanged"]);
@@ -98,6 +99,33 @@ function usageRecord(value) {
   };
 }
 
+function executionEvidence(value = {}) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
+  const allowed = new Set([
+    "modelReported", "effortRequested", "truncatedSuspected", "promptSource", "promptBytes",
+    "finish_reason", "finishReason", "incomplete_details",
+  ]);
+  if (Object.keys(value).some((key) => !allowed.has(key))) invalid();
+  const modelReported = label(value.modelReported ?? "none", new Set(["observed", "none"]));
+  const incomplete = value.incomplete_details;
+  if (incomplete !== null && incomplete !== undefined) {
+    if (!incomplete || typeof incomplete !== "object" || Array.isArray(incomplete)
+      || Object.keys(incomplete).some((key) => key !== "reason")) invalid();
+  }
+  return {
+    modelReported,
+    effortRequested: string(value.effortRequested, { nullable: true, max: 64 }),
+    truncatedSuspected: value.truncatedSuspected === null || value.truncatedSuspected === undefined
+      ? null
+      : boolean(value.truncatedSuspected),
+    promptSource: string(value.promptSource, { nullable: true }),
+    promptBytes: integer(value.promptBytes, { nullable: true }),
+    finish_reason: string(value.finish_reason, { nullable: true, max: 128 }),
+    finishReason: string(value.finishReason, { nullable: true, max: 128 }),
+    incomplete_details: incomplete == null ? null : { reason: string(incomplete.reason, { max: 128 }) },
+  };
+}
+
 export function preparePortableUsage(value, status) {
   try {
     return { usage: usageRecord(value), status: label(status, USAGE_STATUSES) };
@@ -139,6 +167,7 @@ export function buildPortableReceipt(
   failureClass = null,
   failureActor = null,
   remedy = null,
+  evidence = {},
 ) {
   const timestamp = string(ts, { max: 32 });
   try { if (new Date(timestamp).toISOString() !== timestamp) invalid(); } catch { invalid(); }
@@ -154,6 +183,7 @@ export function buildPortableReceipt(
   if (!Array.isArray(attemptWaitsMs) || attemptWaitsMs.length !== attemptsValue) invalid();
   const waitValues = attemptWaitsMs.map((value) => finite(value, { maximum: 3_600_000 }));
   if ((failureClass === null) !== (failureActor === null) || (failureClass === null) !== (remedy === null)) invalid();
+  const observed = executionEvidence(evidence);
   return {
     schemaVersion: 2,
     receiptKind: "portable",
@@ -168,6 +198,7 @@ export function buildPortableReceipt(
     modelRequested: string(modelRequested, { nullable: true }),
     model: string(model, { nullable: true }),
     effort: string(effort, { nullable: true, max: 64 }),
+    ...observed,
     lensId: string(lensId, { nullable: true, max: 64 }),
     exit: exitValue,
     durationSec: finite(durationSec),

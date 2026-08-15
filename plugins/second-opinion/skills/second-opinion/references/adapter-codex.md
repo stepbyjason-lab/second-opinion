@@ -18,12 +18,29 @@ chunk는 해당 시도가 완료되고 usage까지 검증된 뒤에만 상위 st
 일시 실패로 같은 provider를 재시도한다. 형식 파싱이 실패한 malformed 응답은 영구 실패다.
 완료 뒤 Codex rollout
 영수증의 token count를 `prompt_tokens`·`completion_tokens`·`total_tokens`로 표준화하며,
-usage가 없으면 성공처럼 반환하지 않는다. Codex CLI가 응답 model을 직접 보고하지 않으므로
+이 usage가 Codex 응답의 귀속 증거이므로 없으면 성공처럼 반환하지 않는다. Codex CLI가 응답 model을 직접 보고하지 않으므로
 이 경로의 `model_reported`는 정직하게 `none`이다. usage를 읽는 내부 임시 receipt는 caller가
 설정한 `SECOND_OPINION_RECEIPT`·`SECOND_OPINION_PORTABLE_RECEIPT`와 분리되며, caller sink는
 기존 raw writer와 shipped closed portable emitter가 그대로 기록한다.
 두 영수증 모두 `transport=cli`, `vendor=codex`, `provider=null`, 호출자가 준 `lensId`(없으면
 `null`)를 기록한다. HTTP provider로의 폴백은 없고 Codex 실패는 다른 벤더 호출로 이어지지 않는다.
+
+빈 출력은 같은 Codex CLI를 다시 띄우며 최대 `1 + max_retries`회(기본값이면 6회) spawn한다.
+반복 프로세스 비용이 진단 가치보다 크면 subscription 호출의 `max_retries`를 낮춘다. 비용 비교
+공식 `(inputTokens - cachedInputTokens) + outputTokens`는 캐시 사용량을 보고하는 CLI
+영수증에만 적용한다. API provider는 캐시 입력을 보고하지 않으므로(raw에는 필드 없음,
+portable에는 `null`) 그대로 옮기면 이중차감할 수 있다.
+
+raw/portable 영수증은 `modelReported`·`effortRequested`·`truncatedSuspected`·원본 stop 신호·
+`promptSource`·실측 `promptBytes`를 나란히 기록한다. raw CLI에만 실측·리댁션된 `argv`와
+`executable`이 추가되고 portable에는 locator를 넣지 않는다.
+
+### Provider 진단 프로브
+
+`node "$CLAUDE_PLUGIN_ROOT/scripts/provider-probe.mjs" --targets-json providers.json`은 나열한
+provider/model마다 기존 `--request-json` 경로로 64-token·재시도 0회 요청을 한 번 보내고
+status·소요시간·`failureClass`를 표로 낸다. 결과를 저장·캐시하거나 대체 모델을 고르지 않는다.
+설정된 raw/portable 영수증만 영구 증거로 남는다.
 
 ### 모델 입력 정규화
 

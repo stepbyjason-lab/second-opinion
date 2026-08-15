@@ -5,7 +5,7 @@
 Claude Code 안에서 **다른 벤더의 AI**(Codex/GPT, Antigravity/Gemini)를 일상어로 부려 쓰는
 어댑터 스킬 — 점검·리뷰·의견부터 작업 오프로드, 이미지 생성까지.
 
-**버전 0.9.8**
+**버전 0.9.9**
 
 > "이 설계 코덱스로 점검받고 싶어" / "안티그래비티한테 물어봐" / "교차 검증해줘"
 > "코덱스한테 로고 시안 이미지 만들어달라고 해줘" / "클로드 사용량 아끼게 이 번역은 제미나이로"
@@ -39,13 +39,21 @@ Claude가 만든 것을 Claude가 검토하면 결함을 과소보고한다 — 
 malformed JSON/SSE는 영구 `invalid-response`로 둔다. 벤더 간 라우팅과 예산은
 호출자 소유라 `budget` 필드는 거부하고,
 모든 API 시도에는 같은 `max_completion_tokens`를 보낸다. 응답은 요청한
-`provider`/`model`, `model_reported`, 표준화된 `usage`, `attempts`를 반환하며
-`fallback_chain`은 없다. 완전한 usage가 없거나 HTTP 응답 model이 요청과 다르면 실패한다.
+`provider`/`model`, `model_reported`, 표준화된 `usage`, provider 원본 stop 신호,
+`attempts`를 반환하며 `fallback_chain`은 없다. HTTP는 응답 model이 귀속을 증명하면
+`usage: null`이어도 성공할 수 있다. usage가 유일한 귀속 채널인 subscription adapter는
+usage가 없으면 계속 실패한다. HTTP 응답 model이 요청과 다르면 실패한다.
 스트림은 채택된 시도의 chunk만 공개하고 공개 전 채택 버퍼를 16 MiB로 제한한다(기존 미완성
 frame 8 MiB·전체 stream 64 MiB 가드도 유지). provider base override는 해당 provider의
 신뢰된 HTTPS origin 안에서만 허용하고 redirect는 거부한다. response target은
 request·provider env file·두 receipt sink와 겹칠 수 없고 원자적으로 교체된다. HTTP와 구독
 생성 모두 설정된 raw·closed-portable 영수증을 기록한다.
+
+`max_completion_tokens`가 너무 작으면 텍스트가 남지 않아 같은 provider 재시도를 소진할 수
+있다(Zhipu에서 16 token으로 실측). `gemini-2.5-flash`에서는 thinking 토큰이 16-token
+completion 예산을 먼저 잠식해 보이는 텍스트가 남지 않았다. subscription
+빈 출력의 재시도는 CLI 프로세스를 다시 띄우므로 최대 `1 + max_retries`회(기본값이면 6회)
+spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries`를 낮춘다.
 
 - **자연어 트리거** — "코덱스로 점검", "제미나이로 봐줘", "다른 AI 시각으로", "second opinion"
 - **벤더 자동 제안** — 지정 안 하면 작업 성격으로 고른다: 코드 리뷰·기술 감사 → Codex /
@@ -88,10 +96,14 @@ request·provider env file·두 receipt sink와 겹칠 수 없고 원자적으�
   없음 순서다. config 부재·파손은 무시하고 기본 경로를 만들지 않으며 드라이브 정책도 강제하지
   않는다. 해석된 경로에는 기존 입출력 충돌 가드가 그대로 적용된다. 모든 행은
   `transport`(`cli`|`api`)를 기록하고 CLI에서만 `vendor`, API에서만 `provider`가 채워진다.
-  HTTP에 없는 `pid`·`argv`·`executable`은 `null`이다. `lensId`는 `--lens-id` 또는 JSON
+  raw CLI 행은 실측하고 자격증명을 가린 `argv`와 해석된 `executable`을 기록하며, 프로세스가
+  없는 API 행은 둘 다 `null`이다. 영수증은 기존 정규화 값 옆에 `modelReported`·
+  `effortRequested`·`truncatedSuspected`·provider 원본 stop 신호·`promptSource`·실측
+  `promptBytes`를 기록한다. `lensId`는 `--lens-id` 또는 JSON
   `lens_id`를 해석 없이 보존하며 미지정이면 `null`이다. 시도 수·실제 대기·성공 시도·토큰 상한
-  적용 여부·실패 class/actor/remedy도 남긴다. core adapter 실패 어휘에 H10이 더한 class는
-  `oversized-response`·`invalid-response`·`usage-unavailable` 셋이다.
+  적용 여부·실패 class/actor/remedy도 남긴다. 실패 어휘는 `oversized-response`·
+  `invalid-response`·`attribution-unavailable`·`model-unavailable`·
+  `payload-incompatible`를 구별하며 기존 `usage-unavailable`도 계속 허용한다.
 
   완료된 dispatch는 설정된 각 sink에 append를 한 번씩 독립 시도한다. portable I/O 실패는
   경로 없는 고정 경고만 남기는 fail-open이며 다른 sink나 dispatch exit를 바꾸지 않는다.
@@ -133,8 +145,11 @@ request·provider env file·두 receipt sink와 겹칠 수 없고 원자적으�
   `agy-native-readonly/v1` 입력 profile을 자동 적용한다. 따라서 평범한 brief에
   `git diff`가 있어도 headless shell 대신 native 읽기·목록·검색으로 처리한다.
 
-  모델 비용을 비교한다면 `(inputTokens - cachedInputTokens) + outputTokens`로 계산한다.
+  **CLI 영수증**으로 모델 비용을 비교한다면
+  `(inputTokens - cachedInputTokens) + outputTokens`로 계산한다.
   `reasoningOutputTokens`를 따로 더하면 안 된다 — `outputTokens`에 이미 포함돼 있다.
+  API provider는 캐시 입력 사용량을 보고하지 않는다(raw usage에는 `cachedInputTokens`가 없고
+  portable shape에서는 `null`). 이 공식을 그대로 옮기면 캐시 입력을 이중차감할 수 있다.
 
 ## 요구사항
 
@@ -160,8 +175,16 @@ request·provider env file·두 receipt sink와 겹칠 수 없고 원자적으�
 | GitHub Models | `GITHUB_MODELS_API_KEY` | `https://models.github.ai/inference` |
 | Zhipu (Z.ai / GLM) | `ZHIPU_API_KEY` | `https://api.z.ai/api/paas/v4` |
 
-provider마다 `<PROVIDER>_MODEL`·`<PROVIDER>_BASE_URL`도 받는다. base URL 재정의는
-**그 provider의 신뢰 HTTPS origin 안에서만** 허용되고, 벗어나면 요청이 나가기 전에 거부된다.
+provider마다 `<PROVIDER>_BASE_URL`도 받으며 모델은 항상 요청 JSON에서 온다. base URL
+재정의는 **그 provider의 신뢰 HTTPS origin 안에서만** 허용되고, 벗어나면 요청이 나가기 전에
+거부된다.
+
+provider를 한 번 진단하려면
+`{ "schema_version": 1, "providers": [{ "provider": "...", "model": "..." }], "env_file": "..." }`
+JSON을 만들고 `node plugins/second-opinion/scripts/provider-probe.mjs --targets-json <파일>`을
+실행한다. 나열한 provider마다 기존 `--request-json` 경로로 64-token·재시도 0회 요청을 한 번
+보내고 provider·model·status·소요시간·`failureClass` 표를 출력한다. 결과를 캐시하거나 대체
+모델을 고르지 않으며, 설정된 일반 영수증만 영구 증거로 남는다.
 
 ```bash
 cp .env.local.sample .env.local   # 쓰는 provider만 채운다

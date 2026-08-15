@@ -13,7 +13,7 @@ description: >
 
 # second-opinion — 외부 AI 어댑터
 
-**버전 0.9.8** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
+**버전 0.9.9** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
 
 이 스킬은 **아무것도 차단하지 않는다** — 중개(relay)만 한다. 디스패처는 커맨드 정합성을 위한 도구일 뿐이다. "Claude가 디스패처를 반드시 거치게" 강제하는 것은 **부르는 쪽(caller)의 책임**이다 → [references/enforcement.md](references/enforcement.md).
 
@@ -115,16 +115,39 @@ JSON/SSE 파싱에 성공하고 텍스트가 문자열로 존재하지만 공백
 벤더 간 라우팅과 예산은 호출자 소유다. 모든 API 시도는 요청의 `max_completion_tokens`를
 그대로 받고 CLI는 적용 불가 사실을 영수증에 남긴다. response schema v1은 요청한
 provider/model과 `model_reported`, `requested_*`, 표준 `usage`, `attempts`를 반환하며
-`fallback_chain`은 없다. 모든 adapter는 완전한 표준 usage가 없으면 성공을 반환하지 않고,
-HTTP 응답 model이 요청 model과 다르면 fail-closed다. stream은 채택된 시도의 chunk만 공개하며
+`fallback_chain`은 없다. HTTP는 응답 model이 귀속을 증명하면 `usage: null`이어도 성공할 수
+있고 영수증에 `not-reported`로 남긴다. usage가 유일한 귀속 채널인 subscription adapter는
+usage가 없으면 fail-closed다. HTTP 응답 model이 요청 model과 다르면 fail-closed다. stream은 채택된 시도의 chunk만 공개하며
 채택 전 16 MiB·미완성 frame 8 MiB·전체 64 MiB 상한을 적용한다. provider base override는
 신뢰된 provider HTTPS origin만 허용하고 redirect는 거부한다.
 response target은 request·env file·raw/portable receipt와 겹칠 수 없고 원자적으로 교체된다.
 구독 생성은 내부 usage receipt를 caller sink와 분리하고 기존 raw/closed-portable writer로 caller
 sink를 기록한다. HTTP 생성도 같은 raw/closed-portable sink를 기록한다. 영수증은
 `transport=cli|api`로 가르고 CLI의 `vendor`와 API의 `provider`는 배타적이다. 실패는 core adapter
-어휘에 `oversized-response`·`invalid-response`·`usage-unavailable`을 더한
+어휘에 `oversized-response`·`invalid-response`·`attribution-unavailable`·
+`model-unavailable`·`payload-incompatible`을 더한
 `failureClass`·`failureActor`·`remedy` 셋으로 반환한다.
+
+작은 `max_completion_tokens`는 빈 텍스트와 재시도 소진을 부를 수 있다(Zhipu 16 token 실측).
+`gemini-2.5-flash`에서는 thinking 토큰이 16-token completion 예산을 먼저 잠식해 보이는
+텍스트가 남지 않았다. subscription의 빈 출력 재시도는 실제 CLI를
+다시 띄워 최대 `1 + max_retries`회(기본값이면 6회) spawn하므로, 반복 실행 비용이 진단 가치보다
+크면 CLI transport의 `max_retries`를 낮춘다.
+
+영수증은 요청과 실행을 나란히 비교할 수 있도록 `modelReported`·`effortRequested`·
+`truncatedSuspected`·원본 stop 신호·`promptSource`·실측 `promptBytes`를 기록한다. raw CLI의
+`argv`·`executable`은 실측 후 자격증명을 가리고, 프로세스가 없는 API 행은 `null`이다.
+
+provider 생사·응답 진단은 다음처럼 명시적으로 한 번만 실행한다.
+
+```bash
+node "$CLAUDE_PLUGIN_ROOT/scripts/provider-probe.mjs" --targets-json providers.json
+```
+
+`providers.json`은 `schema_version: 1`, `providers: [{ provider, model }]`, 선택적 `env_file`을
+갖는다. 각 항목에 64-token·재시도 0회 요청을 기존 `--request-json` 경로로 보내고 status·
+소요시간·`failureClass` 표를 출력한다. 프로브 결과는 저장·캐시하지 않고 대체 모델을 선택하지
+않는다. 일반 raw/portable 영수증이 유일한 영구 증거다.
 
 모델을 지정하고 벤더를 모르면 `--vendor`를 생략할 수 있다. 디스패처가 Codex
 `models_cache.json`, `agy models`, Claude initialize control metadata를 대조해 자동
@@ -309,10 +332,12 @@ ffmpeg로 프레임을 추출한 뒤 그 프레임들을 `-i`로 전달한다(�
 
 ## 사용량 (선택)
 
-호출 전후 quota가 궁금하면: `codexbar-cli usage -p codex --json` (Antigravity는 IDE 실행 중일 때만 계측 가능). 대량 호출 전 참고용. `totalTokens`에는 캐시 입력이 포함되고 캐시분은 할인되므로 모델 비용을 직접 비교하지 않는다:
+호출 전후 quota가 궁금하면: `codexbar-cli usage -p codex --json` (Antigravity는 IDE 실행 중일 때만 계측 가능). 대량 호출 전 참고용. `totalTokens`에는 캐시 입력이 포함되고 캐시분은 할인되므로 **캐시 사용량을 보고하는 CLI 영수증에서만** 다음 기준으로 비교한다:
 
 ```
 비교 기준 = (inputTokens - cachedInputTokens) + outputTokens
 ```
 
 `reasoningOutputTokens`는 `outputTokens`의 내역이므로 따로 더하지 않는다.
+API provider는 캐시 입력을 보고하지 않는다(raw에는 `cachedInputTokens`가 없고 portable에는
+`null`). 이 공식을 API에 그대로 옮기면 캐시 입력을 이중차감할 수 있다.

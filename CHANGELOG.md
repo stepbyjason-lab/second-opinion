@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.9.9 — 2026-08-16
+
+- Receipts now place requested and executed evidence side by side without changing raw
+  schema v1 or portable schema v2: `modelReported`, `effortRequested`, normalized and raw
+  stop signals, `promptSource`, measured `promptBytes`, and matching attempt counts. Raw
+  CLI rows add measured, credential-redacted `argv` and `executable`; API rows retain
+  truthful `null` process fields and portable rows retain no locators.
+- Repaired mixed Gemini `parts` extraction and restored empty `parts` to same-provider
+  transient retry. Real subprocess timeout 124 and stable receipt-config guards remove
+  two silent-success paths. HTTP 404/410 and payload-shape failures now preserve vendor
+  versus dispatcher responsibility instead of blaming the caller or retrying unchanged
+  payloads.
+- HTTP generation may return attributed model output with `usage: null`, recorded as
+  `not-reported`; subscription paths still require usage when it is their attribution
+  evidence. The subscription failure label is now `attribution-unavailable`.
+- Added `provider-probe.mjs`, a one-shot, no-cache/no-substitution diagnostic that sends
+  one minimal request per configured provider through `--request-json` and prints status,
+  duration, and failure class. Removed the unused `<PROVIDER>_MODEL` sample/documentation;
+  request JSON remains the model source. No release or deployment was performed.
+
 ## 0.9.8 — 2026-08-15
 
 - Corrected the unified `--request-json/--response-json` generation scope: one request
@@ -24,7 +44,7 @@
   CLI `vendor` from API `provider`, preserve `lensId`, and mark nonexistent HTTP process
   fields as `null`. Sink resolution is env > `~/.second-opinion/config.json` > none;
   missing or malformed config remains fail-open. UTF-8 BOM on provider env files is
-  stripped before the existing parser runs.
+  handled by the existing line `trim()`; the redundant explicit BOM replacement was removed.
 
 ## 0.9.7 — 2026-08-12
 

@@ -13,6 +13,7 @@ import {
   MAX_BRIEF_BYTES,
   MAX_VENDOR_USAGE_BYTES,
   generationPathConfigError,
+  resolveReceiptSinks,
   writeApiDispatchReceipts,
 } from "./dispatch.mjs";
 
@@ -123,7 +124,7 @@ function parseEnvText(text) {
 export function loadProviderEnvironment(envFile, inherited = process.env) {
   let fromFile = {};
   if (envFile) {
-    try { fromFile = parseEnvText(readFileSync(resolve(envFile), "utf8").replace(/^\uFEFF/, "")); }
+    try { fromFile = parseEnvText(readFileSync(resolve(envFile), "utf8")); }
     catch (error) {
       throw new GenerationDispatchError(`unable to read provider env file (${error.code ?? "read_failed"})`, {
         code: "env_file_error", failureClass: "bad-invocation", failureActor: "caller",
@@ -225,6 +226,24 @@ function classifyHttpFailure(response, now) {
       remedy: "The provider returned a transient server error; retry the same provider after backoff.",
     });
   }
+  if (status === 404 || status === 410) {
+    return new GenerationDispatchError(`HTTP ${status}`, {
+      statusCode: status,
+      code: "model_unavailable",
+      failureClass: "model-unavailable",
+      failureActor: "vendor",
+      remedy: "The requested provider model is unavailable or retired; verify that exact model with the provider before retrying.",
+    });
+  }
+  if (status === 400 || status === 422) {
+    return new GenerationDispatchError(`HTTP ${status}`, {
+      statusCode: status,
+      code: "payload_incompatible",
+      failureClass: "payload-incompatible",
+      failureActor: "dispatcher",
+      remedy: "The provider rejected this adapter payload shape; update the provider adapter before retrying the unchanged request.",
+    });
+  }
   return new GenerationDispatchError(`HTTP ${status}`, {
     statusCode: status,
     code: "http_error",
@@ -234,9 +253,9 @@ function classifyHttpFailure(response, now) {
   });
 }
 
-function timeoutSignal(milliseconds) {
+function timeoutSignal(milliseconds, deps = {}) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Math.max(1, milliseconds));
+  const timer = (deps.setTimeout ?? setTimeout)(() => controller.abort(), Math.max(1, milliseconds));
   timer.unref?.();
   return { signal: controller.signal, clear: () => clearTimeout(timer) };
 }
@@ -261,7 +280,7 @@ async function readStreamChunk(reader, request, deps) {
     return await Promise.race([
       reader.read(),
       new Promise((_, reject) => {
-        timer = setTimeout(
+        timer = (deps.setTimeout ?? setTimeout)(
           () => reject(new GenerationDispatchError("stream read timed out", {
             retryable: true,
             code: "read_timeout",
@@ -292,6 +311,7 @@ async function consumeSse(response, parseEvent, onChunk, request, deps) {
   let acceptedBytes = 0;
   let sawTextString = false;
   let failed = true;
+  const providerStopSignals = { finish_reason: null, finishReason: null, incomplete_details: null };
   try {
     for (;;) {
       // Re-arm on every chunk. A single flat timer either kills legitimate long
@@ -355,13 +375,35 @@ async function consumeSse(response, parseEvent, onChunk, request, deps) {
         finishReason = event.finishReason ?? finishReason;
         model = event.model ?? model;
         usage = event.usage ?? usage;
+        if (event.providerStopSignals) {
+          for (const key of Object.keys(providerStopSignals)) {
+            if (event.providerStopSignals[key] !== null && event.providerStopSignals[key] !== undefined) {
+              providerStopSignals[key] = event.providerStopSignals[key];
+            }
+          }
+        }
         done ||= event.done === true;
       }
     }
     if (!sawTextString) throw invalidResponseFailure("stream response text is missing or is not a string");
     if (!text.trim()) throw emptyResponseFailure("stream returned no text");
     failed = false;
-    return { text, finishReason, model, usage, truncatedSuspected: !done && !finishReason };
+    const rawStopReason = providerStopSignals.finish_reason
+      ?? providerStopSignals.finishReason
+      ?? providerStopSignals.incomplete_details?.reason
+      ?? finishReason;
+    const normalizedStopReason = typeof rawStopReason === "string" ? rawStopReason.toLowerCase() : null;
+    return {
+      text,
+      finishReason,
+      model,
+      usage,
+      truncatedSuspected: providerStopSignals.incomplete_details !== null
+        || normalizedStopReason === "length"
+        || normalizedStopReason === "max_tokens"
+        || (!done && !finishReason),
+      providerStopSignals,
+    };
   } finally {
     if (failed) {
       try { await reader.cancel(); } catch { /* the bounded stream failure remains primary */ }
@@ -440,7 +482,7 @@ async function openAiAdapter(config, request, deps) {
       remedy: "Increase timeout_seconds or split the request into smaller work.",
     });
   }
-  const timer = timeoutSignal(Math.min(CONNECT_TIMEOUT_MS, remaining));
+  const timer = timeoutSignal(Math.min(CONNECT_TIMEOUT_MS, remaining), deps);
   let response;
   try {
     response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
@@ -469,26 +511,48 @@ async function openAiAdapter(config, request, deps) {
       model: event?.model ?? null,
       usage: normalizeUsage(event?.usage),
       done: Boolean(event?.choices?.[0]?.finish_reason),
+      providerStopSignals: {
+        finish_reason: event?.choices?.[0]?.finish_reason ?? null,
+        finishReason: null,
+        incomplete_details: event?.incomplete_details?.reason == null ? null : { reason: event.incomplete_details.reason },
+      },
     }), deps.onChunk, request, deps);
   }
   const data = await readJsonResponse(response, request, deps);
   const text = data?.choices?.[0]?.message?.content;
   if (typeof text !== "string") throw invalidResponseFailure("response text is missing or is not a string");
   if (!text.trim()) throw emptyResponseFailure("response returned no text");
-  return { text, model: data.model ?? null, usage: normalizeUsage(data.usage), finishReason: data?.choices?.[0]?.finish_reason ?? null, truncatedSuspected: false };
+  const finishReason = data?.choices?.[0]?.finish_reason ?? null;
+  return {
+    text,
+    model: data.model ?? null,
+    usage: normalizeUsage(data.usage),
+    finishReason,
+    truncatedSuspected: finishReason === "length" || data?.incomplete_details?.reason != null,
+    providerStopSignals: {
+      finish_reason: finishReason,
+      finishReason: null,
+      incomplete_details: data?.incomplete_details?.reason == null ? null : { reason: data.incomplete_details.reason },
+    },
+  };
 }
 
 function geminiEvent(event) {
   const candidate = event?.candidates?.[0];
   const parts = candidate?.content?.parts;
   return {
-    text: Array.isArray(parts) && parts.length > 0 && parts.every((part) => typeof part?.text === "string")
-      ? parts.map((part) => part.text).join("")
+    text: Array.isArray(parts)
+      ? parts.map((part) => typeof part?.text === "string" ? part.text : "").join("")
       : undefined,
     finishReason: candidate?.finishReason ? String(candidate.finishReason).toLowerCase() : null,
     model: event?.modelVersion ?? null,
     usage: normalizeUsage(event?.usageMetadata),
     done: Boolean(candidate?.finishReason),
+    providerStopSignals: {
+      finish_reason: null,
+      finishReason: candidate?.finishReason ?? null,
+      incomplete_details: null,
+    },
   };
 }
 
@@ -508,7 +572,7 @@ async function geminiAdapter(config, request, deps) {
       remedy: "Increase timeout_seconds or split the request into smaller work.",
     });
   }
-  const timer = timeoutSignal(Math.min(CONNECT_TIMEOUT_MS, remaining));
+  const timer = timeoutSignal(Math.min(CONNECT_TIMEOUT_MS, remaining), deps);
   let response;
   try {
     response = await fetchImpl(`${config.baseUrl}/models/${encodeURIComponent(config.model)}:${method}`, {
@@ -535,7 +599,14 @@ async function geminiAdapter(config, request, deps) {
   const event = geminiEvent(data);
   if (typeof event.text !== "string") throw invalidResponseFailure("response text is missing or is not a string");
   if (!event.text.trim()) throw emptyResponseFailure("response returned no text");
-  return { text: event.text, model: event.model, usage: event.usage, finishReason: event.finishReason, truncatedSuspected: false };
+  return {
+    text: event.text,
+    model: event.model,
+    usage: event.usage,
+    finishReason: event.finishReason,
+    truncatedSuspected: event.finishReason === "max_tokens" || event.finishReason === "length",
+    providerStopSignals: event.providerStopSignals,
+  };
 }
 
 function validateRequest(raw) {
@@ -567,6 +638,9 @@ function validateRequest(raw) {
     maxCompletionTokens: boundedInteger(raw.max_completion_tokens, DEFAULT_MAX_COMPLETION_TOKENS, 1, 1_000_000, "max_completion_tokens"),
     maxRetries: boundedInteger(raw.max_retries, DEFAULT_MAX_RETRIES, 0, MAX_RETRIES, "max_retries"),
     lensId,
+    promptSource: raw.prompt_source == null ? null : requiredString(raw.prompt_source, "prompt_source"),
+    promptBytes: Buffer.byteLength(`${raw.system == null ? "" : String(raw.system)}${requiredString(raw.user, "user")}`, "utf8"),
+    planWarningRequested: Object.hasOwn(raw, "timeout_seconds") || Object.hasOwn(raw, "max_retries"),
   };
 }
 
@@ -627,7 +701,7 @@ function warningForPlan(request) {
   let backoff = 0;
   for (let retry = 1; retry <= request.maxRetries; retry += 1) backoff += backoffMilliseconds(retry);
   const maximumPlanMs = ((request.maxRetries + 1) * (CONNECT_TIMEOUT_MS + READ_TIMEOUT_MS)) + backoff;
-  return maximumPlanMs > request.timeoutSeconds * 1000
+  return request.planWarningRequested && maximumPlanMs > request.timeoutSeconds * 1000
     ? `dispatch generation warning: retry plan worst-case ${Math.ceil(maximumPlanMs / 1000)}s exceeds timeout_seconds=${request.timeoutSeconds}s; the absolute deadline will stop later retries\n`
     : null;
 }
@@ -732,10 +806,10 @@ export async function dispatchGeneration(rawRequest, deps = {}) {
         });
       }
       const usage = normalizeUsage(result.usage);
-      if (!usage || ![usage.prompt_tokens, usage.completion_tokens, usage.total_tokens].every((value) => Number.isFinite(value) && value >= 0)) {
+      if (config.kind === "subscription" && (!usage || ![usage.prompt_tokens, usage.completion_tokens, usage.total_tokens].every((value) => Number.isFinite(value) && value >= 0))) {
         throw new GenerationDispatchError("normalized usage is unavailable", {
-          code: "usage_unavailable", failureClass: "usage-unavailable", failureActor: "vendor",
-          remedy: "Use a provider response that reports complete token usage; success is unavailable without it.",
+          code: "attribution_unavailable", failureClass: "attribution-unavailable", failureActor: "vendor",
+          remedy: "Use a subscription execution that reports enough model evidence to attribute the response.",
         });
       }
       const reportedModel = typeof result.model === "string" && result.model.trim() ? result.model.trim() : null;
@@ -756,13 +830,25 @@ export async function dispatchGeneration(rawRequest, deps = {}) {
         requested_provider: request.provider,
         requested_model: request.model,
         finish_reason: result.finishReason ?? null,
+        finishReason: result.providerStopSignals?.finishReason ?? null,
+        incomplete_details: result.providerStopSignals?.incomplete_details ?? null,
         truncated_suspected: result.truncatedSuspected === true,
         usage,
         attempts: attempt,
       };
       Object.defineProperty(response, "receiptMeta", {
         enumerable: false,
-        value: { attemptLog, successfulAttempt: attempt, lensId: request.lensId, maxCompletionTokens: request.maxCompletionTokens },
+        value: {
+          attemptLog,
+          successfulAttempt: attempt,
+          lensId: request.lensId,
+          maxCompletionTokens: request.maxCompletionTokens,
+          modelReported: reportedModel ? "observed" : "none",
+          truncatedSuspected: result.truncatedSuspected === true,
+          providerStopSignals: result.providerStopSignals ?? { finish_reason: null, finishReason: null, incomplete_details: null },
+          promptSource: request.promptSource,
+          promptBytes: request.promptBytes,
+        },
       });
       return response;
     } catch (caught) {
@@ -827,6 +913,7 @@ export function createSubscriptionAdapter(runSubscription) {
         dryRun: false,
       }, {
         env: { ...(deps.env ?? process.env) },
+        receiptSinks: deps.receiptSinks,
         internalReceiptPath: receipt,
         stdout: { write: () => true },
         stderr: deps.stderr,
@@ -856,12 +943,19 @@ export function createSubscriptionAdapter(runSubscription) {
       const usage = standardUsageFromRawReceipt(row);
       if (!usage) {
         throw new GenerationDispatchError(`${config.provider} usage was not available from its dispatch receipt`, {
-          code: "usage_unavailable", failureClass: "usage-unavailable", failureActor: "vendor",
-          remedy: "Use a provider execution that reports complete token usage; success is unavailable without it.",
+          code: "attribution_unavailable", failureClass: "attribution-unavailable", failureActor: "vendor",
+          remedy: "Use a subscription execution that reports enough model evidence to attribute the response.",
         });
       }
       for (const chunk of pendingChunks) deps.onChunk?.(chunk);
-      return { text, model: null, usage, finishReason: "stop", truncatedSuspected: false };
+      return {
+        text,
+        model: null,
+        usage,
+        finishReason: "stop",
+        truncatedSuspected: false,
+        providerStopSignals: { finish_reason: null, finishReason: null, incomplete_details: null },
+      };
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -893,7 +987,8 @@ export async function executeGenerationCli(argv, deps = {}) {
   const requestPath = resolve(argv[1]);
   const responsePath = resolve(argv[3]);
   const env = deps.env ?? process.env;
-  const preliminaryPathError = generationPathConfigError({ requestPath, responsePath }, env);
+  const receiptSinks = deps.receiptSinks ?? resolveReceiptSinks(env, deps.receiptConfigPath);
+  const preliminaryPathError = generationPathConfigError({ requestPath, responsePath }, env, receiptSinks);
   if (preliminaryPathError) {
     return validationFailure(preliminaryPathError);
   }
@@ -906,13 +1001,14 @@ export async function executeGenerationCli(argv, deps = {}) {
     requestPath,
     responsePath,
     envFile: request?.env_file ? resolve(String(request.env_file)) : undefined,
-  }, env);
+  }, env, receiptSinks);
   if (pathError) {
     return validationFailure(pathError);
   }
   try {
     const result = await dispatchGeneration(request, {
       ...deps,
+      receiptSinks,
       subscriptionAdapter: deps.subscriptionAdapter
         ?? (typeof deps.runSubscription === "function" ? createSubscriptionAdapter(deps.runSubscription) : undefined),
       onChunk: request.stream === true ? (chunk) => (deps.stdout ?? process.stdout).write(`${JSON.stringify({ type: "chunk", text: chunk })}\n`) : undefined,
@@ -929,13 +1025,18 @@ export async function executeGenerationCli(argv, deps = {}) {
         maxCompletionTokens: result.receiptMeta?.maxCompletionTokens ?? request.max_completion_tokens ?? DEFAULT_MAX_COMPLETION_TOKENS,
         responsePath,
         usage: result.usage,
-      }, 0, startedAt, env);
+        modelReported: result.receiptMeta?.modelReported ?? result.model_reported,
+        truncatedSuspected: result.receiptMeta?.truncatedSuspected ?? result.truncated_suspected,
+        providerStopSignals: result.receiptMeta?.providerStopSignals,
+        promptSource: result.receiptMeta?.promptSource ?? request.prompt_source ?? null,
+        promptBytes: result.receiptMeta?.promptBytes ?? null,
+      }, 0, startedAt, loadProviderEnvironment(request?.env_file ? String(request.env_file) : null, env), receiptSinks);
     }
     return 0;
   } catch (error) {
-    let secrets = [];
+    let secrets = [], loaded = env;
     try {
-      const loaded = loadProviderEnvironment(request?.env_file ? String(request.env_file) : null, env);
+      loaded = loadProviderEnvironment(request?.env_file ? String(request.env_file) : null, env);
       secrets = Object.values(HTTP_PROVIDERS).map((definition) => String(loaded[definition.key] ?? "").trim()).filter(Boolean);
     } catch { /* primary error remains authoritative */ }
     const payload = {
@@ -946,6 +1047,7 @@ export async function executeGenerationCli(argv, deps = {}) {
       remedy: error?.remedy ?? "Inspect process stderr; no diagnosis was inferred.",
       stderr: (error?.failureClass ?? "unclassified") === "unclassified" ? "process-stderr" : null,
       attempts: Math.max(1, Number(error?.attempts) || 1),
+      statusCode: Number.isInteger(error?.statusCode) ? error.statusCode : null,
     };
     try { writeResponseAtomically(responsePath, `${JSON.stringify(payload)}\n`); } catch { /* primary error wins */ }
     stderr.write(`dispatch generation failed: ${payload.error}: ${payload.message} class=${payload.failureClass} actor=${payload.failureActor} remedy=${payload.remedy}\n`);
@@ -964,7 +1066,14 @@ export async function executeGenerationCli(argv, deps = {}) {
         failureClass: payload.failureClass,
         failureActor: payload.failureActor,
         remedy: payload.remedy,
-      }, exit, startedAt, env);
+        modelReported: "none",
+        truncatedSuspected: null,
+        providerStopSignals: { finish_reason: null, finishReason: null, incomplete_details: null },
+        promptSource: request?.prompt_source ?? null,
+        promptBytes: request && typeof request.user === "string"
+          ? Buffer.byteLength(`${request.system == null ? "" : String(request.system)}${request.user}`, "utf8")
+          : null,
+      }, exit, startedAt, loaded, receiptSinks);
     }
     return exit;
   }
