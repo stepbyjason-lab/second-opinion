@@ -5,6 +5,7 @@ import {
   existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import test from "node:test";
@@ -54,7 +55,6 @@ function request(overrides = {}) {
     user: "Return the fixture word.",
     max_completion_tokens: 73,
     max_retries: 0,
-    timeout_seconds: 120,
     ...overrides,
   };
 }
@@ -154,7 +154,7 @@ test("C-1: only the requested provider is touched, endpoint egress is pinned, an
   assert.equal(mismatch.attempts, 1);
 });
 
-test("H-5 C-1/C-4 observes separate connect/read deadlines and Gemini redirect refusal at runtime", async () => {
+test("R033-H12 T-1/T-3 attributes silence, optional caller deadlines, legacy absorption, and explicit connection errors", async () => {
   const delays = [];
   const immediateTimer = (callback, milliseconds) => {
     delays.push(milliseconds);
@@ -168,22 +168,80 @@ test("H-5 C-1/C-4 observes separate connect/read deadlines and Gemini redirect r
       reject(error);
     }, { once: true });
   });
-  const connectError = await rejected(() => dispatchGeneration(request({ timeout_seconds: 3600 }), {
-    env: environment(), fetch: abortingFetch, setTimeout: immediateTimer,
+  const silenceError = await rejected(() => dispatchGeneration(request(), {
+    env: environment(), now: () => 0, fetch: abortingFetch, setTimeout: immediateTimer,
   }));
-  assert.equal(connectError.code, "connect_timeout");
-  assert.equal(delays[0], 30_000);
+  assert.equal(silenceError.code, "connect_timeout");
+  assert.equal(silenceError.failureClass, "no-output-timeout");
+  assert.equal(silenceError.failureActor, "vendor");
+  assert.equal(delays[0], 600_000);
 
-  const stalledResponse = {
-    ok: true,
-    body: { getReader: () => ({ read: async () => await new Promise(() => {}), cancel: async () => {} }) },
-  };
-  const readError = await rejected(() => dispatchGeneration(request({ timeout_seconds: 3600 }), {
-    env: environment(), fetch: async () => stalledResponse, setTimeout: immediateTimer,
+  delays.length = 0;
+  const legacyMaximum = await rejected(() => dispatchGeneration(request({
+    connect_timeout_seconds: 2, read_timeout_seconds: 5,
+  }), { env: environment(), now: () => 0, fetch: abortingFetch, setTimeout: immediateTimer }));
+  assert.equal(legacyMaximum.failureActor, "vendor");
+  assert.equal(delays[0], 5_000);
+
+  delays.length = 0;
+  const namedOverride = await rejected(() => dispatchGeneration(request({
+    silence_timeout_seconds: 7, connect_timeout_seconds: 2, read_timeout_seconds: 5,
+  }), { env: environment(), now: () => 0, fetch: abortingFetch, setTimeout: immediateTimer }));
+  assert.equal(namedOverride.failureActor, "vendor");
+  assert.equal(delays[0], 7_000);
+
+  delays.length = 0;
+  const callerDeadline = await rejected(() => dispatchGeneration(request({
+    timeout_seconds: 3, silence_timeout_seconds: 10,
+  }), { env: environment(), now: () => 0, fetch: abortingFetch, setTimeout: immediateTimer }));
+  assert.equal(callerDeadline.code, "timeout");
+  assert.equal(callerDeadline.failureActor, "caller");
+  assert.equal(delays[0], 3_000);
+
+  for (let repeat = 0; repeat < 12; repeat += 1) {
+    let tick = 0;
+    const tied = await rejected(() => dispatchGeneration(request({ timeout_seconds: 600 }), {
+      env: environment(), now: () => tick++, fetch: abortingFetch, setTimeout: immediateTimer,
+    }));
+    assert.equal(tied.failureActor, "vendor");
+  }
+
+  for (let repeat = 0; repeat < 3; repeat += 1) {
+    const productionTie = await rejected(() => dispatchGeneration(request({
+      timeout_seconds: 1,
+      silence_timeout_seconds: 1,
+    }), {
+      env: environment(),
+      fetch: async (_url, init) => await new Promise((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => {
+          setTimeout(() => {
+            const error = new Error("aborted after the tied deadline");
+            error.name = "AbortError";
+            reject(error);
+          }, 10);
+        }, { once: true });
+      }),
+    }));
+    assert.equal(productionTie.failureActor, "vendor");
+  }
+
+  for (const field of ["timeout_seconds", "silence_timeout_seconds", "connect_timeout_seconds", "read_timeout_seconds"]) {
+    const error = await rejected(() => dispatchGeneration(request({ [field]: 3601 }), { env: environment() }));
+    assert.equal(error.code, "invalid_request");
+  }
+
+  const server = createServer();
+  await new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  const port = server.address().port;
+  await new Promise((resolveClose) => server.close(resolveClose));
+  const connectionStarted = Date.now();
+  const connectionError = await rejected(() => dispatchGeneration(request(), {
+    env: environment(),
+    fetch: async () => await fetch(`http://127.0.0.1:${port}`),
   }));
-  assert.equal(readError.code, "read_timeout");
-  assert.equal(delays.includes(120_000), true);
-  assert.notEqual(30_000, 120_000);
+  assert.equal(connectionError.code, "network_error");
+  assert.equal(connectionError.failureClass, "vendor-error");
+  assert.ok(Date.now() - connectionStarted < 3_000, "explicit connection rejection must not wait for the 600s silence threshold");
 
   let geminiInit;
   const gemini = await dispatchGeneration(request({ provider: "gemini" }), {
@@ -201,11 +259,240 @@ test("H-5 C-1/C-4 observes separate connect/read deadlines and Gemini redirect r
   assert.equal(geminiInit.redirect, "error");
 });
 
+test("R033-H12 T-3 resets silence only for meaningful SSE payload and keeps live output until the cost cap", async () => {
+  const encoder = new TextEncoder();
+  const noOpTimer = () => ({ unref() {} });
+  const streamFetch = (frames, clock) => async () => ({
+    ok: true,
+    body: {
+      getReader: () => ({
+        read: async () => {
+          if (frames.length === 0) return { done: true };
+          const frame = frames.shift();
+          clock.value += frame.advanceMs;
+          return { done: false, value: encoder.encode(frame.text) };
+        },
+        cancel: async () => {},
+      }),
+    },
+  });
+
+  const silentClock = { value: 0 };
+  const silentFrames = [
+    { advanceMs: 3_000, text: ": heartbeat\n\n" },
+    { advanceMs: 3_000, text: 'data: {"type":"heartbeat"}\n\n' },
+    { advanceMs: 3_000, text: "data:    \n\n" },
+    { advanceMs: 3_000, text: "   \n\n" },
+  ];
+  const silent = await rejected(() => dispatchGeneration(request({ stream: true, silence_timeout_seconds: 10 }), {
+    env: environment(), now: () => silentClock.value, setTimeout: noOpTimer, clearTimeout: () => {},
+    fetch: streamFetch(silentFrames, silentClock),
+  }));
+  assert.equal(silent.failureClass, "no-output-timeout");
+  assert.equal(silent.failureActor, "vendor");
+
+  const payloadFrame = { advanceMs: 599_000, text: 'data: {"model":"fixture/model","choices":[{"delta":{"content":"x"}}]}\n\n' };
+  const liveClock = { value: 0 };
+  const liveFrames = Array.from({ length: 6 }, () => ({ ...payloadFrame }));
+  const live = await dispatchGeneration(request({ stream: true }), {
+    env: environment(), now: () => liveClock.value, setTimeout: noOpTimer, clearTimeout: () => {},
+    fetch: streamFetch(liveFrames, liveClock),
+  });
+  assert.equal(live.text.length, 6);
+  assert.equal(liveClock.value, 3_594_000);
+
+  const cappedClock = { value: 0 };
+  const cappedFrames = Array.from({ length: 7 }, () => ({ ...payloadFrame }));
+  const capped = await rejected(() => dispatchGeneration(request({ stream: true }), {
+    env: environment(), now: () => cappedClock.value, setTimeout: noOpTimer, clearTimeout: () => {},
+    fetch: streamFetch(cappedFrames, cappedClock),
+  }));
+  assert.equal(capped.failureClass, "no-output-timeout");
+  assert.equal(capped.failureActor, "dispatcher");
+  assert.match(capped.remedy, /Split the work/);
+});
+
+test("R033-H12 T-3 rearms silence for meaningful non-streaming body chunks", async () => {
+  const encoder = new TextEncoder();
+  const clock = { value: 0 };
+  const timers = [];
+  const chunks = [
+    { advanceMs: 100_000, text: "{" },
+    { advanceMs: 400_000, text: "   \n" },
+    { advanceMs: 50_000, text: '\"model\":\"fixture/model\",' },
+    { advanceMs: 50_000, text: '\"choices\":[' },
+    { advanceMs: 50_000, text: '{\"message\":' },
+    { advanceMs: 50_000, text: '{\"content\":\"fixture\"}' },
+    { advanceMs: 50_000, text: ',\"finish_reason\":\"stop\"}],' },
+    { advanceMs: 50_000, text: '\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"total_tokens\":4}}' },
+  ];
+  const result = await dispatchGeneration(request(), {
+    env: environment(),
+    now: () => clock.value,
+    setTimeout: (_callback, milliseconds) => { timers.push(milliseconds); return { unref() {} }; },
+    clearTimeout: () => {},
+    fetch: async () => ({
+      ok: true,
+      body: {
+        getReader: () => ({
+            read: async () => {
+              if (chunks.length === 0) return { done: true };
+              const chunk = chunks.shift();
+              clock.value += chunk.advanceMs;
+              return { done: false, value: encoder.encode(chunk.text) };
+          },
+          cancel: async () => {},
+        }),
+      },
+    }),
+  });
+  assert.equal(result.text, "fixture");
+  assert.equal(clock.value, 800_000, "body progress beyond 600 seconds must remain live");
+  assert.ok(timers.includes(200_000), "whitespace must not move the last meaningful-payload deadline");
+});
+
+test("R033-H12 T-3 applies the same meaningful-output silence clock to subscription generation", async () => {
+  const root = temporaryRoot("second-opinion-h12-subscription-silence");
+  const brief = join(root, "brief.md");
+  writeFileSync(brief, "fixture", "utf8");
+  const baseOptions = {
+    vendor: "codex", operation: "text", mode: "default", brief, cwd: root,
+    model: "fixture", effort: "high", inputs: [], timeout: 2, silenceTimeout: 0.08,
+    killGraceMs: 0, reapMs: 0, dryRun: false,
+  };
+
+  let heartbeatKind = null;
+  const heartbeatOut = join(root, "heartbeat.out");
+  const heartbeatCode = await run({ ...baseOptions, out: heartbeatOut }, {
+    stderr: memoryWriter().stream,
+    onTimeout: (kind) => { heartbeatKind = kind; },
+    spawn: () => fakeChild((child) => {
+      const interval = setInterval(() => child.stdout.write('{"type":"heartbeat"}\n'), 20);
+      child.kill = () => {
+        clearInterval(interval);
+        queueMicrotask(() => child.emit("close", null, "SIGTERM"));
+        return true;
+      };
+    }),
+  });
+  assert.equal(heartbeatCode, 124);
+  assert.equal(heartbeatKind, "silence");
+
+  const payloadOut = join(root, "payload.out");
+  let payloadKind = null;
+  const payloadCode = await run({ ...baseOptions, out: payloadOut }, {
+    stderr: memoryWriter().stream,
+    onTimeout: (kind) => { payloadKind = kind; },
+    spawn: () => fakeChild((child) => {
+      const payloadTimer = setTimeout(() => child.stdout.write("meaningful payload"), 50);
+      const closeTimer = setTimeout(() => child.emit("close", 0, null), 100);
+      child.kill = () => {
+        clearTimeout(payloadTimer);
+        clearTimeout(closeTimer);
+        queueMicrotask(() => child.emit("close", null, "SIGTERM"));
+        return true;
+      };
+    }),
+  });
+  assert.equal(payloadCode, 0);
+  assert.equal(payloadKind, null);
+
+  const adapter = createSubscriptionAdapter(async (options, deps) => {
+    assert.equal(options.silenceTimeout, 600);
+    assert.equal(options.timeout, 3600);
+    deps.onTimeout("silence");
+    return 124;
+  });
+  const silence = await rejected(() => dispatchGeneration(request({
+    provider: "codex", model: "fixture/model",
+  }), { subscriptionAdapter: adapter }));
+  assert.equal(silence.failureClass, "no-output-timeout");
+  assert.equal(silence.failureActor, "vendor");
+  assert.match(silence.remedy, /silence_timeout_seconds/);
+});
+
+test("R033-H12 subscription uses stderr progress and resolves equal deadlines as silence", async () => {
+  const root = temporaryRoot("second-opinion-h12-subscription-repair");
+  const brief = join(root, "brief.md");
+  writeFileSync(brief, "fixture", "utf8");
+  const baseOptions = {
+    vendor: "codex", operation: "text", mode: "default", brief, cwd: root,
+    model: "fixture", effort: "high", inputs: [], killGraceMs: 0, reapMs: 0, dryRun: false,
+  };
+
+  let stderrTimeoutKind = null;
+  const stderrCode = await run({
+    ...baseOptions, out: join(root, "stderr.out"), err: join(root, "stderr.err"),
+    timeout: 0.2, silenceTimeout: 0.04,
+  }, {
+    stderr: memoryWriter().stream,
+    onTimeout: (kind) => { stderrTimeoutKind = kind; },
+    spawn: () => fakeChild((child) => {
+      const progress = setInterval(() => child.stderr.write("reasoning progress\n"), 20);
+      const close = setTimeout(() => {
+        clearInterval(progress);
+        child.emit("close", 0, null);
+      }, 100);
+      child.kill = () => {
+        clearInterval(progress);
+        clearTimeout(close);
+        queueMicrotask(() => child.emit("close", null, "SIGTERM"));
+        return true;
+      };
+    }),
+  });
+  assert.equal(stderrCode, 0);
+  assert.equal(stderrTimeoutKind, null);
+
+  let tiedTimeoutKind = null;
+  const tiedCode = await run({
+    ...baseOptions, out: join(root, "tie.out"), err: join(root, "tie.err"),
+    timeout: 0.04, silenceTimeout: 0.04,
+  }, {
+    stderr: memoryWriter().stream,
+    onTimeout: (kind) => { tiedTimeoutKind = kind; },
+    spawn: () => fakeChild((child) => {
+      child.kill = () => {
+        queueMicrotask(() => child.emit("close", null, "SIGTERM"));
+        return true;
+      };
+    }),
+  });
+  assert.equal(tiedCode, 124);
+  assert.equal(tiedTimeoutKind, "silence");
+});
+
+test("R033-H12 subscription does not arm a silence timer after settlement", async () => {
+  const root = temporaryRoot("second-opinion-h12-settled-silence");
+  const brief = join(root, "brief.md");
+  writeFileSync(brief, "fixture", "utf8");
+  let childRef;
+  const code = await run({
+    vendor: "codex", operation: "text", mode: "default", brief, cwd: root,
+    model: "fixture", effort: "high", inputs: [], timeout: 2, silenceTimeout: 1,
+    killGraceMs: 0, reapMs: 0, out: join(root, "out.txt"), dryRun: false,
+  }, {
+    stderr: memoryWriter().stream,
+    spawn: () => fakeChild((child) => {
+      childRef = child;
+      child.kill = () => true;
+      child.stdin.emit("error", Object.assign(new Error("fixture stdio failure"), { code: "EIO" }));
+    }),
+  });
+  assert.equal(code, 3);
+  const activeTimeoutsBefore = process.getActiveResourcesInfo().filter((name) => name === "Timeout").length;
+  childRef.stdout.write("late meaningful payload");
+  const activeTimeoutsAfter = process.getActiveResourcesInfo().filter((name) => name === "Timeout").length;
+  assert.equal(activeTimeoutsAfter, activeTimeoutsBefore);
+  childRef.stdout.destroy();
+  childRef.stderr.destroy();
+});
+
 test("C-2: retry count, permanent classification, exponential waits, and Retry-After are enforced", async () => {
   let clock = 0;
   let calls = 0;
   const result = await dispatchGeneration(request({ max_retries: 5 }), {
-    env: environment(), now: () => clock, sleep: async (milliseconds) => { clock += milliseconds + 7; },
+    env: environment(), now: () => clock, random: () => 1, sleep: async (milliseconds) => { clock += milliseconds + 7; },
     openAiAdapter: async () => {
       calls += 1;
       if (calls === 1) throw new GenerationDispatchError("rate", { statusCode: 429, retryable: true, retryAfterMs: 3_000, failureClass: "rate-limited", failureActor: "vendor", remedy: "wait" });
@@ -243,7 +530,7 @@ test("C-2: retry count, permanent classification, exponential waits, and Retry-A
   let capClock = 0;
   let capCalls = 0;
   const cappedBackoff = await dispatchGeneration(request({ max_retries: 6, timeout_seconds: 3600 }), {
-    env: environment(), now: () => capClock, sleep: async (milliseconds) => { capClock += milliseconds; },
+    env: environment(), now: () => capClock, random: () => 1, sleep: async (milliseconds) => { capClock += milliseconds; },
     openAiAdapter: async () => {
       capCalls += 1;
       if (capCalls <= 6) throw new GenerationDispatchError("server", { statusCode: 500, failureClass: "vendor-error", failureActor: "vendor", remedy: "wait" });
@@ -253,13 +540,238 @@ test("C-2: retry count, permanent classification, exponential waits, and Retry-A
   assert.deepEqual(cappedBackoff.receiptMeta.attemptLog.map((row) => row.waitedMs), [0, 2000, 4000, 8000, 16000, 32000, 60000]);
 });
 
+test("R033-H12 T-2 timeout remedies name controls that change the next runtime limit", async () => {
+  const immediateTimer = (callback, milliseconds) => {
+    queueMicrotask(callback);
+    return { unref() {}, milliseconds };
+  };
+  const abortingFetch = async (_url, init) => await new Promise((_resolve, reject) => {
+    init.signal.addEventListener("abort", () => {
+      const error = new Error("aborted");
+      error.name = "AbortError";
+      reject(error);
+    }, { once: true });
+  });
+  const silenceFailure = async (seconds) => {
+    const delays = [];
+    const overrides = seconds === undefined ? {} : { silence_timeout_seconds: seconds };
+    const error = await rejected(() => dispatchGeneration(request(overrides), {
+      env: environment(),
+      now: () => 0,
+      fetch: abortingFetch,
+      setTimeout: (callback, milliseconds) => {
+        delays.push(milliseconds);
+        return immediateTimer(callback, milliseconds);
+      },
+    }));
+    return { error, delay: delays[0] };
+  };
+
+  const first = await silenceFailure(undefined);
+  const prescribedField = first.error.remedy.match(/Increase (silence_timeout_seconds)/)?.[1];
+  assert.equal(prescribedField, "silence_timeout_seconds");
+  const second = await silenceFailure(700);
+  assert.deepEqual([first.delay, second.delay], [600_000, 700_000]);
+
+  const deadlineError = await rejected(() => dispatchGeneration(request({
+    timeout_seconds: 1,
+    silence_timeout_seconds: 3,
+  }), { env: environment(), now: () => 0, fetch: abortingFetch, setTimeout: immediateTimer }));
+  assert.match(deadlineError.remedy, /Increase timeout_seconds/);
+
+  const subscriptionAdapter = createSubscriptionAdapter(async () => 124);
+  const backstopError = await rejected(() => dispatchGeneration(request({
+    provider: "codex", model: "fixture/model",
+  }), { subscriptionAdapter }));
+  assert.equal(backstopError.failureActor, "dispatcher");
+  assert.match(backstopError.remedy, /Split the work/);
+  assert.doesNotMatch(backstopError.remedy, /Increase timeout/);
+});
+
+test("R033-H12 T-5 full jitter varies across a sample and honors Retry-After intervals", async () => {
+  const sampledWaits = [];
+  for (let sample = 0; sample < 24; sample += 1) {
+    let clock = 0;
+    let calls = 0;
+    await dispatchGeneration(request({ max_retries: 1 }), {
+      env: environment(),
+      now: () => clock,
+      sleep: async (milliseconds) => { sampledWaits.push(milliseconds); clock += milliseconds; },
+      openAiAdapter: async () => {
+        calls += 1;
+        if (calls === 1) throw new GenerationDispatchError("server", {
+          statusCode: 500, retryable: true, failureClass: "vendor-error", failureActor: "vendor", remedy: "wait",
+        });
+        return successfulResult();
+      },
+    });
+    assert.equal(calls, 2);
+  }
+  assert.ok(sampledWaits.every((wait) => wait >= 0 && wait <= 2_000));
+  assert.ok(new Set(sampledWaits).size > 1, `sampled waits must not be the fixed backoff sequence: ${sampledWaits.join(",")}`);
+
+  let clock = 0;
+  const rangedWaits = [];
+  let rangedCalls = 0;
+  await dispatchGeneration(request({ max_retries: 1 }), {
+    env: environment(), now: () => clock, random: () => 0.5,
+    sleep: async (milliseconds) => { rangedWaits.push(milliseconds); clock += milliseconds; },
+    fetch: async () => {
+      rangedCalls += 1;
+      return rangedCalls === 1
+        ? new Response("rate", { status: 429, headers: { "Retry-After": "1" } })
+        : jsonResponse({
+          model: "fixture/model",
+          choices: [{ message: { content: "fixture" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
+        });
+    },
+  });
+  assert.deepEqual(rangedWaits, [1_500]);
+
+  clock = 0;
+  const fixedWaits = [];
+  let fixedCalls = 0;
+  const fixedError = await rejected(() => dispatchGeneration(request({ max_retries: 1 }), {
+    env: environment(), now: () => clock, random: () => 0.25,
+    sleep: async (milliseconds) => { fixedWaits.push(milliseconds); clock += milliseconds; },
+    fetch: async () => {
+      fixedCalls += 1;
+      return new Response("rate", { status: 429, headers: { "Retry-After": "3600" } });
+    },
+  }));
+  assert.deepEqual(fixedWaits, [3_600_000]);
+  assert.equal(fixedCalls, 2);
+  assert.equal(fixedError.attempts, 2);
+
+  let boundedCalls = 0;
+  const bounded = await rejected(() => dispatchGeneration(request({ max_retries: 3 }), {
+    env: environment(), sleep: async () => {}, random: () => 0,
+    openAiAdapter: async () => {
+      boundedCalls += 1;
+      throw new GenerationDispatchError("server", {
+        statusCode: 500, retryable: true, failureClass: "vendor-error", failureActor: "vendor", remedy: "retry",
+      });
+    },
+  }));
+  assert.equal(boundedCalls, 4);
+  assert.equal(bounded.attempts, 4);
+});
+
+test("R033-H12 default repeated silence preserves vendor attribution across all six attempts", async () => {
+  let clock = 0;
+  let calls = 0;
+  const timers = [];
+  const error = await rejected(() => dispatchGeneration(request({ max_retries: 5 }), {
+    env: environment(),
+    now: () => clock,
+    random: () => 0,
+    sleep: async () => {},
+    setTimeout: (callback, milliseconds) => {
+      timers.push(milliseconds);
+      clock += milliseconds + 1;
+      queueMicrotask(callback);
+      return { unref() {} };
+    },
+    clearTimeout: () => {},
+    fetch: async (_url, init) => {
+      calls += 1;
+      return await new Promise((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => {
+          const aborted = new Error("aborted");
+          aborted.name = "AbortError";
+          reject(aborted);
+        }, { once: true });
+      });
+    },
+  }));
+  assert.equal(calls, 6);
+  assert.equal(error.attempts, 6);
+  assert.equal(error.failureClass, "no-output-timeout");
+  assert.equal(error.failureActor, "vendor");
+  assert.match(error.remedy, /silence_timeout_seconds/);
+  assert.deepEqual(timers, Array.from({ length: 6 }, () => 600_000));
+});
+
+test("R033-H12 attempt timing charges payload-then-silence through the adapter-updated deadline", async () => {
+  let httpClock = 0;
+  let httpCalls = 0;
+  const httpError = await rejected(() => dispatchGeneration(request({ max_retries: 5 }), {
+    env: environment(),
+    now: () => httpClock,
+    random: () => 0,
+    sleep: async () => {},
+    openAiAdapter: async (_config, attemptRequest) => {
+      httpCalls += 1;
+      const availableMs = attemptRequest.timing.costDeadlineMs - attemptRequest.timing.paidStartedAtMs;
+      const productiveMs = Math.min(2_000_000, availableMs - attemptRequest.silenceTimeoutMs);
+      httpClock += productiveMs;
+      attemptRequest.timing.lastPayloadAtMs = httpClock;
+      attemptRequest.timing.silenceDeadlineMs = httpClock + attemptRequest.silenceTimeoutMs;
+      httpClock = attemptRequest.timing.silenceDeadlineMs + 1;
+      throw new GenerationDispatchError("silent", {
+        code: "read_timeout", retryable: true, failureClass: "no-output-timeout", failureActor: "vendor", remedy: "retry",
+      });
+    },
+  }));
+  assert.equal(httpCalls, 2);
+  assert.equal(httpClock, 3_600_002);
+  assert.equal(httpError.failureActor, "dispatcher");
+
+  let subscriptionClock = 0;
+  let subscriptionCalls = 0;
+  const subscriptionAdapter = createSubscriptionAdapter(async (options, deps) => {
+    subscriptionCalls += 1;
+    const productiveMs = Math.min(2_000_000, (options.timeout * 1000) - (options.silenceTimeout * 1000));
+    subscriptionClock += productiveMs;
+    deps.onSilenceDeadline(subscriptionClock, subscriptionClock + (options.silenceTimeout * 1000));
+    subscriptionClock += (options.silenceTimeout * 1000) + 1;
+    deps.onTimeout("silence");
+    return 124;
+  });
+  const subscriptionError = await rejected(() => dispatchGeneration(request({
+    provider: "codex", model: "fixture/model", max_retries: 5,
+  }), {
+    now: () => subscriptionClock,
+    random: () => 0,
+    sleep: async () => {},
+    subscriptionAdapter,
+  }));
+  assert.equal(subscriptionCalls, 2);
+  assert.equal(subscriptionClock, 3_600_002);
+  assert.equal(subscriptionError.failureActor, "dispatcher");
+});
+
+test("R033-H12 security clamps remote Retry-After to the accepted 3,600-second range", async () => {
+  let calls = 0;
+  const waits = [];
+  const result = await dispatchGeneration(request({ max_retries: 1 }), {
+    env: environment(),
+    now: () => 0,
+    sleep: async (milliseconds) => { waits.push(milliseconds); },
+    fetch: async () => {
+      calls += 1;
+      return calls === 1
+        ? new Response("rate", { status: 429, headers: { "Retry-After": "604800" } })
+        : jsonResponse({
+          model: "fixture/model",
+          choices: [{ message: { content: "fixture" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
+        });
+    },
+  });
+  assert.deepEqual(waits, [3_600_000]);
+  assert.equal(calls, 2);
+  assert.equal(result.attempts, 2);
+});
+
 test("C-3: preflight warns and the absolute deadline prevents an impossible retry", async () => {
   let clock = 0;
   let calls = 0;
   let slept = 0;
   const stderr = memoryWriter();
   const error = await rejected(() => dispatchGeneration(request({ timeout_seconds: 1, max_retries: 5 }), {
-    env: environment(), stderr: stderr.stream, now: () => clock,
+    env: environment(), stderr: stderr.stream, now: () => clock, random: () => 1,
     sleep: async (milliseconds) => { slept += milliseconds; clock += milliseconds; },
     openAiAdapter: async () => {
       calls += 1;
@@ -341,6 +853,98 @@ test("H-6 distinguishes payload incompatibility and does not blame callers for 4
   const payload = JSON.parse(readFileSync(responsePath, "utf8"));
   assert.equal(payload.statusCode, 410);
   assert.equal(payload.failureClass, "model-unavailable");
+});
+
+test("R033-H12 T-4 preserves Retry-After raw observations in failure responses and raw receipts", async () => {
+  const invoke = async (label, fetch, overrides = {}) => {
+    const root = temporaryRoot(`second-opinion-h12-retry-after-${label}`);
+    const requestPath = join(root, "request.json");
+    const responsePath = join(root, "response.json");
+    const raw = join(root, "raw.jsonl");
+    writeFileSync(requestPath, JSON.stringify(request({ max_retries: 0, ...overrides })), "utf8");
+    const code = await executeGenerationCli(["--request-json", requestPath, "--response-json", responsePath], {
+      env: environment({ SECOND_OPINION_RECEIPT: raw }),
+      stderr: memoryWriter().stream,
+      now: () => 0,
+      fetch,
+      setTimeout: (callback, milliseconds) => {
+        queueMicrotask(callback);
+        return { unref() {}, milliseconds };
+      },
+    });
+    return { code, response: JSON.parse(readFileSync(responsePath, "utf8")), receipt: rows(raw)[0] };
+  };
+
+  const rawHeader = "  7.50  ";
+  const present = await invoke("present", async () => ({
+    ok: false,
+    status: 429,
+    headers: { get: (name) => name.toLowerCase() === "retry-after" ? rawHeader : null },
+  }));
+  assert.equal(present.code, 4);
+  assert.deepEqual(present.response.retryAfter, { observed: true, value: rawHeader });
+  assert.deepEqual(present.receipt.retryAfter, { observed: true, value: rawHeader });
+
+  const absent = await invoke("absent", async () => ({
+    ok: false,
+    status: 429,
+    headers: { get: () => null },
+  }));
+  assert.deepEqual(absent.response.retryAfter, { observed: true, value: null });
+  assert.deepEqual(absent.receipt.retryAfter, { observed: true, value: null });
+
+  const unobserved = await invoke("unobserved", async (_url, init) => await new Promise((_resolve, reject) => {
+    init.signal.addEventListener("abort", () => {
+      const error = new Error("aborted");
+      error.name = "AbortError";
+      reject(error);
+    }, { once: true });
+  }), { connect_timeout_seconds: 1 });
+  assert.deepEqual(unobserved.response.retryAfter, { observed: false, value: null });
+  assert.deepEqual(unobserved.receipt.retryAfter, { observed: false, value: null });
+});
+
+test("R033-H12 T-1 keeps a confirmed success when its env_file disappears afterward", async () => {
+  const root = temporaryRoot("second-opinion-h12-success-env");
+  const envFile = join(root, "provider.env");
+  const requestPath = join(root, "request.json");
+  const responsePath = join(root, "response.json");
+  const raw = join(root, "raw.jsonl");
+  writeFileSync(envFile, "NVIDIA_NIM_API_KEY=fixture-credential\n", "utf8");
+  writeFileSync(requestPath, JSON.stringify(request({ env_file: envFile })), "utf8");
+  const code = await executeGenerationCli(["--request-json", requestPath, "--response-json", responsePath], {
+    env: { SECOND_OPINION_RECEIPT: raw },
+    stderr: memoryWriter().stream,
+    fetch: async () => {
+      rmSync(envFile, { force: true });
+      return jsonResponse({
+        model: "fixture/model",
+        choices: [{ message: { content: "fixture" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
+      });
+    },
+  });
+  assert.equal(code, 0);
+  assert.equal(JSON.parse(readFileSync(responsePath, "utf8")).text, "fixture");
+  assert.equal(rows(raw)[0].exit, 0);
+});
+
+test("R033-H12 T-1 keeps the generation failureClass vocabulary at the 0.9.9 set", () => {
+  const source = readFileSync(fileURLToPath(new URL("./generation-dispatch.mjs", import.meta.url)), "utf8");
+  const vocabulary = [...source.matchAll(/failureClass\s*[:=]\s*["']([^"']+)["']/g)]
+    .map((match) => match[1])
+    .sort()
+    .filter((value, index, all) => index === 0 || value !== all[index - 1]);
+  assert.deepEqual(vocabulary, [
+    "attribution-unavailable", "auth-failed", "bad-invocation", "invalid-response",
+    "model-unavailable", "no-output-timeout", "oversized-response", "payload-incompatible",
+    "rate-limited", "unclassified", "unknown-vendor", "unsupported-capability", "vendor-error",
+  ]);
+  const actors = [...source.matchAll(/failureActor\s*[:=]\s*["']([^"']+)["']/g)]
+    .map((match) => match[1])
+    .sort()
+    .filter((value, index, all) => index === 0 || value !== all[index - 1]);
+  assert.deepEqual(actors, ["caller", "dispatcher", "user", "vendor"]);
 });
 
 test("H-6 contamination map permanently covers six boundaries by three shapes plus two Gemini specials", async (t) => {
@@ -490,6 +1094,7 @@ test("C-6/C-7/C-8: HTTP raw and portable receipts carry attempts, transport iden
     env: environment({ SECOND_OPINION_RECEIPT: raw, SECOND_OPINION_PORTABLE_RECEIPT: portable }),
     stderr: stderr.stream,
     now: () => clock,
+    random: () => 1,
     sleep: async (milliseconds) => { clock += milliseconds; },
     fetch: async () => {
       fetches += 1;
@@ -623,7 +1228,13 @@ test("H-1/H-2 receipts place requested and executed evidence side by side", asyn
   assert.deepEqual(cliRow.argv, JSON.parse(stdout.value()).argv);
   assert.equal(cliRow.promptBytes, 0, "dry-run transmits no prompt bytes");
   const apiRow = rows(apiRaw)[0];
-  assert.deepEqual(Object.keys(cliRow).sort(), Object.keys(apiRow).sort(), "raw cli/api key sets");
+  assert.deepEqual(
+    Object.keys(apiRow).filter((key) => key !== "retryAfter").sort(),
+    Object.keys(cliRow).sort(),
+    "the API-only Retry-After observation must not change CLI receipt schemas",
+  );
+  assert.equal(Object.hasOwn(cliRow, "retryAfter"), false);
+  assert.deepEqual(apiRow.retryAfter, { observed: false, value: null });
   assert.equal(apiRow.executable, null);
   assert.equal(apiRow.argv, null);
   for (const row of [cliRow, apiRow]) assert.equal(row.executable === null, row.transport === "api");
@@ -683,6 +1294,7 @@ test("H-5 C-2 persisted attempt waits are measured rather than copied from the b
     env: environment({ SECOND_OPINION_RECEIPT: raw }),
     stderr: memoryWriter().stream,
     now: () => clock,
+    random: () => 1,
     sleep: async (milliseconds) => { clock += milliseconds + 11; },
     fetch: async () => {
       calls += 1;
@@ -1140,7 +1752,7 @@ test("GLOBAL-2: runtime sentinel is absent from stderr, raw, portable, response,
   assert.equal(await executeGenerationCli(["--request-json", requestPath, "--response-json", responsePath], {
     env: environment({ NVIDIA_NIM_API_KEY: sentinel, SECOND_OPINION_RECEIPT: raw, SECOND_OPINION_PORTABLE_RECEIPT: portable }),
     stderr: stderr.stream,
-    fetch: async () => new Response("provider rejected credential", { status: 401 }),
+    fetch: async () => new Response("provider rejected credential", { status: 401, headers: { "Retry-After": sentinel } }),
   }), 4);
 
   const brief = join(root, "brief.md");

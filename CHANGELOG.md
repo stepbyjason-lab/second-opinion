@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.10 — 2026-08-17
+
+- Generation requests now use payload silence as the liveness signal through
+  `silence_timeout_seconds` (default 600 seconds, range 1–3600). Heartbeats, SSE comments,
+  empty data fields, and whitespace do not reset silence. Legacy
+  `connect_timeout_seconds`/`read_timeout_seconds` fields remain accepted as aliases and
+  use the larger value when both are present. `timeout_seconds` is now an optional caller
+  deadline; omitting it removes the caller total-time cap. Silence is attributed to the
+  vendor, while the 3600-second cost backstop is attributed to the dispatcher and excludes
+  retry sleeps. Work that reaches the cost cap must be split into smaller requests. A
+  confirmed success is no longer replaced by a later `env_file` reread failure.
+- Same-provider retries now use full jitter while preserving `Retry-After` as a lower
+  bound capped at 3600 seconds for scheduling. HTTP failure responses and raw receipts
+  still expose the unchanged raw header observation and
+  distinguish an absent header from unobserved response headers. Consumers that froze
+  the 0.9.8 failure vocabulary as a constant must update their integration; retry waits
+  are intentionally no longer a fixed sequence.
+
 ## 0.9.9 — 2026-08-16
 
 - Receipts now place requested and executed evidence side by side without changing raw

@@ -107,9 +107,13 @@ export function usageText() {
     "",
     "  --brief is a FILE; its contents reach the vendor over stdin.",
     "  --request-json selects one named HTTP/subscription provider with same-provider retry,",
-    "  an absolute deadline, accepted-only streaming, and provider attribution.",
+    "  payload-silence detection, an optional caller deadline, and provider attribution.",
     "  Cross-provider routing and budgets belong to the caller; budget is rejected.",
-    "  Retry defaults: max_retries=5, 2s exponential backoff capped at 60s.",
+    "  Retry defaults: max_retries=5, full-jitter exponential backoff capped at 60s.",
+    "  Silence defaults to 600s via silence_timeout_seconds; legacy connect/read fields are absorbed.",
+    "  timeout_seconds is an optional caller deadline; without it there is no total elapsed-time cap.",
+    "  Paid execution retains a 3600s dispatcher cost backstop; retry sleeps do not count.",
+    "  Retry-After scheduling is capped at 3600s; its raw observation is still recorded on HTTP failures.",
     "  Only a parsed, present empty string is transient; missing/non-string text and malformed JSON/SSE are permanent.",
     "  --response-json cannot alias request/env/receipt files and is replaced atomically.",
     "  Subscription generation honors receipt sinks; HTTP generation records them too.",
@@ -123,7 +127,7 @@ export function usageText() {
     "  --cwd is the vendor's workspace; omitted, it is this process's directory.",
     "  --brief/--input/--out/--err resolve from THIS process's directory, not --cwd.",
     "  Vendor-native flags (agy --add-dir, codex -s) are assembled internally.",
-    "  Default --timeout is 2700s (45m), a runaway backstop rather than a work budget.",
+    "  Default --timeout is 3600s (60m), a dispatcher cost backstop; split work that reaches it.",
     "  --dry-run prints the argv without running the vendor.",
     "",
     "  Which flags a given vendor/operation/mode actually requires is enforced by",
@@ -566,12 +570,12 @@ export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
     if (!out) throw new CliError("claude requires --out to preserve and validate the result JSON");
     if (!err) throw new CliError("claude requires --err to preserve vendor stderr");
   }
-  // Default is a large runaway-backstop, NOT a work limit. A short fixed timeout
+  // Default is the dispatcher cost backstop, NOT a caller work limit. A short fixed timeout
   // kills legitimate heavy reasoning (codex high/xhigh reading several files) and
   // the child is SIGTERM'd before its final message reaches stdout — the recurring
-  // "exit 124, empty out, reasoning stranded in stderr" failure. 45min usually catches
-  // a genuine hang; callers wanting a tighter bound pass --timeout explicitly.
-  const timeout = raw.timeout === undefined ? 2700 : Number(raw.timeout);
+  // "exit 124, empty out, reasoning stranded in stderr" failure. One hour is the
+  // maximum paid execution; callers wanting a tighter bound pass --timeout explicitly.
+  const timeout = raw.timeout === undefined ? 3600 : Number(raw.timeout);
   if (!Number.isInteger(timeout) || timeout < 1 || timeout > 3600) throw new CliError("--timeout must be an integer from 1 to 3600");
   const conflicts = outputConflicts({ brief, inputs, out, err });
   if (conflicts.brief) throw new CliError("--out/--err must not equal --brief");
@@ -1082,6 +1086,7 @@ export function writeApiDispatchReceipts(stderr, options, exit, startedAt, env =
         failureClass: options.failureClass ?? null,
         failureActor: options.failureActor ?? null,
         remedy: options.remedy ?? null,
+        retryAfter: options.retryAfter ?? { observed: false, value: null },
       });
     }
   } catch { /* Raw receipt recording remains fail-open. */ }
@@ -1126,6 +1131,19 @@ function openOutput(path) {
   const fd = openSync(path, "w");
   try { return createWriteStream(path, { fd, autoClose: true }); }
   catch (error) { closeSync(fd); throw error; }
+}
+
+function meaningfulCliPayload(chunk) {
+  const text = (Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk)).trim();
+  if (!text) return false;
+  const lines = text.split(/\r?\n/).filter(Boolean);
+  return lines.some((line) => {
+    try {
+      const parsed = JSON.parse(line);
+      const marker = parsed?.type ?? parsed?.event ?? parsed?.kind;
+      return !(typeof marker === "string" && /^(?:heartbeat|ping|keep-?alive)$/i.test(marker.trim()));
+    } catch { return true; }
+  });
 }
 
 // Bounded, cross-platform termination of the child AND its descendants. child.kill()
@@ -1251,14 +1269,16 @@ export async function run(options, deps = { spawn }) {
     let timedOut = false;
     let invoked = false;
     let child;
-    let timer, escalateTimer, reapTimer;
+    let timer, silenceTimer, escalateTimer, reapTimer;
+    let timeoutDeadlineMs = null;
+    let silenceDeadlineMs = null;
     const validateExplicitOutput = options.mode !== "default";
     const captureStdout = Boolean(stdoutStream || options.expectOutput || options.vendor === "claude" || validateExplicitOutput);
     let outputBytes = 0;
     const claudeOutputChunks = [];
     let claudeOutputBytes = 0;
     let claudeOutputTooLarge = false;
-    const clearTimers = () => { for (const t of [timer, escalateTimer, reapTimer]) if (t) clearTimeout(t); };
+    const clearTimers = () => { for (const t of [timer, silenceTimer, escalateTimer, reapTimer]) if (t) clearTimeout(t); };
     const finish = (code) => {
       if (settled) return;
       settled = true;
@@ -1300,15 +1320,40 @@ export async function run(options, deps = { spawn }) {
     const expected = options.expectOutput ? Buffer.from(options.expectOutput, "ascii") : null;
     let outputTail = Buffer.alloc(0);
     let outputMatched = false;
-    child.once("spawn", () => { invoked = true; });
-    timer = setTimeout(() => {
+    const triggerTimeout = () => {
+      if (settled || timedOut) return;
+      // Resolve by absolute deadlines instead of callback insertion order.
+      // Silence wins an exact tie; a later meaningful payload moves only the
+      // silence deadline and leaves the caller/cost deadline intact.
+      const kind = silenceDeadlineMs !== null
+        && (timeoutDeadlineMs === null || silenceDeadlineMs <= timeoutDeadlineMs)
+        ? "silence"
+        : "backstop";
       timedOut = true;
-      try { child.kill(); } catch { /* already gone */ }          // graceful SIGTERM first
-      escalateTimer = setTimeout(() => {                            // still not closed → force-kill the whole tree
+      try { deps.onTimeout?.(kind); } catch { /* timeout attribution must not change termination */ }
+      if (timer) clearTimeout(timer);
+      if (silenceTimer) clearTimeout(silenceTimer);
+      try { child.kill(); } catch { /* already gone */ }
+      escalateTimer = setTimeout(() => {
         try { forceKill(child); } catch { /* best effort */ }
-        reapTimer = setTimeout(() => finish(124), reapMs);         // bounded: resolve even if `close` never fires
+        reapTimer = setTimeout(() => finish(124), reapMs);
       }, graceMs);
-    }, options.timeout * 1000);
+    };
+    const armSilenceTimer = (originMs = Date.now(), recordPayload = true) => {
+      if (settled || timedOut) return;
+      if (!Number.isFinite(options.silenceTimeout) || options.silenceTimeout <= 0) return;
+      if (silenceTimer) clearTimeout(silenceTimer);
+      silenceDeadlineMs = originMs + (options.silenceTimeout * 1000);
+      if (recordPayload) {
+        try { deps.onSilenceDeadline?.(originMs, silenceDeadlineMs); } catch { /* observation must not change termination */ }
+      }
+      silenceTimer = setTimeout(triggerTimeout, Math.max(1, silenceDeadlineMs - Date.now()));
+    };
+    child.once("spawn", () => { invoked = true; });
+    const timerStartedAt = Date.now();
+    timeoutDeadlineMs = options.timeoutDeadlineMs ?? timerStartedAt + (options.timeout * 1000);
+    timer = setTimeout(triggerTimeout, Math.max(1, timeoutDeadlineMs - timerStartedAt));
+    armSilenceTimer(options.silenceOriginMs ?? timerStartedAt, false);
     const streamError = (error) => {
       parentStderr.write(`dispatch internal error: stdio failed (${error.code ?? "stdio_failed"})\n`);
       child.kill();
@@ -1358,6 +1403,7 @@ export async function run(options, deps = { spawn }) {
     if (captureStdout) {
       child.stdout.on("data", (chunk) => {
         outputBytes += chunk.length;
+        if (meaningfulCliPayload(chunk)) armSilenceTimer();
         try { onStdoutChunk?.(chunk); } catch { /* observation must not break dispatch */ }
       });
     }
@@ -1374,7 +1420,12 @@ export async function run(options, deps = { spawn }) {
     }
     if (stdoutStream) child.stdout.pipe(stdoutStream);
     else if (captureStdout) child.stdout.pipe(parentStdout, { end: false });
-    if (stderrStream) child.stderr.pipe(stderrStream);
+    if (stderrStream) {
+      child.stderr.on("data", (chunk) => {
+        if (meaningfulCliPayload(chunk)) armSilenceTimer();
+      });
+      child.stderr.pipe(stderrStream);
+    }
     try { child.stdin.end(brief); } catch (error) { streamError(error); }
   });
 }

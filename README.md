@@ -43,8 +43,18 @@ Consumer projects can call `dispatch.mjs --request-json <file> --response-json <
 That request keeps `system` and `user` in separate JSON fields and names only the
 requested provider/model. The dispatcher never changes provider: it applies bounded
 same-provider retries only (`max_retries` defaults to 5, range 0–16), with 2-second
-exponential backoff capped at 60 seconds, `Retry-After` as a lower bound, separate
-30-second connect and 120-second read timeouts, and one absolute request deadline.
+exponential backoff capped at 60 seconds and full jitter. Without `Retry-After`, each
+wait is sampled from zero through the planned backoff; with it, the scheduling value
+(capped at 3600 seconds) is the lower bound and the upper bound is the larger of the
+plan and that lower bound. The received header string is still recorded unchanged.
+`silence_timeout_seconds` is the payload-silence threshold (default 600, range 1–3600).
+Transport heartbeats, SSE comments, empty `data:` fields, and whitespace do not reset it;
+any other non-empty payload does. Legacy `connect_timeout_seconds` and
+`read_timeout_seconds` remain accepted as silence-threshold aliases, with the larger
+value used when both are present. An explicit `silence_timeout_seconds` takes precedence.
+`timeout_seconds` is optional: when supplied it is the caller's total elapsed-time
+deadline, and when omitted there is no caller total-time cap. The dispatcher retains a
+60-minute (3600-second) cost backstop, excluding retry sleeps from that cost clock.
 Only successfully parsed JSON/SSE whose text exists as a string but is empty is a
 transient vendor failure and is retried. Missing or non-string text (including
 `content: null`) and malformed JSON/SSE remain permanent invalid responses.
@@ -60,7 +70,16 @@ at 16 MiB (with the existing 8 MiB incomplete-frame and 64 MiB total-stream guar
 Provider base overrides must stay on the provider's trusted HTTPS origin and redirects
 are rejected. The response target is atomically replaced and cannot alias the request,
 provider env file, or either receipt sink. Both HTTP and subscription generation write
-configured raw and closed-portable receipts.
+configured raw and closed-portable receipts. HTTP failure responses and raw receipts
+record `retryAfter` as `{ observed, value }`: `value` preserves the received
+`Retry-After` string, `null` with `observed: true` means the header was absent, and
+`observed: false` means no response headers were observed.
+
+Consumers that froze the 0.9.8 failure vocabulary as a constant must update that
+integration. `no-output-timeout` is unchanged, but payload-silence failures now report
+`failureActor: "vendor"`; only an explicit caller deadline reports `"caller"`, while the
+3600-second cost backstop reports `"dispatcher"`. Retry waits are also intentionally
+different from call to call.
 
 A very low `max_completion_tokens` can leave no text and exhaust same-provider retries
 (observed with Zhipu at 16 tokens). On `gemini-2.5-flash`, thinking tokens consumed the
@@ -142,8 +161,8 @@ CLI launches are not worth that diagnostic cost.
   timestamp, not a correlation key; there is no cross-file atomicity, equal-count,
   ordering, or row-pairing guarantee, and a dispatch is not promised to write two rows.
   The `--vendor claude` channel uses the same dispatcher without the
-  obsolete 280-second shell timeout. The dispatcher uses a 45-minute (2700-second)
-  runaway backstop by default; callers can still set a tighter `--timeout`.
+  obsolete 280-second shell timeout. The dispatcher uses a 60-minute (3600-second)
+  cost backstop by default; callers can still set a tighter `--timeout`.
   Claude result JSON binds the observed model
   family, token usage, and cost into `vendorUsage`; empty, malformed, or
   wrong-model output returns exit 4. The Claude child runs in `--safe-mode`, so

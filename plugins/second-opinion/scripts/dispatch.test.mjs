@@ -498,8 +498,13 @@ test("P1 generation publishes chunks only after the winning attempt is accepted"
 test("generation help and documentation teach the repaired safety contracts", () => {
   assert.match(usageText(), /same-provider retry/);
   assert.match(usageText(), /Only a parsed, present empty string is transient; missing\/non-string text and malformed JSON\/SSE are permanent/);
-  assert.match(usageText(), /accepted-only streaming/);
+  assert.match(usageText(), /payload-silence detection/);
   assert.match(usageText(), /HTTP generation records them/);
+  assert.match(usageText(), /full-jitter/);
+  assert.match(usageText(), /Silence defaults to 600s via silence_timeout_seconds/);
+  assert.match(usageText(), /without it there is no total elapsed-time cap/);
+  assert.match(usageText(), /Paid execution retains a 3600s dispatcher cost backstop; retry sleeps do not count/);
+  assert.match(usageText(), /Retry-After scheduling is capped at 3600s.*raw observation/);
   const readme = readFileSync(new URL("../../../README.md", import.meta.url), "utf8");
   const koreanReadme = readFileSync(new URL("../../../README.ko.md", import.meta.url), "utf8");
   const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
@@ -510,6 +515,12 @@ test("generation help and documentation teach the repaired safety contracts", ()
     assert.match(text, /max_completion_tokens/);
     assert.match(text, /HTTPS/);
     assert.match(text, /closed.portable/s);
+    assert.match(text, /connect_timeout_seconds/);
+    assert.match(text, /read_timeout_seconds/);
+    assert.match(text, /silence_timeout_seconds/);
+    assert.match(text, /600/);
+    assert.match(text, /Retry-After[\s\S]{0,200}3600/);
+    assert.match(text, /0\.9\.8.*상수|0\.9\.8 failure vocabulary.*constant/is);
   }
   assert.match(codexAdapter, /usage.*검증된 뒤/s);
   assert.match(codexAdapter, /shipped closed portable emitter/);
@@ -520,6 +531,7 @@ test("generation help and documentation teach the repaired safety contracts", ()
   for (const text of [koreanReadme, skill]) assert.match(text, /문자열로 존재하지만 공백뿐.*재시도.*필드 부재·비문자열.*malformed JSON\/SSE/s);
   assert.match(codexAdapter, /문자열로 존재하지만 공백뿐.*재시도.*malformed/s);
   assert.match(changelog, /HTTP generation receipts/);
+  assert.match(changelog, /## Unreleased[\s\S]*silence_timeout_seconds[\s\S]*full jitter/);
   assert.match(readme, /HTTP responses may succeed with `usage: null`.*subscription adapters still fail closed/is);
   assert.match(koreanReadme, /HTTP는 응답 model이 귀속을 증명하면\s*`usage: null`이어도 성공.*subscription adapter는\s*usage가 없으면 계속 실패/s);
   for (const text of [readme, koreanReadme, skill]) {
@@ -576,11 +588,11 @@ test("0.9.9 public help and documentation describe cache-first ranked routing", 
   }
 
   assert.match(usageText(), /cached for 24h.*model-catalog-v1\.json/s);
-  assert.match(usageText(), /Default --timeout is 2700s \(45m\), a runaway backstop/);
-  assert.match(skill, /공통 2700초 값/);
+  assert.match(usageText(), /Default --timeout is 3600s \(60m\), a dispatcher cost backstop/);
+  assert.match(skill, /공통 3600초 비용 상한/);
   if (publicReadmes.length === 2) {
-    assert.match(publicReadmes[0], /45-minute \(2700-second\)\s+runaway backstop/);
-    assert.match(publicReadmes[1], /기본 45분\(2700초\) runaway backstop/);
+    assert.match(publicReadmes[0], /60-minute \(3600-second\)\s+cost backstop/);
+    assert.match(publicReadmes[1], /기본 60분\(3600초\) 비용 상한/);
   }
 });
 
@@ -1942,9 +1954,9 @@ test("timeout escalates to a forced tree-kill and stays bounded when close never
   assert.equal(receiptLines(receipt)[0].exit, "timeout");
 });
 
-test("default timeout is a 45-minute runaway-backstop, not a short work limit", () => {
+test("default timeout is the 60-minute dispatcher cost backstop", () => {
   const parsed = parseCli(["--vendor", "codex", "--operation", "text", "--brief", brief], root);
-  assert.equal(parsed.timeout, 2700);
+  assert.equal(parsed.timeout, 3600);
 });
 
 test("relative file paths normalize against start cwd, not vendor cwd", () => {

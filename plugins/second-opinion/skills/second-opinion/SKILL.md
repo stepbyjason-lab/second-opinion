@@ -13,7 +13,7 @@ description: >
 
 # second-opinion — 외부 AI 어댑터
 
-**버전 0.9.9** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
+**버전 0.9.10** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
 
 이 스킬은 **아무것도 차단하지 않는다** — 중개(relay)만 한다. 디스패처는 커맨드 정합성을 위한 도구일 뿐이다. "Claude가 디스패처를 반드시 거치게" 강제하는 것은 **부르는 쪽(caller)의 책임**이다 → [references/enforcement.md](references/enforcement.md).
 
@@ -108,7 +108,14 @@ plan/review 권한을 자동 적용하지 않는다.
 요청 provider/model, 분리된 `system`/`user`, stream, env-file 포인터,
 `max_retries`(기본 5, 0~16), `lens_id`(최대 64자)를 받는다. `budget`은 거부한다.
 한 요청은 지정 provider 하나만 접촉하며 같은 provider의 일시 실패만 2초·2배·최대 60초로
-재시도한다. `Retry-After`는 하한이고 연결 30초·읽기 120초·전체 절대 마감시한을 함께 지킨다.
+재시도하고 full jitter를 적용한다. `Retry-After`가 없으면 `[0, 계획 백오프]`, 있으면
+스케줄링 값을 최대 3600초로 제한한 뒤 `[Retry-After, max(계획 백오프, Retry-After)]`에서
+대기를 정한다. 수신한 헤더 원문은 제한하지 않고 그대로 기록한다.
+`silence_timeout_seconds`는 payload 침묵 임계이며 기본 600초·허용 1~3600초다. transport
+heartbeat·SSE 주석·빈 `data:`·공백 payload는 재장전하지 않는다. 기존
+`connect_timeout_seconds`·`read_timeout_seconds`도 같은 침묵 임계로 흡수하고 둘 다 오면 큰
+값을 쓴다. 새 필드가 있으면 그 값이 우선한다. `timeout_seconds`는 호출자가 보낼 때만 총 경과
+마감이며 생략하면 호출자 총 경과 상한이 없다. 공통 3600초 비용 상한은 재시도 sleep을 세지 않는다.
 JSON/SSE 파싱에 성공하고 텍스트가 문자열로 존재하지만 공백뿐인 응답만
 `vendor-error`/`vendor` 일시 실패로 재시도한다. 텍스트 필드 부재·비문자열(`content: null`
 포함)과 malformed JSON/SSE는 영구 `invalid-response`로 둔다.
@@ -127,6 +134,14 @@ sink를 기록한다. HTTP 생성도 같은 raw/closed-portable sink를 기록�
 어휘에 `oversized-response`·`invalid-response`·`attribution-unavailable`·
 `model-unavailable`·`payload-incompatible`을 더한
 `failureClass`·`failureActor`·`remedy` 셋으로 반환한다.
+HTTP 실패 response와 raw 영수증은 `retryAfter: { observed, value }`를 함께 반환한다.
+`observed: true, value: null`은 `Retry-After` 헤더 부재, `observed: false`는 응답 헤더
+미관측이며, 문자열 값은 수신 원문 그대로다.
+
+**이관 공시:** 0.9.8 실패 어휘를 상수로 고정한 소비자는 갱신이 필요하다.
+`no-output-timeout` class는 늘지 않았지만 payload 침묵 초과 actor는 `vendor`, 호출자가 명시한
+전체 마감은 `caller`, 3600초 비용 상한은 `dispatcher`다. full jitter 때문에 재시도 대기도
+호출마다 달라진다.
 
 작은 `max_completion_tokens`는 빈 텍스트와 재시도 소진을 부를 수 있다(Zhipu 16 token 실측).
 `gemini-2.5-flash`에서는 thinking 토큰이 16-token completion 예산을 먼저 잠식해 보이는
@@ -247,7 +262,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor claude --operation text
   --out claude-result.json --err claude-stderr.txt
 ```
 
-- 짧은 raw timeout은 없다. 공통 2700초 값은 정상 작업 한계가 아니라 runaway backstop이다.
+- 짧은 raw timeout은 없다. 공통 3600초 비용 상한에 닿으면 작업을 더 작은 요청으로 쪼갠다.
 - child는 `--safe-mode`로 실행해 대상 프로젝트의 CLAUDE.md·hook·plugin·MCP가
   review brief를 바꾸지 못하게 한다. OAuth와 명시한 model·effort는 유지된다.
   `--safe-mode`는 **구성 격리이지 filesystem sandbox가 아니며** default의 full-access와

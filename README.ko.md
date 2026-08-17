@@ -33,8 +33,16 @@ Claude가 만든 것을 Claude가 검토하면 결함을 과소보고한다 — 
 있다. 요청은 `system`과 `user`를 별도 JSON 필드로 유지하고 요청 provider/model만
 지정한다. 디스패처는 provider를 바꾸지 않고 같은 provider만 제한적으로 재시도한다.
 `max_retries` 기본값은 5(허용 0~16), 백오프는 2초에서 2배씩 늘어 60초에서 멈추며
-`Retry-After`를 하한으로 쓴다. 연결 30초·읽기 120초를 분리하되 전체 요청은 하나의 절대
-마감시한을 넘지 않는다. JSON/SSE 파싱에 성공하고 텍스트가 문자열로 존재하지만 공백뿐인
+full jitter를 적용한다. `Retry-After`가 없으면 0부터 계획 백오프까지, 있으면 스케줄링 값을
+최대 3600초로 제한해 하한으로 쓰고 계획값과 하한 중 큰 값을 상한으로 삼아 대기를 뽑는다.
+수신한 헤더 원문은 제한하지 않고 그대로 기록한다.
+`silence_timeout_seconds`는 payload 침묵 임계이며 기본값 600초, 허용 범위 1~3600초다.
+transport heartbeat·SSE 주석·빈 `data:`·공백 payload는 재장전하지 않고, 그 밖의 비어 있지
+않은 payload는 재장전한다. 기존 `connect_timeout_seconds`·`read_timeout_seconds`도 침묵
+임계 별칭으로 계속 받으며 둘 다 오면 큰 값을 쓴다. `silence_timeout_seconds`가 있으면 그 값이
+우선한다. `timeout_seconds`는 호출자가 보낼 때만 총 경과 마감이고, 없으면 호출자 총 경과
+상한도 없다. 디스패처의 60분(3600초) 비용 상한은 유지하며 재시도 sleep은 비용 시계에서 뺀다.
+JSON/SSE 파싱에 성공하고 텍스트가 문자열로 존재하지만 공백뿐인
 응답만 벤더의 일시 실패로 재시도한다. 텍스트 필드 부재·비문자열(`content: null` 포함)과
 malformed JSON/SSE는 영구 `invalid-response`로 둔다. 벤더 간 라우팅과 예산은
 호출자 소유라 `budget` 필드는 거부하고,
@@ -48,6 +56,14 @@ frame 8 MiB·전체 stream 64 MiB 가드도 유지). provider base override는 �
 신뢰된 HTTPS origin 안에서만 허용하고 redirect는 거부한다. response target은
 request·provider env file·두 receipt sink와 겹칠 수 없고 원자적으로 교체된다. HTTP와 구독
 생성 모두 설정된 raw·closed-portable 영수증을 기록한다.
+HTTP 실패 response와 raw 영수증은 `retryAfter`를 `{ observed, value }`로 기록한다.
+`value`는 수신한 `Retry-After` 원문이고, `observed: true`이면서 `value: null`이면 헤더가
+없었으며, `observed: false`이면 응답 헤더를 관측하지 못했다는 뜻이다.
+
+0.9.8 실패 어휘를 상수로 고정한 소비자는 연동 코드를 갱신해야 한다.
+`no-output-timeout` class는 그대로지만 payload 침묵 초과의 `failureActor`는 `vendor`, 호출자가
+명시한 전체 마감 초과는 `caller`, 3600초 비용 상한 도달은 `dispatcher`다. 재시도 대기도
+호출마다 달라진다.
 
 `max_completion_tokens`가 너무 작으면 텍스트가 남지 않아 같은 provider 재시도를 소진할 수
 있다(Zhipu에서 16 token으로 실측). `gemini-2.5-flash`에서는 thinking 토큰이 16-token
@@ -112,7 +128,7 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
   `ts`는 타임스탬프일 뿐 상관 키가 아니다. 두 파일의 원자성·동일 행수·순서·행별 짝짓기를
   보증하지 않으며 한 dispatch가 항상 두 행을 만든다고 주장하지 않는다.
   `--vendor claude`도 같은 dispatcher를 사용하며, 폐기된 280초
-  셸 timeout을 쓰지 않는다. 기본 45분(2700초) runaway backstop을 사용하며 더 짧은
+  셸 timeout을 쓰지 않는다. 기본 60분(3600초) 비용 상한을 사용하며 더 짧은
   제한이 필요한 호출자는 `--timeout`을 명시할 수 있다. Claude result JSON의 실제 model·token usage·cost를
   `vendorUsage`에 결속하고 빈/깨진/다른 모델 출력은 exit 4로 거부한다. 디스패처는 중립
   broker로서 동일 벤더 호출을 기계 차단하지 않으며, 리뷰 독립성 인정 여부는 호출자
