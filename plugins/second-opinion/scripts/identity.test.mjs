@@ -1117,7 +1117,7 @@ test("C-6/C-7/C-8: HTTP raw and portable receipts carry attempts, transport iden
   assert.equal(rawRow.pid, null);
   assert.equal(rawRow.argv, null);
   assert.equal(rawRow.executable, null);
-  assert.deepEqual(VENDORS, ["codex", "agy", "claude"]);
+  assert.deepEqual(VENDORS, ["codex", "agy", "claude", "grok"]);
 
   const brief = join(root, "brief.md");
   const cliRaw = join(root, "cli-raw.jsonl");

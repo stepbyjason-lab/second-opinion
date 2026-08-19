@@ -1,10 +1,47 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 
-export const VENDORS = Object.freeze(["codex", "agy", "claude"]);
+export const VENDORS = Object.freeze(["codex", "agy", "claude", "grok"]);
 export const OPERATIONS = Object.freeze(["text", "image-analyze", "image-generate"]);
 export const DISPATCH_MODES = Object.freeze(["default", "plan", "review"]);
 export const AGY_NATIVE_READONLY_PROFILE = "agy-native-readonly/v1";
+
+// Grok reads foreign harness config by default (`[compat.*]` cells, env > toml).
+// Forced cells: Claude 6 + Cursor 6 + Codex sessions (1). Codex skills/rules/
+// agents/mcps/hooks are reserved and inert in grok 1.0.5 — sessions is the
+// only live Codex cell. Env wins, so a review spawn can force isolation
+// without writing ~/.grok/config.toml.
+// Project-root CLAUDE.md / AGENTS.md still load — that remaining gap is
+// disclosed in adapter-grok.md, not papered over here.
+export const GROK_HARNESS_ISOLATION_ENV = Object.freeze({
+  GROK_CLAUDE_SKILLS_ENABLED: "false",
+  GROK_CLAUDE_RULES_ENABLED: "false",
+  GROK_CLAUDE_AGENTS_ENABLED: "false",
+  GROK_CLAUDE_MCPS_ENABLED: "false",
+  GROK_CLAUDE_HOOKS_ENABLED: "false",
+  GROK_CLAUDE_SESSIONS_ENABLED: "false",
+  GROK_CURSOR_SKILLS_ENABLED: "false",
+  GROK_CURSOR_RULES_ENABLED: "false",
+  GROK_CURSOR_AGENTS_ENABLED: "false",
+  GROK_CURSOR_MCPS_ENABLED: "false",
+  GROK_CURSOR_HOOKS_ENABLED: "false",
+  GROK_CURSOR_SESSIONS_ENABLED: "false",
+  GROK_CODEX_SESSIONS_ENABLED: "false",
+});
+
+export function grokNeedsHarnessIsolation(options) {
+  return normalizeVendor(options.vendor) === "grok"
+    && (options.mode === "plan" || options.mode === "review");
+}
+
+export function applyGrokHarnessIsolationEnv(env = {}) {
+  const isolated = { ...env };
+  const names = new Set(Object.keys(GROK_HARNESS_ISOLATION_ENV).map((key) => key.toUpperCase()));
+  for (const key of Object.keys(isolated)) {
+    if (names.has(key.toUpperCase())) delete isolated[key];
+  }
+  return { ...isolated, ...GROK_HARNESS_ISOLATION_ENV };
+}
 
 const AGY_NATIVE_READONLY_PREFIX = Buffer.from(
   `<second-opinion-provider-control profile="${AGY_NATIVE_READONLY_PROFILE}">
@@ -44,6 +81,9 @@ export function effectiveVendorMode(options) {
   const vendor = normalizeVendor(options.vendor);
   const mode = options.mode ?? "default";
   if (!DISPATCH_MODES.includes(mode)) throw new PolicyError("invalid_mode", `invalid_mode: unsupported dispatch mode ${mode}`);
+  if (vendor === "grok" && options.operation !== "text") {
+    throw new PolicyError("mode_unsupported", "mode_unsupported: grok supports text only");
+  }
   if (mode === "default") return "default";
   if (options.operation !== "text") throw new PolicyError("mode_unsupported", `mode_unsupported: ${mode} requires text operation`);
   if (vendor === "codex") {
@@ -51,6 +91,10 @@ export function effectiveVendorMode(options) {
     return "review";
   }
   if (vendor === "claude") return mode;
+  if (vendor === "grok") {
+    if (options.operation !== "text") throw new PolicyError("mode_unsupported", "mode_unsupported: grok supports text only");
+    return mode;
+  }
   return "plan";
 }
 export function effectiveInputProfile(options) {
@@ -70,6 +114,7 @@ export function executableName(vendor) {
   const normalized = normalizeVendor(vendor);
   if (normalized === "agy") return "agy";
   if (normalized === "claude") return "claude";
+  if (normalized === "grok") return "grok";
   return "codex";
 }
 function regularFile(path) { try { return statSync(path).isFile(); } catch { return false; } }
@@ -108,11 +153,19 @@ export function resolveExecutable(vendor, options = {}) {
     const fallback = resolve(env.LOCALAPPDATA, "agy", "bin", "agy.exe");
     if (regularFile(fallback)) return fallback;
   }
+  if (normalized === "grok" && platform === "win32") {
+    const home = env.USERPROFILE || env.HOME;
+    if (home) {
+      const fallback = resolve(home, ".grok", "bin", "grok.exe");
+      if (regularFile(fallback)) return fallback;
+    }
+  }
   if (foundChannelMixing) {
     const installer = {
       codex: "official Codex install.ps1",
       agy: "official Antigravity install.ps1/sh",
       claude: "official Claude native installer",
+      grok: "official Grok install.ps1 (irm https://x.ai/cli/install.ps1 | iex)",
     }[normalized];
     throw new PolicyError("channel_mixing", `channel_mixing: only .cmd/.bat was found for ${name}; reinstall with the ${installer}`);
   }
@@ -141,6 +194,24 @@ export function buildVendorArgv(options) {
     if (effort) argv.push("-c", `model_reasoning_effort="${effort}"`);
     if (operation === "image-analyze") for (const input of inputs) argv.push("-i", input);
     argv.push("-");
+    return argv;
+  }
+  if (vendor === "grok") {
+    if (operation !== "text") {
+      throw new PolicyError("mode_unsupported", "mode_unsupported: grok supports text only");
+    }
+    if (!options.brief) {
+      throw new PolicyError("invalid_mode", "invalid_mode: grok requires a brief file path");
+    }
+    const argv = ["--prompt-file", resolve(options.brief), "--output-format", "json"];
+    if (model) argv.push("-m", model);
+    if (effort) argv.push("--effort", effort);
+    if (options.cwd) argv.push("--cwd", options.cwd);
+    // default stays bypassPermissions (headless, no prompt). plan/review use
+    // native `plan` as a floor: --tools names that all miss fail-open, and
+    // bypassPermissions would then approve writes. Measured grok 1.0.5.
+    argv.push("--permission-mode", effectiveMode === "default" ? "bypassPermissions" : "plan");
+    if (effectiveMode !== "default") argv.push("--tools", "read_file,grep,list_dir", "--no-subagents");
     return argv;
   }
   if (vendor === "claude") {
@@ -206,7 +277,7 @@ export function buildVendorArgv(options) {
 // --- caller-scoped enforcement reference (see references/enforcement.md) ---
 // second-opinion itself never calls detectDirectInference — a broker does not
 // block. This is the copyable detection logic a caller's own PreToolUse hook
-// uses to keep codex/agy calls routed through its dispatcher.
+// uses to keep codex/agy/grok calls routed through its dispatcher.
 //
 // Model: DEFAULT-DENY. Vendor CLIs run model inference on far more entry
 // points than "exec" alone — bare `codex`, `codex "prompt"`, `review`/
@@ -225,8 +296,9 @@ export function buildVendorArgv(options) {
 // calls hidden inside script files are not detected. See enforcement.md
 // "한계" for the full disclosure.
 //
-// Management allowlists below reflect `codex --help` (0.144.1) and
-// `agy --help` (1.1.3) as installed — re-derive if the CLIs change.
+// Management allowlists below reflect `codex --help` (0.144.1),
+// `agy --help` (1.1.3), and `grok --help` (1.0.5) as installed — re-derive if
+// the CLIs change.
 const CODEX_MANAGEMENT = new Set([
   "login", "logout", "mcp", "mcp-server", "plugin", "app", "app-server",
   "remote-control", "exec-server", "completion", "update", "doctor",
@@ -237,7 +309,10 @@ const AGY_MANAGEMENT = new Set([
   "agent", "agents", "changelog", "help", "install", "models",
   "plugin", "plugins", "update",
 ]);
-const MANAGEMENT = { codex: CODEX_MANAGEMENT, agy: AGY_MANAGEMENT };
+const GROK_MANAGEMENT = new Set([
+  "login", "logout", "models", "version", "v", "help", "dashboard", "update",
+]);
+const MANAGEMENT = { codex: CODEX_MANAGEMENT, agy: AGY_MANAGEMENT, grok: GROK_MANAGEMENT };
 
 // Flags that alone mean inference regardless of subcommand position (fixes
 // variadic ordering like `codex -i x.png` with no explicit subcommand).
@@ -246,6 +321,7 @@ const MANAGEMENT = { codex: CODEX_MANAGEMENT, agy: AGY_MANAGEMENT };
 const INFERENCE_FLAGS = {
   codex: new Set(["-i", "--image", "-m", "--model", "-a", "--ask-for-approval", "--search", "--oss"]),
   agy: new Set(["-p", "--print", "--prompt", "-i", "--prompt-interactive", "-c", "--continue", "--conversation"]),
+  grok: new Set(["-p", "--single", "--prompt-file", "--prompt-json"]),
 };
 
 // Neutral flags that take a value but don't themselves signal inference —
@@ -258,6 +334,12 @@ const VALUE_FLAGS = {
     "--local-provider", "--enable", "--disable",
   ]),
   agy: new Set(["--add-dir", "--agent", "--log-file", "--mode", "--model", "--project", "--print-timeout"]),
+  grok: new Set([
+    "-m", "--model", "--cwd", "--output-format", "--prompt-file", "--prompt-json",
+    "--tools", "--disallowed-tools", "--permission-mode", "--effort",
+    "--reasoning-effort", "--max-turns", "--sandbox", "--allow", "--deny",
+    "-s", "--session-id", "-r", "--resume",
+  ]),
 };
 
 // `-v` covers both `-v`/`-V` because membership is tested via a lowercasing
@@ -339,15 +421,16 @@ function vendorFromCommand(token) {
   const normalized = String(token).trim().replace(/^&\s*/, "").replace(/^"|"$/g, "").toLowerCase();
   if (/^\$\{?codex\}?$/.test(normalized)) return "codex";
   if (/^\$\{?agy\}?$/.test(normalized)) return "agy";
+  if (/^\$\{?grok\}?$/.test(normalized)) return "grok";
   const base = execBase(normalized);
-  return base === "codex" || base === "agy" ? base : null;
+  return base === "codex" || base === "agy" || base === "grok" ? base : null;
 }
 
 /** Reduce an npm-style package spec to its bare vendor name: @scope/codex@1 -> codex */
 function packageVendor(token) {
   const spec = String(token).replace(/^@[^/]+\//, "").replace(/@[^@]*$/, "");
   const base = execBase(spec).replace(/\.(js|mjs)$/, "");
-  return base === "codex" || base === "agy" ? base : null;
+  return base === "codex" || base === "agy" || base === "grok" ? base : null;
 }
 
 function skipToCommand(tokens) {

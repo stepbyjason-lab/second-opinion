@@ -45,7 +45,7 @@ import { appendFileSync, closeSync, createWriteStream, mkdirSync, openSync, read
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DISPATCH_MODES, OPERATIONS, PolicyError, VENDORS, buildVendorArgv, composeVendorInput, effectiveInputProfile, effectiveVendorMode, executableName, normalizeVendor, resolveExecutable } from "./vendor-policy.mjs";
+import { DISPATCH_MODES, OPERATIONS, PolicyError, VENDORS, applyGrokHarnessIsolationEnv, buildVendorArgv, composeVendorInput, effectiveInputProfile, effectiveVendorMode, executableName, grokNeedsHarnessIsolation, normalizeVendor, resolveExecutable } from "./vendor-policy.mjs";
 import { appendPortableReceipt, buildPortableReceipt, preparePortableUsage } from "./portable-receipt.mjs";
 
 export const MAX_BRIEF_BYTES = 8 * 1024 * 1024;
@@ -105,7 +105,7 @@ export function usageText() {
     `  flags      : ${flags}`,
     `  help       : ${[...HELP_FLAGS].join(" ")}  (first argument only)`,
     "",
-    "  --brief is a FILE; its contents reach the vendor over stdin.",
+    "  --brief is a FILE; Codex/AGY/Claude receive it on stdin, Grok via --prompt-file.",
     "  --request-json selects one named HTTP/subscription provider with same-provider retry,",
     "  payload-silence detection, an optional caller deadline, and provider attribution.",
     "  Cross-provider routing and budgets belong to the caller; budget is rejected.",
@@ -136,7 +136,7 @@ export function usageText() {
     "",
     // Stated here because no error can teach it: a Codex --mode review call
     // succeeds and looks restricted while running at full access.
-    "  --mode plan|review narrows permissions on Claude and AGY only. Codex has no",
+    "  --mode plan|review narrows permissions on Claude, AGY, and Grok. Codex has no",
     "  tool allowlist — its review runs at whatever sandbox_mode its own config",
     "  sets, so the brief's prohibitions are the only guard there.",
     "",
@@ -250,6 +250,12 @@ function catalogRecord(vendor, value) {
     const withoutThinking = withoutProvider.replace(/[-_. ]+thinking$/i, "");
     return { canonical, aliases: uniqueStrings([canonical, withoutProvider, withoutThinking]), efforts: [] };
   }
+  if (vendor === "grok") {
+    const canonical = stripModelDecoration(value.slug ?? value.canonical);
+    if (!canonical) return null;
+    const withoutBuild = canonical.replace(/[-_. ]+build$/i, "");
+    return { canonical, aliases: uniqueStrings([canonical, withoutBuild]), efforts: [] };
+  }
   const canonical = stripModelDecoration(value.resolvedModel ?? value.value ?? value.canonical);
   if (!canonical) return null;
   const shortValue = stripModelDecoration(value.value);
@@ -320,7 +326,24 @@ function liveModelCatalogs(deps = {}) {
   // 2.1.220; adding -p would switch away from the control session being queried.
   const request = `${JSON.stringify({ request_id: "second-opinion-catalog", type: "control_request", request: { subtype: "initialize" } })}\n`;
   const claude = commandModelCatalog("claude", ["--output-format", "stream-json", "--verbose", "--input-format", "stream-json", "--tools", "", "--no-session-persistence", "--safe-mode", "--disable-slash-commands"], claudeModelCatalog, deps, request);
-  return { codex, agy, claude };
+  let grok = { available: false, models: [] };
+  try {
+    const grokExe = resolveExecutable("grok", { env, platform: process.platform });
+    grok = commandModelCatalog(grokExe, ["models"], grokModelCatalog, deps);
+  } catch { /* unavailable vendor catalog */ }
+  return { codex, agy, claude, grok };
+}
+
+function grokModelCatalog(output) {
+  const models = [];
+  for (const line of String(output).split(/\r?\n/)) {
+    const match = line.match(/^\s*[*\-]\s+(grok-[a-z0-9][a-z0-9.-]*)/i);
+    if (match) {
+      const record = catalogRecord("grok", { slug: match[1] });
+      if (record) models.push(record);
+    }
+  }
+  return models;
 }
 
 function modelCatalogCachePath(deps = {}) {
@@ -436,11 +459,13 @@ function modelNameMatches(requested, available) {
 }
 
 function matchModelRoute(model, catalogs) {
-  const unavailable = VENDORS.filter((vendor) => catalogs[vendor]?.available !== true);
+  const requiredVendors = VENDORS.filter((vendor) => vendor !== "grok");
+  const unavailable = requiredVendors.filter((vendor) => catalogs[vendor]?.available !== true);
   if (unavailable.length > 0) {
     throw new CliError(`model catalog unavailable for automatic vendor routing: ${unavailable.join(", ")} (pass --vendor explicitly)`);
   }
-  const matches = winningMatches(VENDORS.flatMap((vendor) => rankedCatalogMatches(model, vendor, catalogs[vendor].models)));
+  const routingVendors = VENDORS.filter((vendor) => catalogs[vendor]?.available === true);
+  const matches = winningMatches(routingVendors.flatMap((vendor) => rankedCatalogMatches(model, vendor, catalogs[vendor].models)));
   const vendors = [...new Set(matches.map((match) => match.vendor))];
   if (vendors.length === 1) {
     const sameVendor = matches.filter((match) => match.vendor === vendors[0]);
@@ -543,7 +568,7 @@ export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
   if (statSync(brief).size > MAX_BRIEF_BYTES) throw new CliError("brief exceeds 8MB");
   assertDirectory(cwd, "cwd");
   if (effort !== undefined) {
-    if (!["codex", "claude"].includes(vendor)) throw new CliError("--effort is supported only for codex or claude");
+    if (!["codex", "claude", "grok"].includes(vendor)) throw new CliError("--effort is supported only for codex, claude, or grok");
     const allowedEffort = route.efforts.length > 0
       ? route.efforts
       : (vendor === "claude" ? ["low", "medium", "high", "xhigh", "max"] : ["low", "medium", "high", "xhigh", "max", "ultra"]);
@@ -785,11 +810,60 @@ function inspectClaudeOutput(options, capturedOutput) {
     },
   };
 }
+function inspectGrokOutput(options, capturedOutput) {
+  if (capturedOutput?.tooLarge) return { usage: null, status: "output-too-large", valid: false };
+  const data = capturedOutput?.data;
+  if (!Buffer.isBuffer(data) || data.length === 0) return { usage: null, status: "empty-output", valid: false };
+  let text = data.toString("utf8");
+  if (data[0] === 0xff && data[1] === 0xfe) text = data.toString("utf16le");
+  else if (data[0] === 0xfe && data[1] === 0xff) text = data.subarray(2).toString("utf16le");
+  let payload;
+  try { payload = JSON.parse(text.trim()); }
+  catch { return { usage: null, status: "invalid-json", valid: false }; }
+  if (typeof payload?.text !== "string" || payload.text.trim() === "") {
+    return { usage: null, status: "empty-result", valid: false };
+  }
+  const modelUsage = payload.modelUsage && typeof payload.modelUsage === "object" && !Array.isArray(payload.modelUsage)
+    ? payload.modelUsage
+    : {};
+  const actualModels = Object.keys(modelUsage);
+  if (actualModels.length === 0) {
+    return { usage: null, status: "missing-model-usage", valid: false };
+  }
+  const requested = String(options.model ?? "").trim();
+  if (requested && !actualModels.some((model) => modelNameMatches(requested, model))) {
+    return { usage: null, status: "model-mismatch", valid: false };
+  }
+  const usage = payload.usage;
+  const required = [usage?.input_tokens, usage?.output_tokens, usage?.total_tokens];
+  if (!required.every(Number.isFinite)) {
+    return { usage: null, status: "invalid-token-fields", valid: false };
+  }
+  const optionalNumber = (value) => value === undefined || value === null ? 0 : (Number.isFinite(value) ? value : null);
+  return {
+    valid: true,
+    status: "ok",
+    usage: {
+      source: "grok-result-json",
+      actualModels,
+      inputTokens: usage.input_tokens,
+      cacheCreationInputTokens: optionalNumber(usage.cache_creation_input_tokens),
+      cacheReadInputTokens: optionalNumber(usage.cache_read_input_tokens),
+      outputTokens: usage.output_tokens,
+      totalTokens: usage.total_tokens,
+      totalCostUsd: Number.isFinite(payload.total_cost_usd) ? payload.total_cost_usd : null,
+    },
+  };
+}
 function waitForRollout() { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50); }
 function collectVendorUsage(options, invoked, env, observation) {
   if (!invoked) return { usage: null, status: "not-invoked" };
   if (options.vendor === "claude") {
     const inspected = observation ?? inspectClaudeOutput(options, null);
+    return { usage: inspected.usage, status: inspected.status };
+  }
+  if (options.vendor === "grok") {
+    const inspected = observation ?? inspectGrokOutput(options, null);
     return { usage: inspected.usage, status: inspected.status };
   }
   if (options.vendor !== "codex") return { usage: null, status: "unsupported-vendor" };
@@ -1212,6 +1286,11 @@ export async function run(options, deps = { spawn }) {
     writeDispatchReceipts(parentStderr, options, 2, startedAt, false, outputCheckStatus, env, undefined, receiptWriters, internalReceipt, resolvedReceiptSinks);
     return 2;
   }
+  if (options.vendor === "grok" && (!options.model || !options.out || !options.err)) {
+    parentStderr.write("dispatch validation error: Grok requires model, out, and err\n");
+    writeDispatchReceipts(parentStderr, options, 2, startedAt, false, outputCheckStatus, env, undefined, receiptWriters, internalReceipt, resolvedReceiptSinks);
+    return 2;
+  }
   const isGitRepo = options.isGitRepo ?? isGitRepository(options.cwd);
   let argv;
   try { argv = buildVendorArgv({ ...options, isGitRepo }); }
@@ -1273,7 +1352,8 @@ export async function run(options, deps = { spawn }) {
     let timeoutDeadlineMs = null;
     let silenceDeadlineMs = null;
     const validateExplicitOutput = options.mode !== "default";
-    const captureStdout = Boolean(stdoutStream || options.expectOutput || options.vendor === "claude" || validateExplicitOutput);
+    const jsonStdoutVendor = options.vendor === "claude" || options.vendor === "grok";
+    const captureStdout = Boolean(stdoutStream || options.expectOutput || jsonStdoutVendor || validateExplicitOutput);
     let outputBytes = 0;
     const claudeOutputChunks = [];
     let claudeOutputBytes = 0;
@@ -1283,8 +1363,8 @@ export async function run(options, deps = { spawn }) {
       if (settled) return;
       settled = true;
       clearTimers();
-      if (options.vendor === "claude" && !vendorObservation) {
-        vendorObservation = inspectClaudeOutput(options, {
+      if (jsonStdoutVendor && !vendorObservation) {
+        vendorObservation = (options.vendor === "grok" ? inspectGrokOutput : inspectClaudeOutput)(options, {
           data: Buffer.concat(claudeOutputChunks),
           tooLarge: claudeOutputTooLarge,
         });
@@ -1295,8 +1375,9 @@ export async function run(options, deps = { spawn }) {
     try {
       const spawnOptions = { cwd: options.cwd, shell: false, stdio: ["pipe", captureStdout ? "pipe" : "inherit", stderrStream ? "pipe" : "inherit"], windowsHide: true };
       const rawReceiptConfigured = Boolean(receiptPath(env, resolvedReceiptSinks));
-      if (rawReceiptConfigured || hasEnvKey(env, "SECOND_OPINION_PORTABLE_RECEIPT") || options.vendor === "claude") {
-        spawnOptions.env = { ...env };
+      const isolateGrok = grokNeedsHarnessIsolation(options);
+      if (rawReceiptConfigured || hasEnvKey(env, "SECOND_OPINION_PORTABLE_RECEIPT") || options.vendor === "claude" || isolateGrok) {
+        spawnOptions.env = isolateGrok ? applyGrokHarnessIsolationEnv(env) : { ...env };
         for (const key of Object.keys(spawnOptions.env)) {
           const upper = key.toUpperCase();
           if (upper === "SECOND_OPINION_PORTABLE_RECEIPT"
@@ -1366,13 +1447,14 @@ export async function run(options, deps = { spawn }) {
     child.once("close", (code, signal) => {
       if (timedOut) finish(124);
       else if (signal || code === null) finish(3);
-      else if (code === 0 && options.vendor === "claude") {
-        vendorObservation = inspectClaudeOutput(options, {
+      else if (code === 0 && jsonStdoutVendor) {
+        vendorObservation = (options.vendor === "grok" ? inspectGrokOutput : inspectClaudeOutput)(options, {
           data: Buffer.concat(claudeOutputChunks),
           tooLarge: claudeOutputTooLarge,
         });
         if (!vendorObservation.valid) {
-          parentStderr.write(`dispatch Claude output validation failed: ${vendorObservation.status}\n`);
+          const vendorLabel = options.vendor === "claude" ? "Claude" : options.vendor === "grok" ? "Grok" : options.vendor;
+          parentStderr.write(`dispatch ${vendorLabel} output validation failed: ${vendorObservation.status}\n`);
           finish(4);
         } else if (expected) {
           outputCheckStatus = outputMatched ? "matched" : "missing";
@@ -1407,7 +1489,7 @@ export async function run(options, deps = { spawn }) {
         try { onStdoutChunk?.(chunk); } catch { /* observation must not break dispatch */ }
       });
     }
-    if (options.vendor === "claude") {
+    if (jsonStdoutVendor) {
       child.stdout.on("data", (chunk) => {
         if (claudeOutputTooLarge) return;
         const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
@@ -1426,7 +1508,12 @@ export async function run(options, deps = { spawn }) {
       });
       child.stderr.pipe(stderrStream);
     }
-    try { child.stdin.end(brief); } catch (error) { streamError(error); }
+    try {
+      // Grok already has the brief as --prompt-file. Writing it to stdin too
+      // duplicates the prompt or can stall waiting on stdin.
+      if (options.vendor === "grok") child.stdin.end();
+      else child.stdin.end(brief);
+    } catch (error) { streamError(error); }
   });
 }
 

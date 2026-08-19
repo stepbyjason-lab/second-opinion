@@ -10,7 +10,7 @@ const MAX_FREE_STRING = 1024;
 const MODES = new Set([...DISPATCH_MODES, "invalid"]);
 const PROFILES = new Set(["none", AGY_NATIVE_READONLY_PROFILE, "invalid"]);
 const TRANSPORTS = new Set(["cli", "api"]);
-const USAGE_SOURCES = new Set(["codex-rollout", "claude-result-json", "api-response"]);
+const USAGE_SOURCES = new Set(["codex-rollout", "claude-result-json", "grok-result-json", "api-response"]);
 const USAGE_STATUSES = new Set([
   "not-invoked", "ok", "unsupported-vendor", "no-err-file", "no-session-id", "read-failed", "not-regular-file", "file-too-large",
   "no-rollout-file", "ambiguous-rollout-file", "no-token-count", "invalid-token-fields", "output-too-large", "empty-output", "invalid-json",

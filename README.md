@@ -2,10 +2,11 @@
 
 **English** | [한국어](./README.ko.md)
 
-![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.9-informational)
+![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.11-informational)
 
 **Use other AI vendors from inside Claude Code — in plain language.**
 Second opinions, task offloading, and vendor capabilities like image generation.
+Subscription vendors: Codex, Antigravity, Claude, and Grok (SuperGrok OAuth).
 
 > "Have Codex review this auth logic."
 > "Ask Gemini to poke holes in this plan."
@@ -113,6 +114,7 @@ CLI launches are not worth that diagnostic cost.
 | Codex sandbox **can't read files on Windows** | excerpts content into the brief instead of asking it to read files |
 | Image generation: agy **ignores where you asked it to save** (uses its own scratch dir), codex needs a **write-enabled sandbox** and its Windows copy step can fail | knows each vendor's real artifact location, verifies the file actually exists, and moves it where you wanted — a vendor saying "saved" is not treated as success |
 | "No issues found" is a weak signal (Gemini especially leans false-negative) | always relayed as "didn't find problems ≠ no problems" |
+| Grok `--tools` with every name unknown fail-open; Grok also loads Claude/Cursor harness config by default | plan/review use `--permission-mode plan` as a floor and force isolation env: Claude 6 + Cursor 6 + `GROK_CODEX_SESSIONS_ENABLED`. Project-root `CLAUDE.md` can still load |
 
 - **Execution receipts** — after every vendor call the skill states what was
   actually observed: the vendor and model requested, the real backend if known,
@@ -192,6 +194,8 @@ CLI launches are not worth that diagnostic cost.
   `~/.codex/config.toml`, not from the mode. For Codex reviews, the brief's own
   prohibitions are the only thing keeping files untouched — do not count
   `--mode review` as a safety mechanism there.
+  Grok plan/review is stronger than Codex: `--permission-mode plan` plus a closed
+  `--tools` allowlist. Unknown tool names fail-open, so `plan` is the floor.
   Omitting `--mode` preserves the existing default call, which for Claude is the
   **full-access** one: all built-in tools plus non-interactive execution, in the
   caller's real cwd. Read-only comes only from an explicit `--mode plan|review`;
@@ -219,8 +223,11 @@ CLI launches are not worth that diagnostic cost.
   then sign in with a Google account.
   **v1.0.15 or later required** — earlier versions silently drop output in
   non-TTY contexts on Windows (fixed upstream).
+- **Grok CLI** — Windows PowerShell: `irm https://x.ai/cli/install.ps1 | iex`,
+  then `grok login` (SuperGrok OAuth). Text only; image operations are rejected.
 
 Having only one of the two is fine — that vendor works, the other is skipped.
+Grok is optional the same way.
 
 ### API providers (generation path only) — optional
 
@@ -310,13 +317,16 @@ Ask Gemini to review the spec I just wrote — focus on logical gaps.
 This architecture decision is a big one. Get opinions from both Codex and
 Antigravity, then show me where they disagree.
 ```
+```
+Have Grok review this too.
+```
 
 Triggers are natural language, not keywords — any language Claude understands works.
 
 ## Data boundary — read this
 
 **Everything placed in the brief is sent, verbatim, to an external vendor
-(OpenAI / Google).** The skill is instructed to keep secrets, credentials, and raw
+(OpenAI / Google / xAI).** The skill is instructed to keep secrets, credentials, and raw
 repo dumps out of the brief, but the final responsibility is yours. On sensitive
 codebases, check what's being excerpted before it goes out.
 

@@ -2,12 +2,12 @@
 
 [English](./README.md) | **한국어**
 
-Claude Code 안에서 **다른 벤더의 AI**(Codex/GPT, Antigravity/Gemini)를 일상어로 부려 쓰는
+Claude Code 안에서 **다른 벤더의 AI**(Codex/GPT, Antigravity/Gemini, Grok)를 일상어로 부려 쓰는
 어댑터 스킬 — 점검·리뷰·의견부터 작업 오프로드, 이미지 생성까지.
 
-**버전 0.9.9**
+**버전 0.9.11**
 
-> "이 설계 코덱스로 점검받고 싶어" / "안티그래비티한테 물어봐" / "교차 검증해줘"
+> "이 설계 코덱스로 점검받고 싶어" / "안티그래비티한테 물어봐" / "그록으로 봐줘" / "교차 검증해줘"
 > "코덱스한테 로고 시안 이미지 만들어달라고 해줘" / "클로드 사용량 아끼게 이 번역은 제미나이로"
 > — 이렇게 말하면 발동한다. 슬래시 커맨드를 외울 필요가 없다.
 
@@ -88,6 +88,7 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
 | Windows에서 codex sandbox의 **파일 읽기 불능** | "파일 읽어봐" 대신 내용을 brief에 발췌 동봉 |
 | 이미지 생성: agy는 **지정 저장 위치를 무시**(자기 scratch 폴더에 저장), codex는 **쓰기 샌드박스 필요** + Windows 복사 실패 가능 | 벤더별 실제 산출물 위치를 알고, 파일 존재를 직접 확인 후 원한 위치로 옮김 — 벤더의 "저장했다"를 성공으로 안 침 |
 | "이상 없음"은 약한 신호(특히 Gemini의 false-negative 편향) | "문제를 못 찾음 ≠ 문제 없음" 명시 전달 |
+| Grok `--tools`는 이름이 전부 틀리면 조용히 열린다. Grok은 Claude/Cursor 하네스 설정을 기본으로 읽는다 | plan/review는 `--permission-mode plan`을 바닥으로 쓰고 격리 env 13개 강제(Claude 6 + Cursor 6 + `GROK_CODEX_SESSIONS_ENABLED`). 프로젝트 루트 `CLAUDE.md`는 남을 수 있다 |
 
 - **실행 영수증** — 벤더를 부른 뒤 관측한 것을 한 줄로 남긴다: 요청한 벤더·모델,
   알 수 있으면 실제 응답 backend, exit/timeout 상태, 거부된 대체가 있었으면 그 사실.
@@ -152,7 +153,9 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
   `--uncommitted`·`--base` 같은 대상 지정뿐이다). 실측: `--mode review`로 부른 Codex
   호출의 영수증에 `sandbox: danger-full-access`가 그대로 찍혔고, 그 값은 mode가 아니라
   `~/.codex/config.toml`에서 온다. Codex 리뷰에서 파일을 지키는 것은 brief의 금지 지시뿐이니
-  `--mode review`를 안전장치로 계산하지 말 것. `--mode`를 생략하면 기존 default 호출이며, Claude에서는 이것이 **full-access**
+  `--mode review`를 안전장치로 계산하지 말 것. Grok plan/review는 Codex보다 강하다 —
+  `--permission-mode plan`과 닫힌 `--tools` allowlist. 도구 이름이 전부 틀리면
+  fail-open이므로 `plan`이 바닥이다. `--mode`를 생략하면 기존 default 호출이며, Claude에서는 이것이 **full-access**
   호출이다 — 모든 기본 도구와 비대화형 실행을 caller가 준 실제 cwd에서 갖는다. 읽기 전용은
   명시적 `--mode plan|review`에서만 생기고, 권한 분리는 오직 flag 조합으로만 이뤄진다.
   receipt에는
@@ -175,7 +178,9 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
   (macOS/Linux: `curl -fsSL https://antigravity.google/cli/install.sh | bash` /
   Windows CMD: `curl -fsSL https://antigravity.google/cli/install.cmd -o install.cmd && install.cmd && del install.cmd`) 후 Google 계정 로그인.
   **v1.0.15 이상 필수** — 그 이전 버전은 Windows 비-TTY에서 출력이 조용히 유실된다(수정된 버그)
-- 둘 중 하나만 있어도 그 벤더는 동작한다
+- **Grok CLI** — Windows PowerShell: `irm https://x.ai/cli/install.ps1 | iex` 후
+  `grok login` (SuperGrok OAuth). 텍스트만. 이미지 과업은 거부한다.
+- 둘 중 하나만 있어도 그 벤더는 동작한다. Grok도 같은 식으로 선택이다.
 
 ### API provider (생성 경로 전용) — 선택
 
@@ -259,10 +264,13 @@ cp -r second-opinion/plugins/second-opinion/skills/second-opinion ~/.claude/skil
 ```
 이 아키텍처 결정, 중요한 거니까 코덱스랑 안티그래비티 둘 다 의견 들어보고 대조해줘
 ```
+```
+이 부분 그록으로도 봐줘
+```
 
 ## 데이터 경계 (중요)
 
-**brief에 담은 내용은 통째로 외부 벤더(OpenAI/Google)에 전송된다.**
+**brief에 담은 내용은 통째로 외부 벤더(OpenAI/Google/xAI)에 전송된다.**
 스킬은 시크릿·자격증명·원시 repo 덤프를 brief에 넣지 않도록 지시받지만,
 최종 책임은 사용자에게 있다. 민감한 코드베이스에서는 발췌 범위를 직접 확인하라.
 

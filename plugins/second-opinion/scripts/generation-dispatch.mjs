@@ -37,7 +37,7 @@ export const HTTP_PROVIDERS = Object.freeze({
   zhipu: { kind: "openai", key: "ZHIPU_API_KEY", model: "ZHIPU_MODEL", base: "ZHIPU_BASE_URL", defaultBase: "https://api.z.ai/api/paas/v4" },
 });
 
-const SUBSCRIPTION_PROVIDERS = new Set(["codex", "agy", "claude"]);
+const SUBSCRIPTION_PROVIDERS = new Set(["codex", "agy", "claude", "grok"]);
 
 export class GenerationDispatchError extends Error {
   constructor(message, {
@@ -1019,6 +1019,25 @@ function standardUsageFromRawReceipt(row) {
   return normalizeUsage(row?.vendorUsage);
 }
 
+function subscriptionOutputText(provider, raw) {
+  if (provider !== "grok") return raw;
+  let payload;
+  try { payload = JSON.parse(String(raw).trim()); }
+  catch {
+    throw invalidResponseFailure(
+      "grok adapter returned non-JSON output",
+      "Grok subscription output must be JSON with a string text field.",
+    );
+  }
+  if (typeof payload?.text !== "string") {
+    throw invalidResponseFailure(
+      "grok adapter returned JSON without a text string",
+      "Grok subscription output must include a string text field.",
+    );
+  }
+  return payload.text;
+}
+
 export function createSubscriptionAdapter(runSubscription) {
   if (typeof runSubscription !== "function") throw new TypeError("runSubscription must be a function");
   return async (config, request, deps = {}) => {
@@ -1093,7 +1112,7 @@ export function createSubscriptionAdapter(runSubscription) {
           remedy: "Inspect the configured stderr sink; no diagnosis was inferred.",
         });
       }
-      const text = readFileSync(out, "utf8");
+      const text = subscriptionOutputText(config.provider, readFileSync(out, "utf8"));
       if (!text.trim()) throw emptyResponseFailure(
         `${config.provider} adapter returned no text`,
         "The provider returned no usable text; inspect the saved stderr and retry the same provider after backoff.",
@@ -1107,7 +1126,8 @@ export function createSubscriptionAdapter(runSubscription) {
           remedy: "Use a subscription execution that reports enough model evidence to attribute the response.",
         });
       }
-      for (const chunk of pendingChunks) deps.onChunk?.(chunk);
+      if (config.provider === "grok") deps.onChunk?.(text);
+      else for (const chunk of pendingChunks) deps.onChunk?.(chunk);
       return {
         text,
         model: null,

@@ -1,19 +1,20 @@
 ---
 name: second-opinion
 description: >
-  외부 AI(Codex/GPT, Antigravity/Gemini)를 일상어로 부려 쓰는 어댑터 — 점검·리뷰·의견,
+  외부 AI(Codex/GPT, Antigravity/Gemini, Grok)를 일상어로 부려 쓰는 어댑터 — 점검·리뷰·의견,
   작업 오프로드, 이미지 생성 같은 벤더 능력까지. 트리거 — "코덱스로 점검받고 싶어",
   "코덱스한테 물어봐/시켜줘", "이거 코덱스 의견 들어봐", "안티그래비티로 봐줘",
-  "제미나이한테 검토시켜/만들어달라고 해줘", "다른 AI 시각으로 봐줘", "교차 검증해줘",
+  "제미나이한테 검토시켜/만들어달라고 해줘", "그록으로 봐줘", "그록한테 시켜줘",
+  "다른 AI 시각으로 봐줘", "교차 검증해줘",
   "이건 외부 AI로 처리해줘", "클로드 사용량 아끼게 외부로 돌려줘", "second opinion",
-  "ask codex", "ask gemini/antigravity", "have codex make it". 코드 리뷰·설계 점검·
+  "ask codex", "ask gemini/antigravity", "ask grok", "have codex make it". 코드 리뷰·설계 점검·
   아이디어 검증·글 검토·번역·생성 과업 등 용도 불문. 대상 벤더를 안 정했으면 성격에 맞게
   제안한다.
 ---
 
 # second-opinion — 외부 AI 어댑터
 
-**버전 0.9.10** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). (정본 버전은 `plugin.json`.)
+**버전 0.9.11** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). SuperGrok 구독 CLI vendor `grok`. (정본 버전은 `plugin.json`.)
 
 이 스킬은 **아무것도 차단하지 않는다** — 중개(relay)만 한다. 디스패처는 커맨드 정합성을 위한 도구일 뿐이다. "Claude가 디스패처를 반드시 거치게" 강제하는 것은 **부르는 쪽(caller)의 책임**이다 → [references/enforcement.md](references/enforcement.md).
 
@@ -165,7 +166,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/provider-probe.mjs" --targets-json providers.j
 않는다. 일반 raw/portable 영수증이 유일한 영구 증거다.
 
 모델을 지정하고 벤더를 모르면 `--vendor`를 생략할 수 있다. 디스패처가 Codex
-`models_cache.json`, `agy models`, Claude initialize control metadata를 대조해 자동
+`models_cache.json`, `agy models`, Claude initialize control metadata, `grok models`를 대조해 자동
 라우팅한다. 모델 메타데이터만 `~/.second-opinion/model-catalog-v1.json`에 24시간
 캐시하므로 fresh hit에서는 공급자 프로세스를 실행하지 않는다. 이미 로컬 파일인 Codex
 카탈로그는 현재 `CODEX_HOME`에서 매번 다시 읽어 다른 환경의 cache가 섞이지 않게 한다.
@@ -275,6 +276,25 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor claude --operation text
   (영수증 `default/default`·`invoked=true`·`exit=0`). 결과를 출력 텍스트로 실어 나를 필요가
   없다. `--mode plan|review`도 실제 project cwd를 탐색하지만 읽기만 가능하다.
 → 호출 전 필수: `references/adapter-claude.md` 를 반드시 읽을 것 (리뷰 독립성·비용·도구경계·Windows 함정)
+
+### Grok (SuperGrok 구독)
+
+```bash
+node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor grok --operation text \
+  --brief brief.txt --cwd <작업 repo> --model grok-4.6 \
+  --out grok-result.json --err grok-stderr.txt
+```
+
+읽기 전용 plan/review는 `--mode plan|review`를 붙인다. 이미지 과업은 거부한다.
+
+- brief는 `--prompt-file`로만 전달된다. stdin에는 넣지 않는다. `-p "프롬프트"` argv는 쓰지 않는다.
+- `--request-json` 구독 생성은 stdout JSON의 `text` 필드를 응답 본문과 stream chunk로 쓴다. 전체 JSON을 본문이나 chunk로 쓰지 않는다.
+- Windows에서 PATH에 `grok`가 없으면 `%USERPROFILE%\.grok\bin\grok.exe` fallback.
+- 인증은 `grok login` (OAuth). API key 경로는 이 vendor 범위 밖이다.
+- JSON `usage` 토큰이 없으면 subscription fail-closed. 전역 규율을 풀지 않는다.
+- plan/review는 `--permission-mode plan` + `--tools read_file,grep,list_dir`. `--tools` 이름이 전부 틀리면 grok은 에러 없이 도구를 연다(실측). native `plan`이 그 바닥이다.
+- plan/review spawn은 하네스 호환 env 13개를 `false`로 강제한다: `GROK_CLAUDE_*` 6, `GROK_CURSOR_*` 6, `GROK_CODEX_SESSIONS_ENABLED` 1. Codex의 나머지 칸은 grok에서 inert. 프로젝트 루트 `CLAUDE.md`는 그래도 남을 수 있다 — 상세는 adapter-grok.md. 호환을 켜서 검증하지 않는다. 검증은 꺼진 상태(`grok inspect` off, spawn env false)만.
+→ 호출 전 필수: `references/adapter-grok.md`
 
 ## 오래 걸리는 호출 (60초+ 예상: 큰 brief, 병렬 다건)
 

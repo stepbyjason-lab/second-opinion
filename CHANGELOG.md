@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.11 — 2026-08-19
+
+- SuperGrok OAuth 구독 CLI vendor `grok`을 dispatcher에 추가했다. 기존
+  `codex` / `agy` / `claude` argv·mode 매핑은 그대로다. brief는 `--prompt-file`로만
+  넘기고, JSON `usage` 토큰으로 귀속하며, image 과업은 거부한다. Windows는
+  `%USERPROFILE%\.grok\bin\grok.exe` fallback을 쓴다.
+- Grok 호출은 stdin에 brief를 중복 쓰지 않는다. portable `USAGE_SOURCES`에
+  `grok-result-json`을 넣고, `$grok`/`${grok}` 직접 호출도 enforcement가 잡으며,
+  구독 generation은 JSON `text`만 응답 본문과 stream chunk로 쓴다.
+- Grok `--mode plan|review`는 `--permission-mode plan`을 `--tools`와 함께 건다.
+  `--tools` 이름이 전부 틀리면 grok이 도구를 여는 실측(fail-open)에 대한 바닥이다.
+- Grok plan/review spawn은 하네스 호환 env 13개를 `false`로 강제한다:
+  `GROK_CLAUDE_*` 6, `GROK_CURSOR_*` 6, `GROK_CODEX_SESSIONS_ENABLED` 1.
+  Codex의 다른 칸은 grok에서 inert라 sessions만 끈다. `~/.grok/config.toml`은
+  쓰지 않는다. 프로젝트 루트 `CLAUDE.md`는 compat를 꺼도 남을 수 있다.
+  호환 on으로 덮기를 실측하지 않는다 — on은 세션을 죽인다. 검증은 꺼진 상태만.
+
 ## 0.9.10 — 2026-08-17
 
 - Generation requests now use payload silence as the liveness signal through

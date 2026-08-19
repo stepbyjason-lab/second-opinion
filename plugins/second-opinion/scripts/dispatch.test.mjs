@@ -9,12 +9,15 @@ import { PassThrough, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import {
   AGY_NATIVE_READONLY_PROFILE,
+  GROK_HARNESS_ISOLATION_ENV,
   PolicyError,
+  applyGrokHarnessIsolationEnv,
   buildVendorArgv,
   composeVendorInput,
   detectDirectInference,
   effectiveInputProfile,
   effectiveVendorMode,
+  grokNeedsHarnessIsolation,
   resolveExecutable,
 } from "./vendor-policy.mjs";
 import { executeCli, parseCli, resolveCodexModelAlias, resolveModelRoute, resolveVendorForModel, run, splitModelEffort, usageText } from "./dispatch.mjs";
@@ -247,6 +250,50 @@ test("codex subscription adapter buffers until accepted, preserves role fields, 
   assert.match(serializedBrief, /<user>\nseparate-user\n<\/user>/);
   assert.deepEqual(result.usage, { prompt_tokens: 11, completion_tokens: 5, total_tokens: 16 });
   assert.equal(result.model, null, "the adapter must not pretend the requested model was vendor-reported");
+});
+
+test("grok subscription adapter returns JSON text field, not the envelope", async () => {
+  const body = grokResult("generated sentence");
+  const adapter = createSubscriptionAdapter(async (options, deps) => {
+    deps.onStdoutChunk(body);
+    writeFileSync(options.out, body, "utf8");
+    writeFileSync(options.err, "", "utf8");
+    writeFileSync(deps.internalReceiptPath, `${JSON.stringify({
+      vendorUsage: { source: "grok-result-json", inputTokens: 3, outputTokens: 1, totalTokens: 4 },
+    })}\n`, "utf8");
+    return 0;
+  });
+  const chunks = [];
+  const result = await adapter(
+    { provider: "grok", model: "grok-4.6" },
+    { system: "s", user: "u", timeoutSeconds: 30, maxCompletionTokens: 4096, lensId: null },
+    { onChunk: (chunk) => chunks.push(chunk), env: {} },
+  );
+  assert.equal(result.text, "generated sentence");
+  assert.doesNotMatch(result.text, /modelUsage/);
+  assert.deepEqual(chunks, ["generated sentence"]);
+});
+
+test("grok subscription adapter fails closed on non-JSON or missing text", async () => {
+  const runWithBody = async (body) => {
+    const adapter = createSubscriptionAdapter(async (options, deps) => {
+      writeFileSync(options.out, body, "utf8");
+      writeFileSync(options.err, "", "utf8");
+      writeFileSync(deps.internalReceiptPath, `${JSON.stringify({
+        vendorUsage: { source: "grok-result-json", inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      })}\n`, "utf8");
+      return 0;
+    });
+    return captureRejection(() => adapter(
+      { provider: "grok", model: "grok-4.6" },
+      { system: "s", user: "u", timeoutSeconds: 30, maxCompletionTokens: 4096, lensId: null },
+      { env: {} },
+    ));
+  };
+  const malformed = await runWithBody("not-json");
+  assert.equal(malformed.code, "invalid_response");
+  const missing = await runWithBody(JSON.stringify({ usage: { input_tokens: 1 } }));
+  assert.equal(missing.code, "invalid_response");
 });
 
 test("codex subscription adapter fails closed when standard usage is unavailable", async () => {
@@ -531,7 +578,7 @@ test("generation help and documentation teach the repaired safety contracts", ()
   for (const text of [koreanReadme, skill]) assert.match(text, /문자열로 존재하지만 공백뿐.*재시도.*필드 부재·비문자열.*malformed JSON\/SSE/s);
   assert.match(codexAdapter, /문자열로 존재하지만 공백뿐.*재시도.*malformed/s);
   assert.match(changelog, /HTTP generation receipts/);
-  assert.match(changelog, /## Unreleased[\s\S]*silence_timeout_seconds[\s\S]*full jitter/);
+  assert.match(changelog, /## 0\.9\.10[\s\S]*silence_timeout_seconds[\s\S]*full jitter/);
   assert.match(readme, /HTTP responses may succeed with `usage: null`.*subscription adapters still fail closed/is);
   assert.match(koreanReadme, /HTTP는 응답 model이 귀속을 증명하면\s*`usage: null`이어도 성공.*subscription adapter는\s*usage가 없으면 계속 실패/s);
   for (const text of [readme, koreanReadme, skill]) {
@@ -562,15 +609,15 @@ test("skill resolves the catalog path directly before declaring it missing", () 
   assert.match(skill, /검색 결과가 비었다는 이유만으로 설치 누락이나 카탈로그 오류라고 단정하지 않는다/);
 });
 
-test("0.9.9 public help and documentation describe cache-first ranked routing", () => {
+test("0.9.11 public help and documentation describe cache-first ranked routing", () => {
   const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
   const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
   const publicReadmeUrls = [new URL("../../../README.md", import.meta.url), new URL("../../../README.ko.md", import.meta.url)];
   const publicReadmes = publicReadmeUrls.filter((url) => existsSync(url)).map((url) => readFileSync(url, "utf8"));
-  assert.equal(plugin.version, "0.9.9");
+  assert.equal(plugin.version, "0.9.11");
   assert.ok(publicReadmes.length === 0 || publicReadmes.length === 2, "public snapshot must carry both README files");
   for (const text of [skill, ...publicReadmes]) {
-    assert.match(text, /0\.9\.9/);
+    assert.match(text, /0\.9\.11/);
     assert.match(text, /model-catalog-v1\.json/);
     assert.match(text, /opus 4\.6/);
   }
@@ -578,7 +625,7 @@ test("0.9.9 public help and documentation describe cache-first ranked routing", 
   // and looks restricted while running at whatever sandbox_mode the config sets.
   // One caller dispatched Codex that way, called it read-only, and only found
   // `sandbox: danger-full-access` afterwards in the receipt.
-  assert.match(usageText(), /narrows permissions on Claude and AGY only/);
+  assert.match(usageText(), /narrows permissions on Claude, AGY, and Grok/);
   assert.match(usageText(), /Codex has no\s+tool allowlist/);
   for (const text of [skill, ...publicReadmes]) {
     assert.ok(
@@ -651,9 +698,12 @@ const FIXTURES = [
     argv: ["--dangerously-skip-permissions", "--print-timeout", "1234s", "--model", "Gemini 3.5 Flash (High)", "--add-dir", root] },
   { vendor: "claude", operation: "text", model: "opus", effort: "high", inputs: [], isGitRepo: false, cwd: root,
     argv: ["-p", "--model", "opus", "--effort", "high", "--output-format", "json", "--no-session-persistence", "--safe-mode", "--disable-slash-commands", "--dangerously-skip-permissions", "--tools=default"] },
+  { vendor: "grok", operation: "text", model: "grok-4.6", effort: "high", inputs: [], isGitRepo: false, cwd: root, brief,
+    argv: ["--prompt-file", resolve(brief), "--output-format", "json", "-m", "grok-4.6", "--effort", "high", "--cwd", root, "--permission-mode", "bypassPermissions"] },
 ];
+const CLAUDE_FIXTURE = FIXTURES.find((fixture) => fixture.vendor === "claude");
 
-test("seven hand-written argv fixtures match policy exactly", () => {
+test("hand-written argv fixtures match policy exactly", () => {
   for (const fixture of FIXTURES) assert.deepEqual(buildVendorArgv(fixture), fixture.argv, `${fixture.vendor}/${fixture.operation}`);
   assert.deepEqual(FIXTURES.filter((fixture) => fixture.argv.includes("-s")).map((fixture) => `${fixture.vendor}/${fixture.operation}`), ["codex/image-generate"]);
   for (const fixture of FIXTURES.filter((fixture) => fixture.operation !== "image-generate")) assert.equal(fixture.argv.includes("-s"), false);
@@ -696,7 +746,146 @@ const MODE_FIXTURES = [
     inputProfile: "none",
     argv: ["exec", "review", "--skip-git-repo-check", "-m", "gpt model \"quoted\"", "-c", "model_reasoning_effort=\"high\"", "-"],
   },
+  {
+    vendor: "grok", operation: "text", mode: "plan", model: "grok-4.6",
+    inputs: [], cwd: root, brief,
+    effectiveMode: "plan",
+    inputProfile: "none",
+    argv: ["--prompt-file", resolve(brief), "--output-format", "json", "-m", "grok-4.6", "--cwd", root, "--permission-mode", "plan", "--tools", "read_file,grep,list_dir", "--no-subagents"],
+  },
+  {
+    vendor: "grok", operation: "text", mode: "review", model: "grok-4.6",
+    inputs: [], cwd: root, brief,
+    effectiveMode: "review",
+    inputProfile: "none",
+    argv: ["--prompt-file", resolve(brief), "--output-format", "json", "-m", "grok-4.6", "--cwd", root, "--permission-mode", "plan", "--tools", "read_file,grep,list_dir", "--no-subagents"],
+  },
 ];
+
+function grokResult(text = "pong") {
+  return JSON.stringify({
+    text,
+    usage: { input_tokens: 3, output_tokens: 1, total_tokens: 4 },
+    modelUsage: { "grok-4.6-build": { inputTokens: 3, outputTokens: 1 } },
+    total_cost_usd: 0,
+  });
+}
+
+const GROK_FIXTURE = FIXTURES.find((fixture) => fixture.vendor === "grok");
+
+test("grok rejects image operations", () => {
+  assert.throws(
+    () => buildVendorArgv({ vendor: "grok", operation: "image-generate", model: "grok-4.6", brief, cwd: root }),
+    (error) => error instanceof PolicyError && error.classification === "mode_unsupported",
+  );
+  assert.throws(
+    () => effectiveVendorMode({ vendor: "grok", operation: "image-analyze", mode: "default" }),
+    (error) => error instanceof PolicyError && error.classification === "mode_unsupported",
+  );
+});
+
+test("run does not write grok brief to stdin", async () => {
+  const out = join(root, "grok-stdin.out");
+  const err = join(root, "grok-stdin.err");
+  let stdin = "";
+  const spawnFake = () => fakeChild((child) => {
+    child.stdin.on("data", (chunk) => { stdin += chunk; });
+    child.stdin.on("end", () => {
+      child.stdout.end(grokResult());
+      child.stderr.end();
+      queueMicrotask(() => child.emit("close", 0, null));
+    });
+    child.stdin.resume();
+  });
+  const code = await run({ ...GROK_FIXTURE, brief, cwd: root, out, err, timeout: 2, dryRun: false }, {
+    spawn: spawnFake, stderr: memoryWriter().stream,
+  });
+  assert.equal(code, 0);
+  assert.equal(stdin, "");
+});
+
+test("grok portable receipt keeps grok-result-json usage", async () => {
+  const out = join(root, "grok-portable.out");
+  const err = join(root, "grok-portable.err");
+  const raw = join(root, "grok-portable-raw.jsonl");
+  const portable = join(root, "grok-portable.jsonl");
+  const spawnFake = () => fakeChild((child) => {
+    child.stdin.on("end", () => {
+      child.stdout.end(grokResult());
+      child.stderr.end();
+      queueMicrotask(() => child.emit("close", 0, null));
+    });
+    child.stdin.resume();
+  });
+  const code = await run({ ...GROK_FIXTURE, brief, cwd: root, out, err, timeout: 2, dryRun: false }, {
+    spawn: spawnFake, stderr: memoryWriter().stream,
+    env: { SECOND_OPINION_RECEIPT: raw, SECOND_OPINION_PORTABLE_RECEIPT: portable },
+  });
+  assert.equal(code, 0);
+  assert.equal(receiptLines(raw)[0].vendorUsage.source, "grok-result-json");
+  assert.equal(receiptLines(raw)[0].vendorUsageStatus, "ok");
+  assert.equal(receiptLines(portable)[0].vendorUsage.source, "grok-result-json");
+  assert.equal(receiptLines(portable)[0].vendorUsageStatus, "ok");
+});
+
+test("grok plan and review use permission-mode plan as a floor under the tool allowlist", () => {
+  const grokDefault = buildVendorArgv(GROK_FIXTURE);
+  assert.deepEqual(
+    grokDefault.filter((_, index, argv) => argv[index - 1] === "--permission-mode" || argv[index] === "--permission-mode"),
+    ["--permission-mode", "bypassPermissions"],
+  );
+  for (const mode of ["plan", "review"]) {
+    const argv = buildVendorArgv({ ...GROK_FIXTURE, mode });
+    assert.deepEqual(
+      argv.filter((_, index) => argv[index] === "--permission-mode" || argv[index - 1] === "--permission-mode"),
+      ["--permission-mode", "plan"],
+      mode,
+    );
+    assert.deepEqual(
+      argv.slice(argv.indexOf("--tools"), argv.indexOf("--tools") + 3),
+      ["--tools", "read_file,grep,list_dir", "--no-subagents"],
+      mode,
+    );
+  }
+});
+
+test("grok plan and review force harness-compat isolation env without writing config.toml", async () => {
+  assert.equal(grokNeedsHarnessIsolation(GROK_FIXTURE), false);
+  assert.equal(grokNeedsHarnessIsolation({ ...GROK_FIXTURE, mode: "review" }), true);
+  const forcedOff = applyGrokHarnessIsolationEnv({ GROK_CLAUDE_SKILLS_ENABLED: "true", grok_claude_mcps_enabled: "1" });
+  assert.equal(forcedOff.GROK_CLAUDE_SKILLS_ENABLED, "false");
+  assert.equal(forcedOff.GROK_CLAUDE_MCPS_ENABLED, "false");
+  assert.equal(Object.keys(forcedOff).some((key) => key === "grok_claude_mcps_enabled"), false);
+  for (const [key, value] of Object.entries(GROK_HARNESS_ISOLATION_ENV)) {
+    assert.equal(forcedOff[key], value, key);
+  }
+
+  const out = join(root, "grok-isolate.out");
+  const err = join(root, "grok-isolate.err");
+  let childEnv;
+  const spawnFake = (_executable, _argv, spawnOptions) => {
+    childEnv = spawnOptions.env;
+    return fakeChild((child) => {
+      child.stdin.on("end", () => {
+        child.stdout.end(grokResult());
+        child.stderr.end();
+        queueMicrotask(() => child.emit("close", 0, null));
+      });
+      child.stdin.resume();
+    });
+  };
+  const code = await run({ ...GROK_FIXTURE, mode: "review", brief, cwd: root, out, err, timeout: 2, dryRun: false }, {
+    spawn: spawnFake,
+    stderr: memoryWriter().stream,
+    env: { GROK_CLAUDE_SKILLS_ENABLED: "true", GROK_CURSOR_HOOKS_ENABLED: "true" },
+  });
+  assert.equal(code, 0);
+  assert.equal(childEnv.GROK_CLAUDE_SKILLS_ENABLED, "false");
+  assert.equal(childEnv.GROK_CURSOR_HOOKS_ENABLED, "false");
+  assert.equal(childEnv.GROK_CLAUDE_AGENTS_ENABLED, "false");
+  assert.equal(childEnv.GROK_CODEX_SESSIONS_ENABLED, "false");
+  assert.equal(Object.keys(GROK_HARNESS_ISOLATION_ENV).length, 13);
+});
 
 test("explicit plan and review modes map to closed provider-native argv", () => {
   for (const fixture of MODE_FIXTURES) {
@@ -1105,7 +1294,7 @@ test("seven CLI dry-runs match literal fixtures and use bare executable names", 
     const args = ["--vendor", fixture.vendor, "--operation", fixture.operation, "--brief", brief, "--cwd", fixture.cwd, "--model", fixture.model, "--dry-run"];
     if (fixture.effort) args.push("--effort", fixture.effort);
     if (fixture.timeout) args.push("--timeout", String(fixture.timeout));
-    if (fixture.vendor === "claude") args.push("--out", join(root, "claude-dry.out"), "--err", join(root, "claude-dry.err"));
+    if (fixture.vendor === "claude" || fixture.vendor === "grok") args.push("--out", join(root, `${fixture.vendor}-dry.out`), "--err", join(root, `${fixture.vendor}-dry.err`));
     for (const input of fixture.inputs) args.push("--input", input);
     const stdout = memoryWriter();
     const stderr = memoryWriter();
@@ -1131,7 +1320,7 @@ test("explicit mode CLI dry-runs expose requested and effective modes", async ()
     ];
     if (fixture.effort) args.push("--effort", fixture.effort);
     if (fixture.timeout) args.push("--timeout", String(fixture.timeout));
-    if (fixture.vendor === "claude") args.push("--out", join(root, `claude-${fixture.mode}.out`), "--err", join(root, `claude-${fixture.mode}.err`));
+    if (fixture.vendor === "claude" || fixture.vendor === "grok") args.push("--out", join(root, `${fixture.vendor}-${fixture.mode}.out`), "--err", join(root, `${fixture.vendor}-${fixture.mode}.err`));
     const stdout = memoryWriter();
     const stderr = memoryWriter();
     const status = await executeCli(args, { cwd: root, stdout: stdout.stream, stderr: stderr.stream });
@@ -1149,7 +1338,7 @@ test("explicit mode CLI dry-runs expose requested and effective modes", async ()
 // got a bare "unknown argument", and went reading SINGLE_OPTIONS to find --cwd.
 test("help is served without arguments, on --help, and inside the unknown-argument error", async () => {
   const listed = [
-    "codex", "agy", "claude", "antigravity", "--cwd", "--brief", "--dry-run",
+    "codex", "agy", "claude", "grok", "antigravity", "--cwd", "--brief", "--dry-run",
     "installed_plugins.json", "available-skills catalog", "Do not flatten", "not proof of absence",
   ];
 
@@ -1327,7 +1516,7 @@ function receiptLines(path) { return readFileSync(path, "utf8").trimEnd().split(
 
 test("direct Claude run requires model, effort, and evidence paths before spawn", async () => {
   const complete = {
-    ...FIXTURES.at(-1),
+    ...CLAUDE_FIXTURE,
     brief,
     cwd: root,
     out: join(root, "direct-claude.out"),
@@ -1370,7 +1559,7 @@ test("Claude host signal does not change broker execution or receipt", async () 
     });
   };
   const fixture = {
-    ...FIXTURES.at(-1),
+    ...CLAUDE_FIXTURE,
     brief,
     cwd: root,
     out,
@@ -1407,7 +1596,7 @@ test("Claude result binds the observed model and usage into the existing receipt
   });
   let code;
   await withReceipt(receipt, async () => {
-    code = await run({ ...FIXTURES.at(-1), brief, cwd: root, out, err, expectOutput: "NONE", timeout: 2, dryRun: false }, {
+    code = await run({ ...CLAUDE_FIXTURE, brief, cwd: root, out, err, expectOutput: "NONE", timeout: 2, dryRun: false }, {
       spawn: spawnFake, stderr: memoryWriter().stream, env: { SECOND_OPINION_RECEIPT: receipt },
     });
   });
@@ -1534,7 +1723,7 @@ test("Claude receipt tolerates absent optional cache and context fields without 
   });
   let code;
   await withReceipt(receipt, async () => {
-    code = await run({ ...FIXTURES.at(-1), brief, cwd: root, out, err, timeout: 2, dryRun: false }, {
+    code = await run({ ...CLAUDE_FIXTURE, brief, cwd: root, out, err, timeout: 2, dryRun: false }, {
       spawn: spawnFake, stderr: memoryWriter().stream, env: { SECOND_OPINION_RECEIPT: receipt },
     });
   });
@@ -1569,7 +1758,7 @@ test("Claude empty, invalid, errored, or wrong-model output fails closed with ra
     });
     let code;
     await withReceipt(receipt, async () => {
-      code = await run({ ...FIXTURES.at(-1), brief, cwd: root, out, err, timeout: 2, dryRun: false }, {
+      code = await run({ ...CLAUDE_FIXTURE, brief, cwd: root, out, err, timeout: 2, dryRun: false }, {
         spawn: spawnFake, stderr: parent.stream, env: { SECOND_OPINION_RECEIPT: receipt },
       });
     });
@@ -1882,11 +2071,18 @@ const BLOCK = [
   ["agy", "agy"],
   ["npx codex exec -", "codex"],
   ["pnpm exec agy --print hi", "agy"],
+  ["grok --prompt-file brief.txt", "grok"],
+  ["grok -p hi", "grok"],
+  ["$grok --prompt-file brief.txt", "grok"],
+  ["${grok} --prompt-file brief.txt", "grok"],
+  ["$GROK --prompt-file brief.txt", "grok"],
+  ["${GROK} -p hi", "grok"],
 ];
 const PASS = [
   "node ./dispatch.mjs --vendor codex --operation text --brief b.txt",
   "codex --version", "codex login", "codex logout",
   "agy --version", "agy models", "agy --help",
+  "grok login", "grok logout", "grok models", "grok version", "grok --version",
   "irm https://chatgpt.com/codex/install.ps1 | iex",
   "claude -p hello",
   "git commit -m \"fix codex exec\"",
@@ -2662,6 +2858,19 @@ test("a 1025-character caller model preserves raw evidence and degrades only por
   assert.equal(receiptLines(raw)[0].model, model, "raw v1 model remains unchanged");
   assert.equal(receiptLines(portable)[0].modelRequested, null);
   assert.equal(receiptLines(portable)[0].model, null);
+});
+
+test("preparePortableUsage accepts grok-result-json", async () => {
+  const { preparePortableUsage } = await portableModule();
+  const prepared = preparePortableUsage({
+    source: "grok-result-json",
+    inputTokens: 3,
+    outputTokens: 1,
+    totalTokens: 4,
+  }, "ok");
+  assert.equal(prepared.status, "ok");
+  assert.equal(prepared.usage.source, "grok-result-json");
+  assert.equal(prepared.usage.inputTokens, 3);
 });
 
 test("malformed optional usage degrades to a closed marker and keeps a valid row", async () => {
