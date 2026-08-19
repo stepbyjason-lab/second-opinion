@@ -321,6 +321,19 @@ Antigravity, then show me where they disagree.
 Have Grok review this too.
 ```
 
+For Madi's usual review pass, state the target, required evidence, and no-edit
+rule together:
+
+```
+Run a Madi review of this change with Codex. Inspect the current worktree, report
+numbered P0–P3 findings with file/line evidence, do not edit files, and return
+the execution receipt.
+```
+
+For an independent second pass, keep the same brief and target, name a different
+vendor, and ask to compare the two sets of findings only after both receipts are
+available.
+
 Triggers are natural language, not keywords — any language Claude understands works.
 
 ## Data boundary — read this

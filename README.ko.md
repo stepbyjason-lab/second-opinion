@@ -253,6 +253,16 @@ cp -r second-opinion/plugins/second-opinion/skills/second-opinion ~/.claude/skil
 
 ## 사용 예
 
+Madi에서 가장 자주 쓰는 리뷰는 대상·근거·수정 금지·영수증을 한 번에 명시하면 된다.
+
+```
+현재 변경을 Codex로 Madi 리뷰해줘. 현재 worktree를 점검해 P0~P3 findings를 파일/줄
+근거와 번호 목록으로 보고하고, 파일은 수정하지 말고 실행 영수증도 돌려줘.
+```
+
+독립 2차 패스는 같은 brief와 대상을 유지한 채 다른 벤더를 지정하고, 두 영수증이 나온 뒤에만
+findings를 대조해 달라고 요청한다.
+
 설치 후 아무 세션에서:
 
 ```

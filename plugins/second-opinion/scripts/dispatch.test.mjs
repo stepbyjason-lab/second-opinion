@@ -599,6 +599,22 @@ test("generation help and documentation teach the repaired safety contracts", ()
   assert.match(probeHelp.stdout, /printed and not retained/);
 });
 
+test("Madi review fast path stays present in help and user documentation", () => {
+  const help = usageText();
+  assert.match(help, /MADI REVIEW EXAMPLE/);
+  assert.match(help, /node dispatch\.mjs --vendor codex --operation text --mode review --brief <review-brief\.txt>/);
+  assert.match(help, /--cwd <review-target> --out <review\.out> --err <review\.err>/);
+  assert.match(help, /Reviewers must not edit/);
+
+  const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
+  const readme = readFileSync(new URL("../../../README.md", import.meta.url), "utf8");
+  const koreanReadme = readFileSync(new URL("../../../README.ko.md", import.meta.url), "utf8");
+  assert.match(skill, /Madi 리뷰 바로 보내기/);
+  assert.match(skill, /독립 2차 패스/);
+  assert.match(readme, /For Madi's usual review pass/);
+  assert.match(koreanReadme, /Madi에서 가장 자주 쓰는 리뷰/);
+});
+
 test("skill resolves the catalog path directly before declaring it missing", () => {
   // This is a user-facing operations contract, not prose decoration. A PS 5.1
   // `rg --files | rg '...$'` false negative previously produced a false install error.

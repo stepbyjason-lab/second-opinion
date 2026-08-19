@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Documentation: add a Madi-centered review fast path to dispatcher help, the
+  skill, and both READMEs. It shows the explicit `--mode review` invocation,
+  preserves the no-edit requirement, and explains how to make an independent
+  second pass without changing the review target.
+
 ## 0.9.11 — 2026-08-19
 
 - SuperGrok OAuth 구독 CLI vendor `grok`을 dispatcher에 추가했다. 기존

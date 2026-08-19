@@ -67,6 +67,22 @@ plan/review 권한을 자동 적용하지 않는다.
 - 지원하지 않는 조합은 default로 조용히 폴백하지 않는다.
 - 명시적 plan/review가 0바이트를 반환하면 provider exit 0이어도 dispatcher exit 4다.
 
+## Madi 리뷰 바로 보내기
+
+Madi 패널에서 가장 흔한 코드 리뷰는 먼저 아래 한 건을 보낸다. `review-brief.txt`에는 위의
+5필드(역할/대상/제약/출력 형식/Do NOT)를 넣고, 특히 **번호 목록·P0~P3 심각도·파일/줄 근거·파일
+수정 금지**를 명시한다.
+
+```bash
+node <dispatch> --vendor codex --operation text --mode review --brief review-brief.txt \
+  --cwd <review-target> --out review.out --err review.err
+```
+
+독립 2차 패스는 같은 brief·`--cwd`·`--mode review`를 보존하고 `--vendor`, 해당 벤더가 요구하는
+`--model`, `--out`/`--err`만 바꿔 보낸다. 결과의 영수증에서 실제 `vendor`·`model`·
+`requestedMode`/`effectiveMode`를 확인한 뒤에만 Madi 패널 증거로 사용한다. Codex의 review는
+워크플로 선택일 뿐 권한 격리가 아니므로, 이 명령만으로 쓰기가 막힌다고 간주하지 않는다.
+
 ## 벤더 선택 (사용자가 지정 안 했을 때의 기본)
 
 | 상황 | 벤더 | 이유 |
