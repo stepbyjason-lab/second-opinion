@@ -132,7 +132,7 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
   보증하지 않으며 한 dispatch가 항상 두 행을 만든다고 주장하지 않는다.
   `--vendor claude`도 같은 dispatcher를 사용하며, 폐기된 280초
   셸 timeout을 쓰지 않는다. 기본 60분(3600초) 비용 상한은 일반 리뷰 마감이 아니다. 리뷰에
-  300초 같은 짧은 `--timeout`을 절대 주지 않는다. 보통 규모의 리뷰도 15~30분이 걸릴 수 있다.
+  300초 같은 짧은 `--timeout`을 절대 주지 않는다. 30분을 넘는 리뷰도 있다.
   오래 걸리는 호출은 백그라운드로 두어 job 생사와 `--err` 진행을 관찰한 뒤 완성된 출력과 영수증이
   있을 때만 findings를 채택한다. Claude result JSON의 실제 model·token usage·cost를
   `vendorUsage`에 결속하고 빈/깨진/다른 모델 출력은 exit 4로 거부한다. 디스패처는 중립

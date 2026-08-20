@@ -669,7 +669,7 @@ test("0.9.11 public help and documentation describe cache-first ranked routing",
   assert.match(usageText(), /run it in background, observe liveness\/--err, then require a receipt/);
   assert.match(skill, /공통 3600초 비용 상한/);
   assert.match(skill, /리뷰에는 300초 같은 짧은 `--timeout`을 절대 주지 않는다/);
-  assert.match(skill, /15~30분이 걸릴 수/);
+  assert.match(skill, /30분을 넘는 리뷰도 있다/);
   assert.match(skill, /리뷰 없음이 아니라 실패/);
   if (publicReadmes.length === 2) {
     assert.match(publicReadmes[0], /60-minute \(3600-second\)\s+cost backstop/);
