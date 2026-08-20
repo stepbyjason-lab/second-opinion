@@ -605,14 +605,20 @@ test("Madi review fast path stays present in help and user documentation", () =>
   assert.match(help, /node dispatch\.mjs --vendor codex --operation text --mode review --brief <review-brief\.txt>/);
   assert.match(help, /--cwd <review-target> --out <review\.out> --err <review\.err>/);
   assert.match(help, /Reviewers must not edit/);
+  assert.match(help, /Grok review baseline: add --model grok-4\.6 --effort medium/);
 
   const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
+  const grokAdapter = readFileSync(new URL("../skills/second-opinion/references/adapter-grok.md", import.meta.url), "utf8");
   const readme = readFileSync(new URL("../../../README.md", import.meta.url), "utf8");
   const koreanReadme = readFileSync(new URL("../../../README.ko.md", import.meta.url), "utf8");
   assert.match(skill, /Madi 리뷰 바로 보내기/);
   assert.match(skill, /독립 2차 패스/);
+  assert.match(skill, /--model grok-4\.6 --effort medium/);
+  assert.match(grokAdapter, /--model grok-4\.6 --effort medium/);
   assert.match(readme, /For Madi's usual review pass/);
+  assert.match(readme, /standard review example explicitly uses `--effort medium`/);
   assert.match(koreanReadme, /Madi에서 가장 자주 쓰는 리뷰/);
+  assert.match(koreanReadme, /표준 리뷰 예시는 가성비 기준 `--effort medium`/);
 });
 
 test("skill resolves the catalog path directly before declaring it missing", () => {

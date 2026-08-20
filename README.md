@@ -115,6 +115,7 @@ CLI launches are not worth that diagnostic cost.
 | Image generation: agy **ignores where you asked it to save** (uses its own scratch dir), codex needs a **write-enabled sandbox** and its Windows copy step can fail | knows each vendor's real artifact location, verifies the file actually exists, and moves it where you wanted — a vendor saying "saved" is not treated as success |
 | "No issues found" is a weak signal (Gemini especially leans false-negative) | always relayed as "didn't find problems ≠ no problems" |
 | Grok `--tools` with every name unknown fail-open; Grok also loads Claude/Cursor harness config by default | plan/review use `--permission-mode plan` as a floor and force isolation env: Claude 6 + Cursor 6 + `GROK_CODEX_SESSIONS_ENABLED`. Project-root `CLAUDE.md` can still load |
+| Grok review examples that omit reasoning effort silently use the vendor default | the standard review example explicitly uses `--effort medium` for cost/quality balance; dispatch forwards it unchanged and the receipt retains `effortRequested` |
 
 - **Execution receipts** — after every vendor call the skill states what was
   actually observed: the vendor and model requested, the real backend if known,

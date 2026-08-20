@@ -25,6 +25,7 @@
 //     node <dispatch> --vendor codex  --operation text --brief b.txt --cwd <dir> --out o.txt --err e.txt
 //     node <dispatch> --vendor agy    --operation text --brief b.txt --cwd <dir> --model "gemini-3.6-flash-high" --out o.txt --err e.txt
 //     node <dispatch> --vendor claude --operation text --brief b.txt --cwd <dir> --model sonnet --effort low --out o.txt --err e.txt
+//     node <dispatch> --vendor grok   --operation text --brief b.txt --cwd <dir> --model grok-4.6 --effort medium --out o.txt --err e.txt
 //
 //   RECEIPTS — SECOND_OPINION_RECEIPT remains private and keeps its raw v1
 //   locators. SECOND_OPINION_PORTABLE_RECEIPT is an independent, optional JSONL
@@ -110,6 +111,8 @@ export function usageText() {
     "      --cwd <review-target> --out <review.out> --err <review.err>",
     "  Independent second pass: keep the same brief/cwd/mode, change only --vendor,",
     "    any vendor-required --model, and the output paths. Reviewers must not edit.",
+    "  Grok review baseline: add --model grok-4.6 --effort medium; the dispatcher",
+    "    forwards --effort unchanged to the Grok CLI.",
     "",
     "  --brief is a FILE; Codex/AGY/Claude receive it on stdin, Grok via --prompt-file.",
     "  --request-json selects one named HTTP/subscription provider with same-provider retry,",

@@ -89,6 +89,7 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
 | 이미지 생성: agy는 **지정 저장 위치를 무시**(자기 scratch 폴더에 저장), codex는 **쓰기 샌드박스 필요** + Windows 복사 실패 가능 | 벤더별 실제 산출물 위치를 알고, 파일 존재를 직접 확인 후 원한 위치로 옮김 — 벤더의 "저장했다"를 성공으로 안 침 |
 | "이상 없음"은 약한 신호(특히 Gemini의 false-negative 편향) | "문제를 못 찾음 ≠ 문제 없음" 명시 전달 |
 | Grok `--tools`는 이름이 전부 틀리면 조용히 열린다. Grok은 Claude/Cursor 하네스 설정을 기본으로 읽는다 | plan/review는 `--permission-mode plan`을 바닥으로 쓰고 격리 env 13개 강제(Claude 6 + Cursor 6 + `GROK_CODEX_SESSIONS_ENABLED`). 프로젝트 루트 `CLAUDE.md`는 남을 수 있다 |
+| Grok 리뷰 예시가 reasoning effort를 빼면 벤더 기본값으로 조용히 실행됨 | 표준 리뷰 예시는 가성비 기준 `--effort medium`을 명시. dispatch가 그대로 전달하고 영수증의 `effortRequested`에 요청값을 남김 |
 
 - **실행 영수증** — 벤더를 부른 뒤 관측한 것을 한 줄로 남긴다: 요청한 벤더·모델,
   알 수 있으면 실제 응답 backend, exit/timeout 상태, 거부된 대체가 있었으면 그 사실.

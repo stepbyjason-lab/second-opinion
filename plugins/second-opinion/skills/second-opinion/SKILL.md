@@ -79,7 +79,8 @@ node <dispatch> --vendor codex --operation text --mode review --brief review-bri
 ```
 
 독립 2차 패스는 같은 brief·`--cwd`·`--mode review`를 보존하고 `--vendor`, 해당 벤더가 요구하는
-`--model`, `--out`/`--err`만 바꿔 보낸다. 결과의 영수증에서 실제 `vendor`·`model`·
+`--model`, `--out`/`--err`만 바꿔 보낸다. Grok 2차 패스의 **표준 effort는 가성비 기준
+`medium`**이다(`--model grok-4.6 --effort medium`). 결과의 영수증에서 실제 `vendor`·`model`·
 `requestedMode`/`effectiveMode`를 확인한 뒤에만 Madi 패널 증거로 사용한다. Codex의 review는
 워크플로 선택일 뿐 권한 격리가 아니므로, 이 명령만으로 쓰기가 막힌다고 간주하지 않는다.
 
@@ -297,13 +298,16 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor claude --operation text
 
 ```bash
 node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor grok --operation text \
-  --brief brief.txt --cwd <작업 repo> --model grok-4.6 \
+  --brief brief.txt --cwd <작업 repo> --model grok-4.6 --effort medium \
   --out grok-result.json --err grok-stderr.txt
 ```
 
 읽기 전용 plan/review는 `--mode plan|review`를 붙인다. 이미지 과업은 거부한다.
 
 - brief는 `--prompt-file`로만 전달된다. stdin에는 넣지 않는다. `-p "프롬프트"` argv는 쓰지 않는다.
+- Grok CLI의 `--effort`는 선택값이지만, **리뷰 표준 예시는 가성비 기준 `--effort medium`**을
+  명시한다. dispatcher는 이 값을 Grok CLI의 `--effort`로 그대로 전달하며 영수증의
+  `effortRequested`에서 요청값을 확인한다. 더 깊은 검토가 필요할 때만 caller가 명시적으로 올린다.
 - `--request-json` 구독 생성은 stdout JSON의 `text` 필드를 응답 본문과 stream chunk로 쓴다. 전체 JSON을 본문이나 chunk로 쓰지 않는다.
 - Windows에서 PATH에 `grok`가 없으면 `%USERPROFILE%\.grok\bin\grok.exe` fallback.
 - 인증은 `grok login` (OAuth). API key 경로는 이 vendor 범위 밖이다.

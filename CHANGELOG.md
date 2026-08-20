@@ -6,6 +6,9 @@
   skill, and both READMEs. It shows the explicit `--mode review` invocation,
   preserves the no-edit requirement, and explains how to make an independent
   second pass without changing the review target.
+- Documentation: make Grok review effort explicit across help and examples.
+  The standard Madi review baseline is `--effort medium` for cost/quality
+  balance; the dispatcher forwards it unchanged and records the request.
 
 ## 0.9.11 — 2026-08-19
 

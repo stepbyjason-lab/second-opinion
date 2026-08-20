@@ -4,11 +4,16 @@
 
 ```bash
 node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor grok --operation text \
-  --brief brief.txt --cwd <작업 repo> --model grok-4.6 \
+  --brief brief.txt --cwd <작업 repo> --model grok-4.6 --effort medium \
   --out grok-result.json --err grok-stderr.txt
 ```
 
 읽기 전용 plan/review는 `--mode plan|review`를 붙인다. dispatcher가 `--permission-mode plan`과 `--tools read_file,grep,list_dir`와 `--no-subagents`를 넣는다. default는 `--permission-mode bypassPermissions`로 headless 승인 프롬프트를 피한다.
+
+Grok CLI의 `--effort`는 선택값이다. 다만 Madi를 비롯한 코드 리뷰의 **표준 예시는 가성비 기준
+`--effort medium`**을 명시한다. dispatcher는 이를 Grok CLI의 `--effort`로 그대로 전달하고,
+영수증의 `effortRequested`로 요청값을 남긴다. 더 깊은 검토가 필요할 때만 caller가 명시적으로
+올린다.
 
 ### ⚠ `--tools` allowlist는 이름이 맞을 때만 막는다 — 전부 틀리면 **조용히 열린다**
 
