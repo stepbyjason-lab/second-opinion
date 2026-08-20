@@ -13,6 +13,11 @@
   brief for Grok/AGY current-diff reviews of linked Git worktrees. Their explicit
   review modes lack a git shell, so callers must not ask them to discover `.git`
   metadata or reconstruct the diff from scratch directories.
+- Documentation: make explicit that the default 3600-second timeout is a cost
+  backstop, not a routine review deadline. Long calls are monitored in the
+  background. A short review timeout such as 300 seconds is prohibited because
+  ordinary reviews can take 15–30 minutes; timeout, empty output, or a missing
+  receipt is a failed review, never "no findings".
 
 ## 0.9.11 — 2026-08-19
 

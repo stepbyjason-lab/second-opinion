@@ -32,6 +32,14 @@ current-diff 리뷰의 caller는 brief `대상 내용`에 다음을 **전문으�
 리뷰어가 검토할 정확한 대상을 확정하는 증거다. 이 세 항목이 없으면 Grok 결과를 current-diff 리뷰
 증거로 채택하지 말고 호출 전에 brief를 다시 조립한다.
 
+## Timeout과 liveness
+
+**리뷰에 300초 같은 짧은 `--timeout`을 절대 주지 않는다.** 보통 규모의 리뷰도 15~30분이 걸릴 수
+있다. dispatcher의 기본 3600초는 완료 목표가 아니라 runaway 비용 백스톱이다. 오래 걸리는 호출은
+백그라운드로 두고 job의 실행 상태와 `--err` 진행을
+관찰한다. 종료 뒤 `--out`·exit·영수증을 함께 확인한다. `exit 124`, 빈 출력, 또는 영수증 부재는
+리뷰 결과가 아니라 실패이며 findings나 Madi 증거로 쓰지 않는다.
+
 ### ⚠ `--tools` allowlist는 이름이 맞을 때만 막는다 — 전부 틀리면 **조용히 열린다**
 
 **실측 2026-08-19 (grok 1.0.5, `--permission-mode bypassPermissions` 고정, 파일 쓰기 요청)**

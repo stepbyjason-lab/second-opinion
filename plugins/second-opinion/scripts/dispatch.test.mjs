@@ -664,11 +664,18 @@ test("0.9.11 public help and documentation describe cache-first ranked routing",
   }
 
   assert.match(usageText(), /cached for 24h.*model-catalog-v1\.json/s);
-  assert.match(usageText(), /Default --timeout is 3600s \(60m\), a dispatcher cost backstop/);
+  assert.match(usageText(), /Default --timeout is a 3600s cost backstop, not a review deadline/);
+  assert.match(usageText(), /Never give a\s+review a short timeout \(for example 300s\)/);
+  assert.match(usageText(), /run it in background, observe liveness\/--err, then require a receipt/);
   assert.match(skill, /공통 3600초 비용 상한/);
+  assert.match(skill, /리뷰에는 300초 같은 짧은 `--timeout`을 절대 주지 않는다/);
+  assert.match(skill, /15~30분이 걸릴 수/);
+  assert.match(skill, /리뷰 없음이 아니라 실패/);
   if (publicReadmes.length === 2) {
     assert.match(publicReadmes[0], /60-minute \(3600-second\)\s+cost backstop/);
     assert.match(publicReadmes[1], /기본 60분\(3600초\) 비용 상한/);
+    assert.match(publicReadmes[0], /not a normal review deadline/);
+    assert.match(publicReadmes[1], /일반 리뷰 마감이 아니다/);
   }
 });
 

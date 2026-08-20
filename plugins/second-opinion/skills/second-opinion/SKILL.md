@@ -331,6 +331,10 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor grok --operation text \
 ## 오래 걸리는 호출 (60초+ 예상: 큰 brief, 병렬 다건)
 
 Bash `run_in_background`로 띄우고 완료 알림 후 결과 수합. 사용자를 기다리게 하지 않는다.
+**리뷰에는 300초 같은 짧은 `--timeout`을 절대 주지 않는다.** 보통 규모의 리뷰도 15~30분이 걸릴 수
+있다. 기본 3600초는 완료 목표가 아니라 runaway 비용 백스톱이다. 백그라운드 job의 실행 상태와 `--err` 진행을 관찰하고, 종료 뒤 `--out`·exit·영수증을
+대조한다. `exit 124`·빈 출력·영수증 부재는 **리뷰 없음이 아니라 실패**이며 findings나 패널 증거로
+바꾸지 않는다.
 
 ## 파일 입력 과업 — 대용량·멀티모달 (실측 2026-07-11)
 

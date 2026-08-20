@@ -83,11 +83,14 @@ dispatcher는 provider exit 0을 성공으로 승격하지 않고 exit 4로 닫�
 ## 파일 입력 과업 — 이미지·영상 분석
 
 이미지와 영상 모두 파일이 있는 디렉토리를 허용하고 짧은 경로 지시를 준다. argv 프롬프트를
-쓰므로 기존 hang 방지를 위해 `</dev/null`을 유지한다.
+쓰므로 `</dev/null`을 유지한다. 임의 셸 `timeout` wrapper는 쓰지 않는다. **리뷰에 300초 같은
+짧은 `--timeout`을 주지 않는다** — 보통 규모의 리뷰도 15~30분이 걸릴 수 있다. 오래 걸리는 호출은
+dispatcher의 3600초 비용 백스톱 아래 백그라운드로 관찰하고, `exit 124`·빈 출력은 성공이나
+"리뷰 없음"으로 바꾸지 않는다.
 
 ```bash
 FILE="<이미지 또는 영상 파일의 절대경로>"
-timeout 280 "$AGY" --model "Gemini 3.5 Flash (High)" --add-dir "$(dirname "$FILE")" -p "Read and analyze this file: $FILE" </dev/null
+"$AGY" --model "Gemini 3.5 Flash (High)" --add-dir "$(dirname "$FILE")" -p "Read and analyze this file: $FILE" </dev/null
 ```
 
 ## 파일 산출물 과업 — 이미지 생성

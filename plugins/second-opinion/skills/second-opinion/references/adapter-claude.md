@@ -65,11 +65,13 @@ PowerShell도 동일한 `node ... dispatch.mjs` argv를 사용한다. brief 내�
 
 ## Timeout과 hang
 
-Claude argv에는 짧은 작업 timeout을 넣지 않는다. dispatcher 기본 2700초는 정상 추론을
-중단시키는 작업 예산이 아니라 비정상 hang을 회수하는 runaway backstop이다. 도달하면
+Claude argv에는 짧은 작업 timeout을 넣지 않는다. dispatcher 기본 3600초는 정상 추론을
+중단시키는 작업 예산이 아니라 비정상 hang을 회수하는 runaway backstop이다. **리뷰에 300초 같은
+짧은 `--timeout`을 주지 말 것** — 보통 규모의 리뷰도 15~30분이 걸릴 수 있다. 백그라운드 job의
+실행 상태와 `--err` 진행을 관찰한다. 도달하면
 Windows에서는 `taskkill /T /F`, POSIX에서는 강제 종료로 자식 트리까지 회수하고 receipt
 exit를 `timeout`으로 기록한다. 중단된 리뷰는 resume하지 않고 같은 brief로 처음부터 다시
-실행한다.
+실행한다. `exit 124`·빈 출력·영수증 부재는 리뷰 결과가 아니라 실패다.
 
 실측: 46,446-byte·1,010-line Opus high 리뷰는 raw 280초 제한에서 빈 출력으로 종료됐지만,
 dispatcher 규율에서는 303.92초에 exit 0·실제 `claude-opus-4-8`·유효 리뷰를 반환했다.

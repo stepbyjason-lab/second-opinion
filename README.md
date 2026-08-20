@@ -166,7 +166,10 @@ CLI launches are not worth that diagnostic cost.
   ordering, or row-pairing guarantee, and a dispatch is not promised to write two rows.
   The `--vendor claude` channel uses the same dispatcher without the
   obsolete 280-second shell timeout. The dispatcher uses a 60-minute (3600-second)
-  cost backstop by default; callers can still set a tighter `--timeout`.
+  cost backstop by default, not a normal review deadline. Never give a review a
+  short `--timeout` such as 300 seconds: ordinary reviews can take 15–30 minutes.
+  Run long calls in the background, observe job liveness and
+  `--err` progress, then accept findings only after a completed output and receipt.
   Claude result JSON binds the observed model
   family, token usage, and cost into `vendorUsage`; empty, malformed, or
   wrong-model output returns exit 4. The Claude child runs in `--safe-mode`, so
