@@ -15,6 +15,23 @@ Grok CLI의 `--effort`는 선택값이다. 다만 Madi를 비롯한 코드 리�
 영수증의 `effortRequested`로 요청값을 남긴다. 더 깊은 검토가 필요할 때만 caller가 명시적으로
 올린다.
 
+## Linked Git worktree의 current-diff 리뷰
+
+Grok explicit plan/review는 `read_file`, `grep`, `list_dir`만 가진다. terminal·`git diff`가 없으므로
+worktree 루트의 `.git`이 파일인 경우 current diff를 스스로 발견할 수 없다. 실제 사례에서
+`list_dir <worktree>/.git`은 “file, not a directory”로 실패한 뒤 부모 Git 관리 경로·`.scratch`를
+반복 탐색해 리뷰가 무효가 됐다.
+
+current-diff 리뷰의 caller는 brief `대상 내용`에 다음을 **전문으로** 넣는다.
+
+1. 변경 파일 목록
+2. exact unified diff
+3. “위 diff와 지정 파일만 검토하고 `.git`, 부모 repo, 임의 `.scratch`는 탐색하지 말 것”이라는 제약
+
+`--cwd`는 실제 worktree로 유지한다. inline diff는 cwd 대체나 별도 snapshot이 아니라, Git shell 없는
+리뷰어가 검토할 정확한 대상을 확정하는 증거다. 이 세 항목이 없으면 Grok 결과를 current-diff 리뷰
+증거로 채택하지 말고 호출 전에 brief를 다시 조립한다.
+
 ### ⚠ `--tools` allowlist는 이름이 맞을 때만 막는다 — 전부 틀리면 **조용히 열린다**
 
 **실측 2026-08-19 (grok 1.0.5, `--permission-mode bypassPermissions` 고정, 파일 쓰기 요청)**

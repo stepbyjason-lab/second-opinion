@@ -84,6 +84,14 @@ node <dispatch> --vendor codex --operation text --mode review --brief review-bri
 `requestedMode`/`effectiveMode`를 확인한 뒤에만 Madi 패널 증거로 사용한다. Codex의 review는
 워크플로 선택일 뿐 권한 격리가 아니므로, 이 명령만으로 쓰기가 막힌다고 간주하지 않는다.
 
+**Linked Git worktree에서 현재 diff를 리뷰할 때:** Grok·AGY의 명시적 plan/review에는 terminal이나
+`git diff`가 없다. worktree 루트의 `.git`은 디렉터리가 아니라 부모 저장소를 가리키는 파일일 수
+있으므로, vendor에게 `.git`·부모 Git 관리 경로를 찾아 현재 diff를 재구성하라고 시키지 않는다.
+`대상 내용`에 **변경 파일 목록과 exact unified diff를 전문으로** 넣고, 그 파일·diff만 근거로
+검토하라고 명시한다. 실제 `--cwd`는 그대로 유지한다. diff는 cwd를 대체하는 snapshot이 아니라
+리뷰 대상을 확정하는 증거다. 이 packet이 없으면 linked-worktree Grok/AGY 결과는 유효한 current-diff
+리뷰 증거로 쓰지 말고, 호출 전에 brief를 다시 조립한다.
+
 ## 벤더 선택 (사용자가 지정 안 했을 때의 기본)
 
 | 상황 | 벤더 | 이유 |
@@ -313,6 +321,10 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor grok --operation text \
 - 인증은 `grok login` (OAuth). API key 경로는 이 vendor 범위 밖이다.
 - JSON `usage` 토큰이 없으면 subscription fail-closed. 전역 규율을 풀지 않는다.
 - plan/review는 `--permission-mode plan` + `--tools read_file,grep,list_dir`. `--tools` 이름이 전부 틀리면 grok은 에러 없이 도구를 연다(실측). native `plan`이 그 바닥이다.
+- **Linked Git worktree의 exact-diff 리뷰:** 이 mode에는 terminal·`git diff`가 없다. worktree의
+  `.git`이 파일이면 `list_dir .git`은 실패하고 Grok이 부모 Git 관리 경로로 샐 수 있다. caller는
+  brief의 `대상 내용`에 변경 파일 목록과 **exact unified diff 전문**을 넣고, `.git`·부모 repo·
+  임의 `.scratch` 탐색 금지를 적는다. 이 증거가 없으면 호출하지 말고 brief를 다시 조립한다.
 - plan/review spawn은 하네스 호환 env 13개를 `false`로 강제한다: `GROK_CLAUDE_*` 6, `GROK_CURSOR_*` 6, `GROK_CODEX_SESSIONS_ENABLED` 1. Codex의 나머지 칸은 grok에서 inert. 프로젝트 루트 `CLAUDE.md`는 그래도 남을 수 있다 — 상세는 adapter-grok.md. 호환을 켜서 검증하지 않는다. 검증은 꺼진 상태(`grok inspect` off, spawn env false)만.
 → 호출 전 필수: `references/adapter-grok.md`
 

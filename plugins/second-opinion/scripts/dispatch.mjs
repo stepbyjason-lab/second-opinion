@@ -113,6 +113,8 @@ export function usageText() {
     "    any vendor-required --model, and the output paths. Reviewers must not edit.",
     "  Grok review baseline: add --model grok-4.6 --effort medium; the dispatcher",
     "    forwards --effort unchanged to the Grok CLI.",
+    "  Linked-worktree Grok/AGY review: their explicit modes have no git shell. Put",
+    "    the exact diff and changed-file list in the brief; never ask them to discover .git.",
     "",
     "  --brief is a FILE; Codex/AGY/Claude receive it on stdin, Grok via --prompt-file.",
     "  --request-json selects one named HTTP/subscription provider with same-provider retry,",

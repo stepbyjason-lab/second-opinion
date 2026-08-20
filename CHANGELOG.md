@@ -9,6 +9,10 @@
 - Documentation: make Grok review effort explicit across help and examples.
   The standard Madi review baseline is `--effort medium` for cost/quality
   balance; the dispatcher forwards it unchanged and records the request.
+- Documentation: require an exact changed-file list and unified diff in the
+  brief for Grok/AGY current-diff reviews of linked Git worktrees. Their explicit
+  review modes lack a git shell, so callers must not ask them to discover `.git`
+  metadata or reconstruct the diff from scratch directories.
 
 ## 0.9.11 — 2026-08-19
 

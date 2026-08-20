@@ -116,6 +116,7 @@ CLI launches are not worth that diagnostic cost.
 | "No issues found" is a weak signal (Gemini especially leans false-negative) | always relayed as "didn't find problems ≠ no problems" |
 | Grok `--tools` with every name unknown fail-open; Grok also loads Claude/Cursor harness config by default | plan/review use `--permission-mode plan` as a floor and force isolation env: Claude 6 + Cursor 6 + `GROK_CODEX_SESSIONS_ENABLED`. Project-root `CLAUDE.md` can still load |
 | Grok review examples that omit reasoning effort silently use the vendor default | the standard review example explicitly uses `--effort medium` for cost/quality balance; dispatch forwards it unchanged and the receipt retains `effortRequested` |
+| A Grok/AGY review must inspect the exact current diff in a linked Git worktree | their explicit review modes have no git shell and the worktree `.git` can be a file; put the changed-file list and full unified diff in the brief rather than asking the vendor to discover Git metadata |
 
 - **Execution receipts** — after every vendor call the skill states what was
   actually observed: the vendor and model requested, the real backend if known,
@@ -334,6 +335,11 @@ the execution receipt.
 For an independent second pass, keep the same brief and target, name a different
 vendor, and ask to compare the two sets of findings only after both receipts are
 available.
+
+For a Grok or Antigravity review of the current diff in a linked Git worktree,
+the brief must include the complete changed-file list and unified diff. Their
+explicit review modes have no `git diff`; do not ask them to inspect `.git`, the
+parent repository, or arbitrary scratch directories to reconstruct the target.
 
 Triggers are natural language, not keywords — any language Claude understands works.
 

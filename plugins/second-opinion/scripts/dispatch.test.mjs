@@ -606,6 +606,7 @@ test("Madi review fast path stays present in help and user documentation", () =>
   assert.match(help, /--cwd <review-target> --out <review\.out> --err <review\.err>/);
   assert.match(help, /Reviewers must not edit/);
   assert.match(help, /Grok review baseline: add --model grok-4\.6 --effort medium/);
+  assert.match(help, /Linked-worktree Grok\/AGY review: their explicit modes have no git shell/);
 
   const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
   const grokAdapter = readFileSync(new URL("../skills/second-opinion/references/adapter-grok.md", import.meta.url), "utf8");
@@ -614,11 +615,17 @@ test("Madi review fast path stays present in help and user documentation", () =>
   assert.match(skill, /Madi 리뷰 바로 보내기/);
   assert.match(skill, /독립 2차 패스/);
   assert.match(skill, /--model grok-4\.6 --effort medium/);
+  assert.match(skill, /Linked Git worktree에서 현재 diff를 리뷰할 때/);
+  assert.match(skill, /변경 파일 목록과 exact unified diff를 전문으로/);
   assert.match(grokAdapter, /--model grok-4\.6 --effort medium/);
+  assert.match(grokAdapter, /Linked Git worktree의 current-diff 리뷰/);
+  assert.match(grokAdapter, /exact unified diff/);
   assert.match(readme, /For Madi's usual review pass/);
   assert.match(readme, /standard review example explicitly uses `--effort medium`/);
+  assert.match(readme, /complete changed-file list and unified diff/);
   assert.match(koreanReadme, /Madi에서 가장 자주 쓰는 리뷰/);
   assert.match(koreanReadme, /표준 리뷰 예시는 가성비 기준 `--effort medium`/);
+  assert.match(koreanReadme, /변경 파일 목록과 unified diff 전문/);
 });
 
 test("skill resolves the catalog path directly before declaring it missing", () => {

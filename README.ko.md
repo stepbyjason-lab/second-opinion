@@ -90,6 +90,7 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
 | "이상 없음"은 약한 신호(특히 Gemini의 false-negative 편향) | "문제를 못 찾음 ≠ 문제 없음" 명시 전달 |
 | Grok `--tools`는 이름이 전부 틀리면 조용히 열린다. Grok은 Claude/Cursor 하네스 설정을 기본으로 읽는다 | plan/review는 `--permission-mode plan`을 바닥으로 쓰고 격리 env 13개 강제(Claude 6 + Cursor 6 + `GROK_CODEX_SESSIONS_ENABLED`). 프로젝트 루트 `CLAUDE.md`는 남을 수 있다 |
 | Grok 리뷰 예시가 reasoning effort를 빼면 벤더 기본값으로 조용히 실행됨 | 표준 리뷰 예시는 가성비 기준 `--effort medium`을 명시. dispatch가 그대로 전달하고 영수증의 `effortRequested`에 요청값을 남김 |
+| linked Git worktree의 exact current diff를 Grok/AGY에 리뷰시킴 | explicit review에는 git shell이 없고 worktree `.git`은 파일일 수 있음. Git 메타데이터 탐색을 맡기지 말고 변경 파일 목록과 unified diff 전문을 brief에 넣음 |
 
 - **실행 영수증** — 벤더를 부른 뒤 관측한 것을 한 줄로 남긴다: 요청한 벤더·모델,
   알 수 있으면 실제 응답 backend, exit/timeout 상태, 거부된 대체가 있었으면 그 사실.
@@ -263,6 +264,10 @@ Madi에서 가장 자주 쓰는 리뷰는 대상·근거·수정 금지·영수�
 
 독립 2차 패스는 같은 brief와 대상을 유지한 채 다른 벤더를 지정하고, 두 영수증이 나온 뒤에만
 findings를 대조해 달라고 요청한다.
+
+linked Git worktree의 current diff를 Grok이나 Antigravity에 리뷰시킬 때는 brief에 변경 파일 목록과
+unified diff 전문을 넣는다. 이 explicit review mode에는 `git diff`가 없으므로 `.git`, 부모 저장소,
+임의 scratch 디렉터리를 뒤져 대상을 재구성하라고 시키지 않는다.
 
 설치 후 아무 세션에서:
 
