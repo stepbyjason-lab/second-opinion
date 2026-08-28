@@ -47,7 +47,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DISPATCH_MODES, OPERATIONS, PolicyError, VENDORS, applyGrokHarnessIsolationEnv, buildVendorArgv, composeVendorInput, effectiveInputProfile, effectiveVendorMode, executableName, grokNeedsHarnessIsolation, normalizeVendor, resolveExecutable } from "./vendor-policy.mjs";
-import { appendPortableReceipt, buildPortableReceipt, preparePortableUsage } from "./portable-receipt.mjs";
+import { appendPortableReceipt, buildPortableReceipt, MAX_EXPECT_OUTPUTS, MAX_FREE_STRING, preparePortableUsage } from "./portable-receipt.mjs";
 
 export const MAX_BRIEF_BYTES = 8 * 1024 * 1024;
 export const MAX_VENDOR_USAGE_BYTES = 64 * 1024 * 1024;
@@ -59,7 +59,7 @@ const MODEL_CATALOG_FAILURE_TTL_MS = 5 * 60 * 1000;
 const MODEL_CATALOG_FILENAME = "model-catalog-v1.json";
 const RECEIPT_CONFIG_FILENAME = "config.json";
 const MAX_RECEIPT_CONFIG_BYTES = 1024 * 1024;
-const SINGLE_OPTIONS = new Set(["--vendor", "--operation", "--brief", "--cwd", "--model", "--effort", "--mode", "--timeout", "--out", "--err", "--expect-output", "--lens-id", "--dry-run"]);
+const SINGLE_OPTIONS = new Set(["--vendor", "--operation", "--brief", "--cwd", "--model", "--effort", "--mode", "--timeout", "--out", "--err", "--lens-id", "--dry-run"]);
 // Accepted --vendor spellings: the canonical set plus the "antigravity" alias
 // normalizeVendor() folds into "agy". Kept next to VENDORS so a new vendor is
 // one edit, and so usage text and validation cannot disagree.
@@ -94,7 +94,7 @@ function assertDirectory(path, label) {
 // cannot be wrong: they name the missing flag, the unsupported combination, or
 // the rejected value at the moment it matters.
 export function usageText() {
-  const flags = [...SINGLE_OPTIONS, "--input"].sort().join(" ");
+  const flags = [...SINGLE_OPTIONS, "--input", "--expect-output"].sort().join(" ");
   return [
     "second-opinion dispatcher — call an external vendor through one audited path.",
     "",
@@ -141,6 +141,9 @@ export function usageText() {
     "  Default --timeout is a 3600s cost backstop, not a review deadline. Never give a",
     "  review a short timeout (for example 300s): run it in background, observe liveness/--err, then require a receipt.",
     "  --dry-run prints the argv without running the vendor.",
+    `  --expect-output <ASCII token, max ${MAX_FREE_STRING} chars> may be repeated up to ${MAX_EXPECT_OUTPUTS} times with --out; every token`,
+    "  must occur literally in stdout or the dispatcher exits 4 and names every missing token on stderr.",
+    "  Choose tokens that are not substrings of one another; literal matching does not infer token boundaries.",
     "",
     "  Which flags a given vendor/operation/mode actually requires is enforced by",
     "  validation, not repeated here — run the call and the error names exactly",
@@ -530,6 +533,11 @@ export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
       raw.inputs.push(argv[++index]);
       continue;
     }
+    if (flag === "--expect-output") {
+      if (index + 1 >= argv.length || argv[index + 1].startsWith("--")) throw new CliError("--expect-output requires a value");
+      (raw.expectOutputs ??= []).push(argv[++index]);
+      continue;
+    }
     if (!SINGLE_OPTIONS.has(flag)) {
       throw new CliError(`unknown argument: ${flag}\n${usageText()}`);
     }
@@ -571,7 +579,8 @@ export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
   const inputs = raw.inputs.map((value) => absoluteFrom(startCwd, value));
   const out = raw.out ? absoluteFrom(startCwd, raw.out) : undefined;
   const err = raw.err ? absoluteFrom(startCwd, raw.err) : undefined;
-  const expectOutput = raw["expect-output"];
+  const expectOutputs = raw.expectOutputs ?? [];
+  const expectOutput = expectOutputs[0];
   const lensId = raw["lens-id"] ?? null;
   if (lensId !== null && (lensId.length < 1 || lensId.length > 64 || /[\x00-\x1f\x7f]/.test(lensId))) {
     throw new CliError("--lens-id must be 1 to 64 characters without control characters");
@@ -596,9 +605,10 @@ export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
     if (inputs.length === 0) throw new CliError("image-analyze requires at least one --input");
     for (const input of inputs) assertRegularFile(input, "input");
   } else if (inputs.length > 0) throw new CliError("--input is supported only for image-analyze");
+  if (expectOutputs.length > MAX_EXPECT_OUTPUTS) throw new CliError(`--expect-output may be repeated at most ${MAX_EXPECT_OUTPUTS} times`);
   if (expectOutput !== undefined) {
     if (!out) throw new CliError("--expect-output requires --out");
-    if (!/^[\x21-\x7e]+$/.test(expectOutput)) throw new CliError("--expect-output must be a non-empty ASCII token without whitespace");
+    if (expectOutputs.some((value) => value.length > MAX_FREE_STRING || !/^[\x21-\x7e]+$/.test(value))) throw new CliError(`--expect-output must be a 1 to ${MAX_FREE_STRING} character ASCII token without whitespace`);
   }
   if (vendor === "claude") {
     if (raw.operation !== "text") throw new CliError("claude supports only --operation text");
@@ -621,7 +631,10 @@ export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
   if (conflicts.input) throw new CliError("--out/--err must not equal --input");
   if (conflicts.outputs) throw new CliError("--out and --err must not refer to the same file");
   if (receiptConflicts({ brief, inputs, out, err }, deps.env ?? process.env)) throw new CliError("--out/--err must not equal the resolved raw receipt sink");
-  return { vendor, operation: raw.operation, mode, brief, cwd, modelRequested, model, effortRequested, effort, inputs, timeout, out, err, expectOutput, lensId, dryRun: raw.dryRun ?? false };
+  return {
+    vendor, operation: raw.operation, mode, brief, cwd, modelRequested, model, effortRequested, effort, inputs, timeout, out, err,
+    expectOutput, ...(expectOutputs.length ? { expectOutputs } : {}), lensId, dryRun: raw.dryRun ?? false,
+  };
 }
 
 function isGitRepository(cwd) {
@@ -996,6 +1009,7 @@ function writeReceipt(stderr, options, exit, startedAt, invoked, outputCheckStat
       vendorUsage: vendorUsage.usage,
       vendorUsageStatus: vendorUsage.status,
       outputCheckStatus,
+      outputChecks: options.outputChecks ?? null,
       attempts: invoked ? 1 : 0,
       attemptWaitsMs: invoked ? [0] : [],
       successfulAttempt: invoked && exit === 0 ? 1 : null,
@@ -1028,8 +1042,8 @@ function writePortableReceipt(stderr, options, exit, startedAt, invoked, outputC
       requestedMode,
       effectiveMode,
       inputProfile,
-      portableVocabulary(redactNullable(options.modelRequested ?? options.model, env), 1024),
-      portableVocabulary(redactNullable(options.model, env), 1024),
+      portableVocabulary(redactNullable(options.modelRequested ?? options.model, env), MAX_FREE_STRING),
+      portableVocabulary(redactNullable(options.model, env), MAX_FREE_STRING),
       portableVocabulary(redactNullable(options.effort, env), 64),
       exit,
       duration,
@@ -1050,6 +1064,7 @@ function writePortableReceipt(stderr, options, exit, startedAt, invoked, outputC
       null,
       null,
       evidence,
+      options.outputChecks ?? null,
     );
     appendPortableReceipt(target, record);
   } catch {
@@ -1167,6 +1182,7 @@ export function writeApiDispatchReceipts(stderr, options, exit, startedAt, env =
         vendorUsage: apiPortableUsage(options.usage),
         vendorUsageStatus: options.usage ? "ok" : (exit === 0 ? "not-reported" : "vendor-reported-error"),
         outputCheckStatus: "not-requested",
+        outputChecks: null,
         attempts: actualAttempts,
         attemptWaitsMs,
         successfulAttempt: options.successfulAttempt ?? null,
@@ -1189,8 +1205,8 @@ export function writeApiDispatchReceipts(stderr, options, exit, startedAt, env =
       "default",
       "default",
       "none",
-      portableVocabulary(redactNullable(options.model, env), 1024),
-      portableVocabulary(redactNullable(options.model, env), 1024),
+      portableVocabulary(redactNullable(options.model, env), MAX_FREE_STRING),
+      portableVocabulary(redactNullable(options.model, env), MAX_FREE_STRING),
       null,
       exit,
       durationSec,
@@ -1211,6 +1227,7 @@ export function writeApiDispatchReceipts(stderr, options, exit, startedAt, env =
       options.failureActor ?? null,
       options.remedy ?? null,
       evidence,
+      null,
     );
     appendPortableReceipt(target, record);
   } catch { warnPortableReceiptFailure(stderr); }
@@ -1272,7 +1289,19 @@ export async function run(options, deps = { spawn }) {
   const onStdoutChunk = deps.onStdoutChunk;
   const startedAt = Date.now();
   let vendorObservation = null;
-  let outputCheckStatus = options.expectOutput ? "not-evaluated" : "not-requested";
+  if ((options.expectOutputs !== undefined && !Array.isArray(options.expectOutputs))
+    || (options.expectOutput !== undefined && (!Array.isArray(options.expectOutputs) || options.expectOutput !== options.expectOutputs[0]))) {
+    parentStderr.write("dispatch validation error: run() accepts expectOutputs; expectOutput must match its first token\n");
+    return 2;
+  }
+  const expectedOutputTokens = options.expectOutputs ?? [];
+  options = {
+    ...options,
+    outputChecks: expectedOutputTokens.length
+      ? expectedOutputTokens.map((token) => ({ token, status: "missing" }))
+      : null,
+  };
+  let outputCheckStatus = expectedOutputTokens.length ? "not-evaluated" : "not-requested";
   const conflicts = outputConflicts(options);
   if (conflicts.brief) {
     parentStderr.write("dispatch validation error: --out/--err must not equal --brief\n");
@@ -1367,16 +1396,21 @@ export async function run(options, deps = { spawn }) {
     let silenceDeadlineMs = null;
     const validateExplicitOutput = options.mode !== "default";
     const jsonStdoutVendor = options.vendor === "claude" || options.vendor === "grok";
-    const captureStdout = Boolean(stdoutStream || options.expectOutput || jsonStdoutVendor || validateExplicitOutput);
+    const captureStdout = Boolean(stdoutStream || expectedOutputTokens.length || jsonStdoutVendor || validateExplicitOutput);
     let outputBytes = 0;
     const claudeOutputChunks = [];
     let claudeOutputBytes = 0;
     let claudeOutputTooLarge = false;
+    const outputMatched = expectedOutputTokens.map(() => false);
     const clearTimers = () => { for (const t of [timer, silenceTimer, escalateTimer, reapTimer]) if (t) clearTimeout(t); };
     const finish = (code) => {
       if (settled) return;
       settled = true;
       clearTimers();
+      // Individual checks describe the bytes actually observed even when the
+      // vendor itself exits unsuccessfully. The aggregate status keeps its
+      // established not-evaluated meaning outside a successful vendor exit.
+      if (expectedOutputTokens.length) options.outputChecks = expectedOutputTokens.map((token, index) => ({ token, status: outputMatched[index] ? "matched" : "missing" }));
       if (jsonStdoutVendor && !vendorObservation) {
         vendorObservation = (options.vendor === "grok" ? inspectGrokOutput : inspectClaudeOutput)(options, {
           data: Buffer.concat(claudeOutputChunks),
@@ -1412,9 +1446,14 @@ export async function run(options, deps = { spawn }) {
     const graceMs = options.killGraceMs ?? 5000;
     const reapMs = options.reapMs ?? 3000;
     const forceKill = options.forceKill ?? defaultForceKill;
-    const expected = options.expectOutput ? Buffer.from(options.expectOutput, "ascii") : null;
+    const expected = expectedOutputTokens.map((token) => Buffer.from(token, "ascii"));
     let outputTail = Buffer.alloc(0);
-    let outputMatched = false;
+    const finishOutputCheck = () => {
+      const missing = expectedOutputTokens.filter((_token, index) => !outputMatched[index]);
+      outputCheckStatus = missing.length ? "missing" : "matched";
+      if (missing.length) parentStderr.write(`dispatch output check failed: missing token${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}\n`);
+      return missing.length ? 4 : 0;
+    };
     const triggerTimeout = () => {
       if (settled || timedOut) return;
       // Resolve by absolute deadlines instead of callback insertion order.
@@ -1470,17 +1509,11 @@ export async function run(options, deps = { spawn }) {
           const vendorLabel = options.vendor === "claude" ? "Claude" : options.vendor === "grok" ? "Grok" : options.vendor;
           parentStderr.write(`dispatch ${vendorLabel} output validation failed: ${vendorObservation.status}\n`);
           finish(4);
-        } else if (expected) {
-          outputCheckStatus = outputMatched ? "matched" : "missing";
-          if (!outputMatched) parentStderr.write("dispatch output check failed: expected token missing\n");
-          finish(outputMatched ? 0 : 4);
-        } else finish(0);
+        } else if (expected.length) finish(finishOutputCheck());
+        else finish(0);
       }
-      else if (code === 0 && expected) {
-        outputCheckStatus = outputMatched ? "matched" : "missing";
-        if (!outputMatched) parentStderr.write("dispatch output check failed: expected token missing\n");
-        finish(outputMatched ? 0 : 4);
-      } else if (code === 0 && validateExplicitOutput && outputBytes === 0) {
+      else if (code === 0 && expected.length) finish(finishOutputCheck());
+      else if (code === 0 && validateExplicitOutput && outputBytes === 0) {
         parentStderr.write("dispatch output validation failed: explicit mode returned empty output\n");
         finish(4);
       } else finish(code);
@@ -1488,12 +1521,15 @@ export async function run(options, deps = { spawn }) {
     child.stdin.once("error", streamError);
     stdoutStream?.once("error", streamError);
     stderrStream?.once("error", streamError);
-    if (expected) {
+    if (expected.length) {
       child.stdout.on("data", (chunk) => {
-        if (outputMatched) return;
+        if (outputMatched.every(Boolean)) return;
         const combined = Buffer.concat([outputTail, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
-        outputMatched = combined.includes(expected);
-        if (!outputMatched) outputTail = combined.subarray(Math.max(0, combined.length - expected.length + 1));
+        for (let index = 0; index < expected.length; index += 1) {
+          if (!outputMatched[index] && combined.includes(expected[index])) outputMatched[index] = true;
+        }
+        const maxExpectedBytes = Math.max(...expected.map((token) => token.length));
+        if (!outputMatched.every(Boolean)) outputTail = combined.subarray(Math.max(0, combined.length - maxExpectedBytes + 1));
       });
     }
     if (captureStdout) {

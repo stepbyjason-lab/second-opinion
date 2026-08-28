@@ -638,15 +638,15 @@ test("skill resolves the catalog path directly before declaring it missing", () 
   assert.match(skill, /검색 결과가 비었다는 이유만으로 설치 누락이나 카탈로그 오류라고 단정하지 않는다/);
 });
 
-test("0.9.11 public help and documentation describe cache-first ranked routing", () => {
+test("0.9.12 public help and documentation describe cache-first ranked routing", () => {
   const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
   const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
   const publicReadmeUrls = [new URL("../../../README.md", import.meta.url), new URL("../../../README.ko.md", import.meta.url)];
   const publicReadmes = publicReadmeUrls.filter((url) => existsSync(url)).map((url) => readFileSync(url, "utf8"));
-  assert.equal(plugin.version, "0.9.11");
+  assert.equal(plugin.version, "0.9.12");
   assert.ok(publicReadmes.length === 0 || publicReadmes.length === 2, "public snapshot must carry both README files");
   for (const text of [skill, ...publicReadmes]) {
-    assert.match(text, /0\.9\.11/);
+    assert.match(text, /0\.9\.12/);
     assert.match(text, /model-catalog-v1\.json/);
     assert.match(text, /opus 4\.6/);
   }
@@ -1632,7 +1632,7 @@ test("Claude result binds the observed model and usage into the existing receipt
   });
   let code;
   await withReceipt(receipt, async () => {
-    code = await run({ ...CLAUDE_FIXTURE, brief, cwd: root, out, err, expectOutput: "NONE", timeout: 2, dryRun: false }, {
+    code = await run({ ...CLAUDE_FIXTURE, brief, cwd: root, out, err, expectOutputs: ["NONE"], timeout: 2, dryRun: false }, {
       spawn: spawnFake, stderr: memoryWriter().stream, env: { SECOND_OPINION_RECEIPT: receipt },
     });
   });
@@ -1933,7 +1933,7 @@ test("opt-in receipt appends typed JSONL for dry-run and invoked children", asyn
   assert.equal(dryRun.invoked, false);
   assert.equal(completed.invoked, true);
   for (const row of [dryRun, completed]) {
-    assert.deepEqual(Object.keys(row).sort(), ["argv", "attemptWaitsMs", "attempts", "completionTokenLimit", "cwd", "durationSec", "effectiveMode", "effort", "effortRequested", "errPath", "executable", "exit", "failureActor", "failureClass", "finishReason", "finish_reason", "incomplete_details", "inputProfile", "invoked", "lensId", "model", "modelReported", "modelRequested", "operation", "outPath", "outputCheckStatus", "pid", "promptBytes", "promptSource", "provider", "remedy", "requestedMode", "schemaVersion", "successfulAttempt", "transport", "truncatedSuspected", "ts", "vendor", "vendorUsage", "vendorUsageStatus"].sort());
+    assert.deepEqual(Object.keys(row).sort(), ["argv", "attemptWaitsMs", "attempts", "completionTokenLimit", "cwd", "durationSec", "effectiveMode", "effort", "effortRequested", "errPath", "executable", "exit", "failureActor", "failureClass", "finishReason", "finish_reason", "incomplete_details", "inputProfile", "invoked", "lensId", "model", "modelReported", "modelRequested", "operation", "outPath", "outputCheckStatus", "outputChecks", "pid", "promptBytes", "promptSource", "provider", "remedy", "requestedMode", "schemaVersion", "successfulAttempt", "transport", "truncatedSuspected", "ts", "vendor", "vendorUsage", "vendorUsageStatus"].sort());
     assert.equal(row.schemaVersion, 1);
     assert.equal(row.vendor, "codex");
     assert.equal(row.transport, "cli");
@@ -1959,6 +1959,7 @@ test("opt-in receipt appends typed JSONL for dry-run and invoked children", asyn
     assert.equal(row.vendorUsage, null);
     assert.equal(row.vendorUsageStatus, row.invoked ? "no-err-file" : "not-invoked");
     assert.equal(row.outputCheckStatus, "not-requested");
+    assert.equal(row.outputChecks, null);
   }
   assert.match(readFileSync(receipt, "utf8"), /\n$/);
 });
@@ -2163,6 +2164,7 @@ test("timeout kills child and becomes exit 124", async () => {
 test("timeout escalates to a forced tree-kill and stays bounded when close never fires", async () => {
   const stderr = memoryWriter();
   const receipt = join(root, "forced-timeout.jsonl");
+  const tokens = ["FIRST_TOKEN", "SECOND_TOKEN", "THIRD_TOKEN"];
   let forced = false;
   const stubborn = () => {
     const child = new EventEmitter();
@@ -2171,19 +2173,27 @@ test("timeout escalates to a forced tree-kill and stays bounded when close never
     child.stderr = new PassThrough();
     child.pid = 999999;
     child.kill = () => true; // ignores termination — never emits "close"
+    queueMicrotask(() => child.stdout.end("FIRST_TOKEN ... THIRD_TOKEN"));
     return child;
   };
   let code;
   await withReceipt(receipt, async () => {
     code = await run(
-      { ...FIXTURES[0], brief, cwd: root, timeout: 1, killGraceMs: 20, reapMs: 20, forceKill: () => { forced = true; }, dryRun: false },
+      { ...FIXTURES[0], brief, cwd: root, expectOutputs: tokens, timeout: 1, killGraceMs: 20, reapMs: 20, forceKill: () => { forced = true; }, dryRun: false },
       { spawn: () => stubborn(), stderr: stderr.stream },
     );
   });
   assert.equal(code, 124);
   assert.equal(forced, true, "force-kill escalation must fire when the child ignores SIGTERM");
   assert.match(stderr.value(), /exit=timeout/);
-  assert.equal(receiptLines(receipt)[0].exit, "timeout");
+  const [row] = receiptLines(receipt);
+  assert.equal(row.exit, "timeout");
+  assert.equal(row.outputCheckStatus, "not-evaluated");
+  assert.deepEqual(row.outputChecks, [
+    { token: "FIRST_TOKEN", status: "matched" },
+    { token: "SECOND_TOKEN", status: "missing" },
+    { token: "THIRD_TOKEN", status: "matched" },
+  ]);
 });
 
 test("default timeout is the 60-minute dispatcher cost backstop", () => {
@@ -2264,11 +2274,11 @@ test("--expect-output matches across chunks and fails closed without changing ra
     });
     child.stdin.resume();
   });
-  assert.equal(await run({ ...FIXTURES[3], brief, cwd: root, timeout: 2, out: matchedOut, expectOutput: token, dryRun: false }, {
+  assert.equal(await run({ ...FIXTURES[3], brief, cwd: root, timeout: 2, out: matchedOut, expectOutputs: [token], dryRun: false }, {
     spawn: matchedSpawn, stderr: memoryWriter().stream,
     env: { SECOND_OPINION_RECEIPT: matchedReceipt },
   }), 0);
-  assert.equal(await run({ ...FIXTURES[3], brief, cwd: root, timeout: 2, out: missingOut, expectOutput: token, dryRun: false }, {
+  assert.equal(await run({ ...FIXTURES[3], brief, cwd: root, timeout: 2, out: missingOut, expectOutputs: [token], dryRun: false }, {
     spawn: missingSpawn, stderr: memoryWriter().stream,
     env: { SECOND_OPINION_RECEIPT: missingReceipt },
   }), 4);
@@ -2276,11 +2286,14 @@ test("--expect-output matches across chunks and fails closed without changing ra
   assert.deepEqual([
     ...receiptLines(matchedReceipt),
     ...receiptLines(missingReceipt),
-  ].map((row) => [row.exit, row.outputCheckStatus]), [[0, "matched"], [4, "missing"]]);
+  ].map((row) => [row.exit, row.outputCheckStatus, row.outputChecks]), [
+    [0, "matched", [{ token, status: "matched" }]],
+    [4, "missing", [{ token, status: "missing" }]],
+  ]);
   assert.equal(readFileSync(missingOut, "utf8"), "raw vendor output without challenge\n");
   assert.equal(JSON.stringify(seen).includes(token), false);
-  assert.equal(readFileSync(matchedReceipt, "utf8").includes(token), false);
-  assert.equal(readFileSync(missingReceipt, "utf8").includes(token), false);
+  assert.equal(readFileSync(matchedReceipt, "utf8").includes(token), true);
+  assert.equal(readFileSync(missingReceipt, "utf8").includes(token), true);
 
   const planWorkflowOut = join(root, "claude-plan-workflow.out");
   const planWorkflowErr = join(root, "claude-plan-workflow.err");
@@ -2293,12 +2306,107 @@ test("--expect-output matches across chunks and fails closed without changing ra
     });
     child.stdin.resume();
   });
-  assert.equal(await run({ ...MODE_FIXTURES[2], brief, cwd: root, out: planWorkflowOut, err: planWorkflowErr, expectOutput: token, timeout: 2, dryRun: false }, {
+  assert.equal(await run({ ...MODE_FIXTURES[2], brief, cwd: root, out: planWorkflowOut, err: planWorkflowErr, expectOutputs: [token], timeout: 2, dryRun: false }, {
     spawn: planWorkflowSpawn, stderr: memoryWriter().stream,
     env: { SECOND_OPINION_RECEIPT: planWorkflowReceipt },
   }), 4);
   assert.equal(readFileSync(planWorkflowOut, "utf8").includes("ExitPlanMode"), true);
   assert.deepEqual(receiptLines(planWorkflowReceipt).map((row) => [row.requestedMode, row.effectiveMode, row.exit, row.outputCheckStatus]), [["plan", "plan", 4, "missing"]]);
+});
+
+test("repeated --expect-output preserves order, requires every token, and rejects an eighth", async () => {
+  const ordered = ["FIRST_TOKEN", "SECOND_TOKEN", "THIRD_TOKEN"];
+  assert.match(usageText(), /max 1024 chars/);
+  for (const url of [
+    new URL("../../../README.md", import.meta.url),
+    new URL("../../../README.ko.md", import.meta.url),
+    new URL("../skills/second-opinion/SKILL.md", import.meta.url),
+    new URL("../skills/second-opinion/references/adapter-antigravity.md", import.meta.url),
+    new URL("../../../CHANGELOG.md", import.meta.url),
+  ]) assert.match(readFileSync(url, "utf8"), /1024/);
+  const parsed = parseCli([
+    "--vendor", "codex", "--operation", "text", "--brief", brief, "--out", join(root, "ordered.out"),
+    ...ordered.flatMap((token) => ["--expect-output", token]),
+  ], root);
+  assert.equal(parsed.expectOutput, ordered[0], "single-token integration surface remains available");
+  assert.deepEqual(parsed.expectOutputs, ordered);
+  assert.throws(() => parseCli([
+    "--vendor", "codex", "--operation", "text", "--brief", brief, "--out", join(root, "too-many.out"),
+    ...Array.from({ length: 8 }, (_value, index) => ["--expect-output", `TOKEN_${index}`]).flat(),
+  ], root), /at most 7 times/);
+  assert.throws(() => parseCli([
+    "--vendor", "codex", "--operation", "text", "--brief", brief, "--out", join(root, "too-long.out"), "--expect-output", "x".repeat(1025),
+  ], root), /1 to 1024 character/);
+  const inconsistent = memoryWriter();
+  assert.equal(await run({ ...FIXTURES[3], brief, cwd: root, expectOutput: "FIRST_TOKEN", expectOutputs: [], dryRun: true }, {
+    stderr: inconsistent.stream,
+  }), 2);
+  assert.match(inconsistent.value(), /expectOutputs/);
+  const malformed = memoryWriter();
+  assert.equal(await run({ ...FIXTURES[3], brief, cwd: root, expectOutputs: "FIRST_TOKEN", dryRun: true }, {
+    stderr: malformed.stream,
+  }), 2);
+  assert.match(malformed.value(), /expectOutputs/);
+
+  const allOut = join(root, "ordered-all.out");
+  const partialOut = join(root, "ordered-partial.out");
+  const raw = join(root, "ordered-raw.jsonl");
+  const portable = join(root, "ordered-portable.jsonl");
+  const allSpawn = () => fakeChild((child) => {
+    child.stdin.on("end", () => {
+      child.stdout.write("FIRST_TOKEN ... SECOND_");
+      child.stdout.end("TOKEN ... THIRD_TOKEN");
+      queueMicrotask(() => child.emit("close", 0, null));
+    });
+    child.stdin.resume();
+  });
+  const partialSpawn = () => fakeChild((child) => {
+    child.stdin.on("end", () => {
+      child.stdout.write("FIRST_TOKEN ... THIRD_");
+      child.stdout.end("TOKEN");
+      queueMicrotask(() => child.emit("close", 0, null));
+    });
+    child.stdin.resume();
+  });
+  assert.equal(await run({ ...FIXTURES[3], brief, cwd: root, timeout: 2, out: allOut, expectOutputs: ordered, dryRun: false }, {
+    spawn: allSpawn, stderr: memoryWriter().stream, env: { SECOND_OPINION_RECEIPT: raw, SECOND_OPINION_PORTABLE_RECEIPT: portable },
+  }), 0);
+  const stderr = memoryWriter();
+  assert.equal(await run({ ...FIXTURES[3], brief, cwd: root, timeout: 2, out: partialOut, expectOutputs: ordered, dryRun: false }, {
+    spawn: partialSpawn, stderr: stderr.stream, env: { SECOND_OPINION_RECEIPT: raw, SECOND_OPINION_PORTABLE_RECEIPT: portable },
+  }), 4);
+  assert.match(stderr.value(), /SECOND_TOKEN/);
+  assert.doesNotMatch(stderr.value(), /FIRST_TOKEN|THIRD_TOKEN/);
+  const expectedChecks = [
+    [{ token: "FIRST_TOKEN", status: "matched" }, { token: "SECOND_TOKEN", status: "matched" }, { token: "THIRD_TOKEN", status: "matched" }],
+    [{ token: "FIRST_TOKEN", status: "matched" }, { token: "SECOND_TOKEN", status: "missing" }, { token: "THIRD_TOKEN", status: "matched" }],
+  ];
+  assert.deepEqual(receiptLines(raw).map((row) => row.outputChecks), expectedChecks);
+  assert.deepEqual(receiptLines(portable).map((row) => row.outputChecks), expectedChecks);
+  assert.deepEqual(receiptLines(raw).map((row) => [row.exit, row.outputCheckStatus]), [[0, "matched"], [4, "missing"]]);
+  assert.deepEqual(receiptLines(portable).map((row) => [row.exit, row.outputCheckStatus]), [[0, "matched"], [4, "missing"]]);
+});
+
+test("output checks retain observed matches when the vendor exits unsuccessfully", async () => {
+  const tokens = ["FIRST_TOKEN", "SECOND_TOKEN", "THIRD_TOKEN"];
+  const raw = join(root, "failed-output-checks-raw.jsonl");
+  const portable = join(root, "failed-output-checks-portable.jsonl");
+  const partialFailure = () => fakeChild((child) => {
+    child.stdin.on("end", () => {
+      child.stdout.end("FIRST_TOKEN ... THIRD_TOKEN");
+      queueMicrotask(() => child.emit("close", 1, null));
+    });
+    child.stdin.resume();
+  });
+  assert.equal(await run({ ...FIXTURES[3], brief, cwd: root, timeout: 2, out: join(root, "failed-output-checks.out"), expectOutputs: tokens, dryRun: false }, {
+    spawn: partialFailure, stderr: memoryWriter().stream, env: { SECOND_OPINION_RECEIPT: raw, SECOND_OPINION_PORTABLE_RECEIPT: portable },
+  }), 1);
+  const expected = [{ token: "FIRST_TOKEN", status: "matched" }, { token: "SECOND_TOKEN", status: "missing" }, { token: "THIRD_TOKEN", status: "matched" }];
+  for (const path of [raw, portable]) {
+    const [row] = receiptLines(path);
+    assert.deepEqual(row.outputChecks, expected);
+    assert.equal(row.outputCheckStatus, "not-evaluated");
+  }
 });
 
 const USAGE_SESSION = "12345678-1234-1234-1234-123456789abc";
@@ -2836,7 +2944,7 @@ test("closed portable emitter has an exact key set and no locator input seam", a
     "schemaVersion", "receiptKind", "ts", "transport", "vendor", "provider", "operation", "requestedMode",
     "effectiveMode", "inputProfile", "modelRequested", "model", "effort", "modelReported", "effortRequested",
     "truncatedSuspected", "promptSource", "promptBytes", "finish_reason", "finishReason", "incomplete_details", "lensId", "exit", "durationSec",
-    "invoked", "outputDeclared", "vendorUsage", "vendorUsageStatus", "outputCheckStatus", "attempts",
+    "invoked", "outputDeclared", "vendorUsage", "vendorUsageStatus", "outputCheckStatus", "outputChecks", "attempts",
     "attemptWaitsMs", "successfulAttempt", "completionTokenLimit", "failureClass", "failureActor", "remedy",
   ]);
   assert.deepEqual(Object.keys(row.outputDeclared), ["stdout", "stderr"]);
@@ -2848,9 +2956,19 @@ test("closed portable emitter has an exact key set and no locator input seam", a
   assert.equal(allKeys.some((key) => /^(?:cwd|outPath|errPath|pid)$|(?:Path|Pid|Index|Offset)$/i.test(key)), false);
   assert.equal(row.lensId, null);
   assert.equal(row.model, pathLikeVocabulary);
+  assert.equal(row.outputChecks, null);
   const source = readFileSync(new URL("./portable-receipt.mjs", import.meta.url), "utf8");
   assert.doesNotMatch(source, /\b(?:cwd|outPath|errPath|pid)\b/);
   assert.doesNotMatch(source, /\.\.\.\s*(?:values|record|receipt|input)/);
+});
+
+test("portable output checks share the seven-item boundary and bound token text", async () => {
+  const { buildPortableReceipt } = await portableModule();
+  const trailing = ["cli", null, null, 1, 1, [0], { requested: null, status: "not-applicable-cli" }, null, null, null, {}];
+  const checks = Array.from({ length: 7 }, (_value, index) => ({ token: `TOKEN_${index}`, status: "matched" }));
+  assert.deepEqual(buildPortableReceipt(...portableValues(), ...trailing, checks).outputChecks, checks);
+  assert.throws(() => buildPortableReceipt(...portableValues(), ...trailing, [...checks, { token: "TOKEN_7", status: "matched" }]));
+  assert.throws(() => buildPortableReceipt(...portableValues(), ...trailing, [{ token: "x".repeat(1025), status: "matched" }]));
 });
 
 test("portable call site passes declarations but not live locator values", async () => {
@@ -3181,5 +3299,6 @@ test("help, comments, skill, READMEs, Claude adapter, changelog, and version tea
     assert.ok(/two rows.{0,30}(?:never|not)|(?:not|never).{0,30}two rows|항상 두 행.{0,30}(?:않|아니)/is.test(text), `surface ${index}`);
   }
   const changelogRelease = changelog.match(/^##\s+(\d+\.\d+\.\d+)\b/m)?.[1];
-  assert.equal(plugin.version, changelogRelease);
+  const unreleased = changelog.match(/^## Unreleased\n([\s\S]*?)(?=^## |$(?![\s\S]))/m)?.[1] ?? "";
+  assert.ok(changelogRelease === plugin.version || new RegExp(`planned release version: ${plugin.version.replaceAll(".", "\\.")}`, "i").test(unreleased), "plugin.json must match the latest release heading or Unreleased's Planned release version");
 });

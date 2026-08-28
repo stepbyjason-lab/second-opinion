@@ -6,7 +6,11 @@ import { appendFileSync, closeSync, mkdirSync, openSync, readSync, statSync } fr
 import { dirname } from "node:path";
 import { AGY_NATIVE_READONLY_PROFILE, DISPATCH_MODES, OPERATIONS, VENDORS } from "./vendor-policy.mjs";
 
-const MAX_FREE_STRING = 1024;
+// Shared parser/help/portable boundary prevents divergent acceptance. The token
+// length limit is exported for the same reason the count is: the parser rejects
+// what exceeds it, so a divergent copy would silently drop whole portable rows.
+export const MAX_FREE_STRING = 1024;
+export const MAX_EXPECT_OUTPUTS = 7;
 const MODES = new Set([...DISPATCH_MODES, "invalid"]);
 const PROFILES = new Set(["none", AGY_NATIVE_READONLY_PROFILE, "invalid"]);
 const TRANSPORTS = new Set(["cli", "api"]);
@@ -99,6 +103,15 @@ function usageRecord(value) {
   };
 }
 
+function outputChecks(value) {
+  if (value === null || value === undefined) return null;
+  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_EXPECT_OUTPUTS) invalid();
+  return value.map((check) => {
+    if (!check || typeof check !== "object" || Array.isArray(check) || Object.keys(check).some((key) => !["token", "status"].includes(key))) invalid();
+    return { token: string(check.token), status: label(check.status, new Set(["matched", "missing"])) };
+  });
+}
+
 function executionEvidence(value = {}) {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
   const allowed = new Set([
@@ -168,6 +181,7 @@ export function buildPortableReceipt(
   failureActor = null,
   remedy = null,
   evidence = {},
+  outputChecksValue = null,
 ) {
   const timestamp = string(ts, { max: 32 });
   try { if (new Date(timestamp).toISOString() !== timestamp) invalid(); } catch { invalid(); }
@@ -207,6 +221,7 @@ export function buildPortableReceipt(
     vendorUsage: usageRecord(vendorUsage),
     vendorUsageStatus: label(vendorUsageStatus, USAGE_STATUSES),
     outputCheckStatus: label(outputCheckStatus, OUTPUT_STATUSES),
+    outputChecks: outputChecks(outputChecksValue),
     attempts: attemptsValue,
     attemptWaitsMs: waitValues,
     successfulAttempt: successfulAttemptValue,

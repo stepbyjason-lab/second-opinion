@@ -5,7 +5,7 @@
 Claude Code 안에서 **다른 벤더의 AI**(Codex/GPT, Antigravity/Gemini, Grok)를 일상어로 부려 쓰는
 어댑터 스킬 — 점검·리뷰·의견부터 작업 오프로드, 이미지 생성까지.
 
-**버전 0.9.11**
+**버전 0.9.12**
 
 > "이 설계 코덱스로 점검받고 싶어" / "안티그래비티한테 물어봐" / "그록으로 봐줘" / "교차 검증해줘"
 > "코덱스한테 로고 시안 이미지 만들어달라고 해줘" / "클로드 사용량 아끼게 이 번역은 제미나이로"
@@ -102,8 +102,13 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
   `model`·effort·exit·소요시간, 그리고
   **프로세스가 실제로 떴는지** 여부. Codex 호출은 Codex 자신의 세션 로그에서 읽은
   실측 토큰(입력·캐시된 입력·출력·추론·총계·컨텍스트창·쿼터 소진율)도 함께 남는다.
-  선택적 `--expect-output <ASCII token>` 호출은 token 자체를 기록·전송하지 않고
-  `outputCheckStatus`만 남긴다. token이 없으면 raw output을 보존하고 exit 4다.
+  선택적 `--expect-output <ASCII token, 최대 1024자>`은 최대 7회 반복할 수 있다. 모든 token을 stdout에서
+  literal 검사하며 하나라도 없으면 raw output을 보존한 채 exit 4, stderr에 빠진 token 이름 전부를
+  낸다. `outputCheckStatus`는 기존 집계 호환값으로 남기고, raw·portable 영수증은 항상
+  명령줄 순서의 `{ token, status }` `outputChecks`를 남긴다. output check가 없으면 빈 배열이 아닌
+  `null`이다.
+  이 기록에는 token 원문이 남으므로 두 영수증 sink를 벤더가 읽을 수 있는 `--cwd` 아래에 두거나 다음
+  벤더 입력으로 재사용하지 않는다. 재출력이 output check를 거짓으로 만족시킬 수 있다.
 
   raw 영수증은 재현을 위해 `cwd`·`outPath`·`errPath`·`pid`를 그대로 보존하므로 반드시
   저장소 밖에 둔다. `SECOND_OPINION_PORTABLE_RECEIPT`는 raw와 독립적으로 설정하는 누적

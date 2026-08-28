@@ -1622,6 +1622,7 @@ test("GLOBAL-1/H-5 C-7 subprocess CLI receipts preserve the repository-owned 0.9
       vendorUsage: null,
       vendorUsageStatus: "not-invoked",
       outputCheckStatus: "not-requested",
+      outputChecks: null,
     };
     for (const [key, value] of Object.entries(repositoryBaseline)) {
       assert.equal(Object.hasOwn(rawRow, key), true, `${fixture.vendor} missing repository baseline field ${key}`);

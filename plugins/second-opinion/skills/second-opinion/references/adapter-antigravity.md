@@ -29,9 +29,9 @@ dispatcher는 provider exit 0을 성공으로 승격하지 않고 exit 4로 닫�
   cwd와 무관하게 이전 host project를 선택할 수 있어, spawn cwd와 영수증 cwd만으로는
   파일 접근 대상을 결속하지 못했던 0.8.3 결함의 최소 수정이다.
 - hidden sentinel을 읽었는지 기계적으로 확인해야 하면 `--out <path>`와
-  `--expect-output <ASCII-token>`을 추가한다. token은 대상 파일에만 두고 brief에는
-  exact 파일 경로와 읽기 지시만 쓴다. token은 AGY argv·stdin·receipt에 전달되지 않으며,
-  stdout에 없으면 raw `--out`은 보존한 채 exit 4 / `outputCheckStatus=missing`이다.
+  `--expect-output <ASCII-token, max 1024 chars>`을 추가한다. token은 대상 파일에만 두고 brief에는
+  exact 파일 경로와 읽기 지시만 쓴다. token은 AGY argv·stdin에는 전달되지 않지만 raw·portable receipt에는 원문 그대로 기록되며,
+  receipt sink는 벤더가 읽을 수 있는 입력 경로에 두지 않는다. stdout에 없으면 raw `--out`은 보존한 채 exit 4 / `outputCheckStatus=missing`이다.
 - ⚠️ argv로 줄 때(`-p "$(cat brief.txt)"`)만 적용되는 함정 둘: **`</dev/null` 필수**
   (stdin 안 닫으면 무한 hang) + **30,000자 한계** (Windows CreateProcess) — 특별한
   이유가 없으면 stdin 경로를 기본으로 쓸 것
