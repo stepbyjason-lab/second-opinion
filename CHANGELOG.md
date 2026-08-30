@@ -6,7 +6,7 @@
 
 ## 0.9.12 — 2026-08-29
 
-- `--expect-output`(ASCII token, 최대 1024자)을 최대 7회 반복할 수 있게 했다. 모든 token이 stdout에 literal로 있어야
+- `--expect-output`(ASCII token, 최대 1024자)을 최대 12회 반복할 수 있게 했다. 모든 token이 stdout에 literal로 있어야
   exit 0이며, 하나라도 없으면 exit 4와 함께 stderr에 빠진 token 이름 전부를 낸다. raw·portable
   영수증은 항상 `outputChecks`를 기록한다. 요청 순서의 원문 token별 `matched`/`missing` 배열이며,
   요청이 없으면 `null`이다. 기존 `outputCheckStatus`는 집계 호환값으로 유지한다.

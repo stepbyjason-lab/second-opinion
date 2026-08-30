@@ -129,7 +129,7 @@ CLI launches are not worth that diagnostic cost.
   effort, exit code, duration, and whether the process actually spawned. Codex
   calls also carry measured token usage read from Codex's own session log
   (input, cached input, output, reasoning, total, context window, quota used).
-  Optional `--expect-output <ASCII token, max 1024 chars>` may be repeated up to seven times.
+  Optional `--expect-output <ASCII token, max 1024 chars>` may be repeated up to twelve times.
   Every token is checked literally in stdout; any missing token returns exit 4,
   names every missing token on stderr, and preserves the raw output file.
   `outputCheckStatus` remains the aggregate compatibility value. Both receipts

@@ -10,7 +10,7 @@ import { AGY_NATIVE_READONLY_PROFILE, DISPATCH_MODES, OPERATIONS, VENDORS } from
 // length limit is exported for the same reason the count is: the parser rejects
 // what exceeds it, so a divergent copy would silently drop whole portable rows.
 export const MAX_FREE_STRING = 1024;
-export const MAX_EXPECT_OUTPUTS = 7;
+export const MAX_EXPECT_OUTPUTS = 12;
 const MODES = new Set([...DISPATCH_MODES, "invalid"]);
 const PROFILES = new Set(["none", AGY_NATIVE_READONLY_PROFILE, "invalid"]);
 const TRANSPORTS = new Set(["cli", "api"]);

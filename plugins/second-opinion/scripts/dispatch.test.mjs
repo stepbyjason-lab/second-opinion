@@ -2314,7 +2314,7 @@ test("--expect-output matches across chunks and fails closed without changing ra
   assert.deepEqual(receiptLines(planWorkflowReceipt).map((row) => [row.requestedMode, row.effectiveMode, row.exit, row.outputCheckStatus]), [["plan", "plan", 4, "missing"]]);
 });
 
-test("repeated --expect-output preserves order, requires every token, and rejects an eighth", async () => {
+test("repeated --expect-output preserves order, requires every token, and rejects a thirteenth", async () => {
   const ordered = ["FIRST_TOKEN", "SECOND_TOKEN", "THIRD_TOKEN"];
   assert.match(usageText(), /max 1024 chars/);
   for (const url of [
@@ -2332,8 +2332,8 @@ test("repeated --expect-output preserves order, requires every token, and reject
   assert.deepEqual(parsed.expectOutputs, ordered);
   assert.throws(() => parseCli([
     "--vendor", "codex", "--operation", "text", "--brief", brief, "--out", join(root, "too-many.out"),
-    ...Array.from({ length: 8 }, (_value, index) => ["--expect-output", `TOKEN_${index}`]).flat(),
-  ], root), /at most 7 times/);
+    ...Array.from({ length: 13 }, (_value, index) => ["--expect-output", `TOKEN_${index}`]).flat(),
+  ], root), /at most 12 times/);
   assert.throws(() => parseCli([
     "--vendor", "codex", "--operation", "text", "--brief", brief, "--out", join(root, "too-long.out"), "--expect-output", "x".repeat(1025),
   ], root), /1 to 1024 character/);
@@ -2962,12 +2962,12 @@ test("closed portable emitter has an exact key set and no locator input seam", a
   assert.doesNotMatch(source, /\.\.\.\s*(?:values|record|receipt|input)/);
 });
 
-test("portable output checks share the seven-item boundary and bound token text", async () => {
+test("portable output checks share the twelve-item boundary and bound token text", async () => {
   const { buildPortableReceipt } = await portableModule();
   const trailing = ["cli", null, null, 1, 1, [0], { requested: null, status: "not-applicable-cli" }, null, null, null, {}];
-  const checks = Array.from({ length: 7 }, (_value, index) => ({ token: `TOKEN_${index}`, status: "matched" }));
+  const checks = Array.from({ length: 12 }, (_value, index) => ({ token: `TOKEN_${index}`, status: "matched" }));
   assert.deepEqual(buildPortableReceipt(...portableValues(), ...trailing, checks).outputChecks, checks);
-  assert.throws(() => buildPortableReceipt(...portableValues(), ...trailing, [...checks, { token: "TOKEN_7", status: "matched" }]));
+  assert.throws(() => buildPortableReceipt(...portableValues(), ...trailing, [...checks, { token: "TOKEN_12", status: "matched" }]));
   assert.throws(() => buildPortableReceipt(...portableValues(), ...trailing, [{ token: "x".repeat(1025), status: "matched" }]));
 });
 

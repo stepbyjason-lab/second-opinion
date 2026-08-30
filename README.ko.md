@@ -102,7 +102,7 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
   `model`·effort·exit·소요시간, 그리고
   **프로세스가 실제로 떴는지** 여부. Codex 호출은 Codex 자신의 세션 로그에서 읽은
   실측 토큰(입력·캐시된 입력·출력·추론·총계·컨텍스트창·쿼터 소진율)도 함께 남는다.
-  선택적 `--expect-output <ASCII token, 최대 1024자>`은 최대 7회 반복할 수 있다. 모든 token을 stdout에서
+  선택적 `--expect-output <ASCII token, 최대 1024자>`은 최대 12회 반복할 수 있다. 모든 token을 stdout에서
   literal 검사하며 하나라도 없으면 raw output을 보존한 채 exit 4, stderr에 빠진 token 이름 전부를
   낸다. `outputCheckStatus`는 기존 집계 호환값으로 남기고, raw·portable 영수증은 항상
   명령줄 순서의 `{ token, status }` `outputChecks`를 남긴다. output check가 없으면 빈 배열이 아닌

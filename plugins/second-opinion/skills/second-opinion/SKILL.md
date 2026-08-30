@@ -267,7 +267,7 @@ AGY headless는 command permission을 물을 수 없으므로 dispatcher가 expl
 - 디스패처는 요청 `--cwd`를 AGY의 `--add-dir`로 항상 결속한다. process cwd와 영수증 cwd만
   맞고 AGY가 이전 host workspace를 읽던 0.8.3 결함을 막는다.
 - 파일 읽기 성공을 hidden token으로 확인해야 하는 호출은 `--out <path>`와
-  `--expect-output <ASCII-token, 최대 1024자>`을 함께 쓴다. 이 flag는 최대 7회 반복할 수 있으며 명령줄
+  `--expect-output <ASCII-token, 최대 1024자>`을 함께 쓴다. 이 flag는 최대 12회 반복할 수 있으며 명령줄
   순서대로 모든 token을 stdout에서 literal 검사한다. token은 brief나 vendor argv로 보내지 않고,
   하나라도 없으면 dispatcher/receipt exit 4이며 stderr가 빠진 token 이름 전부를 낸다. token 원문은
   영수증에 남으므로 두 영수증 sink를 벤더가 읽을 수 있는 `--cwd` 아래나 다음 호출 입력으로 두지 않는다.
