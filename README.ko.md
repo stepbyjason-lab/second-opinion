@@ -109,6 +109,10 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
   `null`이다.
   이 기록에는 token 원문이 남으므로 두 영수증 sink를 벤더가 읽을 수 있는 `--cwd` 아래에 두거나 다음
   벤더 입력으로 재사용하지 않는다. 재출력이 output check를 거짓으로 만족시킬 수 있다.
+  선택적 `--expect-total <n>`은 **전체 구획 수를 신고**한다(1~1000, `--expect-output`을 최소 하나 요구).
+  판정에 쓰지 않고 영수증 `expectedTotal`에만 남기므로 exit code가 바뀌지 않는다. **읽는 법은 셋이다** —
+  `null`이면 **미신고**라 부분 등록 여부를 알 수 없고, `outputChecks.length`와 **같으면 전건 등록**,
+  **크면 부분 등록**이다. 신고가 없으면 `outputCheckStatus: matched`만으로는 전 구획이 돌았는지 알 수 없다.
 
   raw 영수증은 재현을 위해 `cwd`·`outPath`·`errPath`·`pid`를 그대로 보존하므로 반드시
   저장소 밖에 둔다. `SECOND_OPINION_PORTABLE_RECEIPT`는 raw와 독립적으로 설정하는 누적

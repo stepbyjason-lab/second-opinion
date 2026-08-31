@@ -11,6 +11,9 @@ import { AGY_NATIVE_READONLY_PROFILE, DISPATCH_MODES, OPERATIONS, VENDORS } from
 // what exceeds it, so a divergent copy would silently drop whole portable rows.
 export const MAX_FREE_STRING = 1024;
 export const MAX_EXPECT_OUTPUTS = 12;
+// The declared section count may exceed the registration ceiling: declaring more
+// than were registered is exactly the partial-registration case this records.
+export const MAX_EXPECT_TOTAL = 1000;
 const MODES = new Set([...DISPATCH_MODES, "invalid"]);
 const PROFILES = new Set(["none", AGY_NATIVE_READONLY_PROFILE, "invalid"]);
 const TRANSPORTS = new Set(["cli", "api"]);
@@ -44,6 +47,11 @@ export class PortableReceiptError extends Error {
 }
 
 function invalid() { throw new PortableReceiptError("INVALID_RECORD"); }
+function expectedTotalValue(value) {
+  if (value === null || value === undefined) return null;
+  if (!Number.isInteger(value) || value < 1 || value > MAX_EXPECT_TOTAL) invalid();
+  return value;
+}
 function string(value, { nullable = false, max = MAX_FREE_STRING } = {}) {
   if (nullable && (value === null || value === undefined)) return null;
   if (typeof value !== "string" || value.length === 0 || value.length > max || /[\x00-\x1f\x7f]/.test(value)) invalid();
@@ -182,6 +190,7 @@ export function buildPortableReceipt(
   remedy = null,
   evidence = {},
   outputChecksValue = null,
+  expectedTotal = null,
 ) {
   const timestamp = string(ts, { max: 32 });
   try { if (new Date(timestamp).toISOString() !== timestamp) invalid(); } catch { invalid(); }
@@ -222,6 +231,7 @@ export function buildPortableReceipt(
     vendorUsageStatus: label(vendorUsageStatus, USAGE_STATUSES),
     outputCheckStatus: label(outputCheckStatus, OUTPUT_STATUSES),
     outputChecks: outputChecks(outputChecksValue),
+    expectedTotal: expectedTotalValue(expectedTotal),
     attempts: attemptsValue,
     attemptWaitsMs: waitValues,
     successfulAttempt: successfulAttemptValue,

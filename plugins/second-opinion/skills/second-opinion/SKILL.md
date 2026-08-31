@@ -271,6 +271,10 @@ AGY headless는 command permission을 물을 수 없으므로 dispatcher가 expl
   순서대로 모든 token을 stdout에서 literal 검사한다. token은 brief나 vendor argv로 보내지 않고,
   하나라도 없으면 dispatcher/receipt exit 4이며 stderr가 빠진 token 이름 전부를 낸다. token 원문은
   영수증에 남으므로 두 영수증 sink를 벤더가 읽을 수 있는 `--cwd` 아래나 다음 호출 입력으로 두지 않는다.
+- 구획이 여럿인 호출은 `--expect-total <n>`으로 **전체 구획 수를 신고**한다(1~1000, `--expect-output`을 최소
+  하나 요구). 판정에 쓰지 않고 영수증 `expectedTotal`에만 남으며 exit code를 바꾸지 않는다. **읽는 법은 셋이다** —
+  `expectedTotal`이 `null`이면 **미신고**라 부분 등록 여부를 알 수 없고, `outputChecks.length`와 **같으면 전건 등록**,
+  **크면 부분 등록**이다. 신고가 없으면 `outputCheckStatus: matched`만으로는 전 구획이 돌았는지 알 수 없다.
 - `--model`은 디스플레이 라벨(`"Gemini 3.1 Pro (High)"`)이나 `agy models`가 출력하는 정규 slug(`gemini-3.1-pro-high`) 둘 다 유효(agy 1.1.5 실측). `agy models`는 이제 slug를, 모델 피커 화면은 라벨을 보여주니 어느 쪽이든 그대로 복사해 쓰면 된다. 형식이 깨졌거나 모르는 이름은 exit 1로 거부되니(구버전의 silent-downgrade 아님) 호출 후 exit code를 확인할 것.
 - **agy 영수증 한계**: 영수증의 `model`·`invoked`는 agy에도 기록되지만(요청 모델·실행 여부), 실측 토큰(`vendorUsage`)과 실제 응답 backend 확인은 **Codex 전용**이다. agy는 응답에 모델·session id를 안 실어(헤더 없음) 요청과 실제 실행 모델을 묶을 앵커가 없다. 대신 unknown 모델을 loud reject하므로 강등 위험은 낮다.
 → 호출 전 필수: `references/adapter-antigravity.md` 를 반드시 읽을 것 (Windows 호스트 주의·모델 라벨·이미지 생성·복구·기타 함정)

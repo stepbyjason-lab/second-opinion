@@ -47,7 +47,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DISPATCH_MODES, OPERATIONS, PolicyError, VENDORS, applyGrokHarnessIsolationEnv, buildVendorArgv, composeVendorInput, effectiveInputProfile, effectiveVendorMode, executableName, grokNeedsHarnessIsolation, normalizeVendor, resolveExecutable } from "./vendor-policy.mjs";
-import { appendPortableReceipt, buildPortableReceipt, MAX_EXPECT_OUTPUTS, MAX_FREE_STRING, preparePortableUsage } from "./portable-receipt.mjs";
+import { appendPortableReceipt, buildPortableReceipt, MAX_EXPECT_OUTPUTS, MAX_EXPECT_TOTAL, MAX_FREE_STRING, preparePortableUsage } from "./portable-receipt.mjs";
 
 export const MAX_BRIEF_BYTES = 8 * 1024 * 1024;
 export const MAX_VENDOR_USAGE_BYTES = 64 * 1024 * 1024;
@@ -59,7 +59,7 @@ const MODEL_CATALOG_FAILURE_TTL_MS = 5 * 60 * 1000;
 const MODEL_CATALOG_FILENAME = "model-catalog-v1.json";
 const RECEIPT_CONFIG_FILENAME = "config.json";
 const MAX_RECEIPT_CONFIG_BYTES = 1024 * 1024;
-const SINGLE_OPTIONS = new Set(["--vendor", "--operation", "--brief", "--cwd", "--model", "--effort", "--mode", "--timeout", "--out", "--err", "--lens-id", "--dry-run"]);
+const SINGLE_OPTIONS = new Set(["--vendor", "--operation", "--brief", "--cwd", "--model", "--effort", "--mode", "--timeout", "--out", "--err", "--lens-id", "--expect-total", "--dry-run"]);
 // Accepted --vendor spellings: the canonical set plus the "antigravity" alias
 // normalizeVendor() folds into "agy". Kept next to VENDORS so a new vendor is
 // one edit, and so usage text and validation cannot disagree.
@@ -144,6 +144,10 @@ export function usageText() {
     `  --expect-output <ASCII token, max ${MAX_FREE_STRING} chars> may be repeated up to ${MAX_EXPECT_OUTPUTS} times with --out; every token`,
     "  must occur literally in stdout or the dispatcher exits 4 and names every missing token on stderr.",
     "  Choose tokens that are not substrings of one another; literal matching does not infer token boundaries.",
+    `  --expect-total <n> declares how many sections existed (1..${MAX_EXPECT_TOTAL}); it requires --expect-output and is`,
+    "  recorded as expectedTotal without changing exit codes. Compare it with outputChecks.length: equal means every",
+    "  section was registered, greater means the caller registered only some of them; a total below the",
+    "  registered count is rejected, so those two readings are the only ones a receipt can carry.",
     "",
     "  Which flags a given vendor/operation/mode actually requires is enforced by",
     "  validation, not repeated here — run the call and the error names exactly",
@@ -610,6 +614,20 @@ export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
     if (!out) throw new CliError("--expect-output requires --out");
     if (expectOutputs.some((value) => value.length > MAX_FREE_STRING || !/^[\x21-\x7e]+$/.test(value))) throw new CliError(`--expect-output must be a 1 to ${MAX_FREE_STRING} character ASCII token without whitespace`);
   }
+  const expectedTotal = raw["expect-total"] === undefined ? null : Number(raw["expect-total"]);
+  if (expectedTotal !== null) {
+    if (!Number.isInteger(expectedTotal) || expectedTotal < 1 || expectedTotal > MAX_EXPECT_TOTAL) {
+      throw new CliError(`--expect-total must be an integer from 1 to ${MAX_EXPECT_TOTAL}`);
+    }
+    // A declared total with no registered token would leave outputChecks null, and
+    // `total > null?.length` reads false, so a partial registration would look full.
+    if (expectOutputs.length === 0) throw new CliError("--expect-total requires at least one --expect-output");
+    // Fewer declared than registered is a fourth state the documented reading rule
+    // (null / equal / greater) does not define, so it is rejected rather than recorded.
+    if (expectedTotal < expectOutputs.length) {
+      throw new CliError("--expect-total must be at least the number of --expect-output tokens");
+    }
+  }
   if (vendor === "claude") {
     if (raw.operation !== "text") throw new CliError("claude supports only --operation text");
     if (!model) throw new CliError("claude requires --model");
@@ -633,7 +651,7 @@ export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
   if (receiptConflicts({ brief, inputs, out, err }, deps.env ?? process.env)) throw new CliError("--out/--err must not equal the resolved raw receipt sink");
   return {
     vendor, operation: raw.operation, mode, brief, cwd, modelRequested, model, effortRequested, effort, inputs, timeout, out, err,
-    expectOutput, ...(expectOutputs.length ? { expectOutputs } : {}), lensId, dryRun: raw.dryRun ?? false,
+    expectOutput, ...(expectOutputs.length ? { expectOutputs } : {}), expectedTotal, lensId, dryRun: raw.dryRun ?? false,
   };
 }
 
@@ -1010,6 +1028,7 @@ function writeReceipt(stderr, options, exit, startedAt, invoked, outputCheckStat
       vendorUsageStatus: vendorUsage.status,
       outputCheckStatus,
       outputChecks: options.outputChecks ?? null,
+      expectedTotal: options.expectedTotal ?? null,
       attempts: invoked ? 1 : 0,
       attemptWaitsMs: invoked ? [0] : [],
       successfulAttempt: invoked && exit === 0 ? 1 : null,
@@ -1065,6 +1084,7 @@ function writePortableReceipt(stderr, options, exit, startedAt, invoked, outputC
       null,
       evidence,
       options.outputChecks ?? null,
+      options.expectedTotal ?? null,
     );
     appendPortableReceipt(target, record);
   } catch {
@@ -1183,6 +1203,7 @@ export function writeApiDispatchReceipts(stderr, options, exit, startedAt, env =
         vendorUsageStatus: options.usage ? "ok" : (exit === 0 ? "not-reported" : "vendor-reported-error"),
         outputCheckStatus: "not-requested",
         outputChecks: null,
+        expectedTotal: null,
         attempts: actualAttempts,
         attemptWaitsMs,
         successfulAttempt: options.successfulAttempt ?? null,
@@ -1227,6 +1248,7 @@ export function writeApiDispatchReceipts(stderr, options, exit, startedAt, env =
       options.failureActor ?? null,
       options.remedy ?? null,
       evidence,
+      null,
       null,
     );
     appendPortableReceipt(target, record);
@@ -1293,6 +1315,25 @@ export async function run(options, deps = { spawn }) {
     || (options.expectOutput !== undefined && (!Array.isArray(options.expectOutputs) || options.expectOutput !== options.expectOutputs[0]))) {
     parentStderr.write("dispatch validation error: run() accepts expectOutputs; expectOutput must match its first token\n");
     return 2;
+  }
+  if (options.expectedTotal !== undefined && options.expectedTotal !== null) {
+    const declared = options.expectedTotal;
+    const registered = Array.isArray(options.expectOutputs) ? options.expectOutputs.length : 0;
+    // parseCli enforces this contract; run() is a separate entry point, and an
+    // unchecked value here either reads as full registration (registered 0, so
+    // `declared > outputChecks?.length` is false) or throws inside the portable
+    // emitter, where the catch drops the entire row.
+    const reason = !Number.isInteger(declared) || declared < 1 || declared > MAX_EXPECT_TOTAL
+      ? `must be an integer from 1 to ${MAX_EXPECT_TOTAL}`
+      : registered === 0
+        ? "requires at least one expectOutputs token"
+        : declared < registered
+          ? "must be at least the number of expectOutputs tokens"
+          : null;
+    if (reason) {
+      parentStderr.write(`dispatch validation error: run() expectedTotal ${reason}\n`);
+      return 2;
+    }
   }
   const expectedOutputTokens = options.expectOutputs ?? [];
   options = {

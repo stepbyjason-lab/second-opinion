@@ -137,6 +137,11 @@ CLI launches are not worth that diagnostic cost.
   tokens, or `null` when no output check was requested.
   Because those records retain literal tokens, never place either receipt sink under
   a vendor-readable `--cwd` or reuse it as a later vendor input: a replay could falsely satisfy a check.
+  Optional `--expect-total <n>` declares how many sections existed (1..1000; it requires at least one
+  `--expect-output`). It is recorded as `expectedTotal` and never used in judgement, so exit codes are
+  unchanged. Read it three ways: `null` means unreported, so partial registration cannot be ruled out;
+  equal to `outputChecks.length` is a full registration — every section was registered; greater means the caller registered
+  only some of them. Without it, `outputCheckStatus: matched` cannot tell those apart.
 
   The raw receipt deliberately keeps `cwd`, `outPath`, `errPath`, and `pid` for
   reproduction, so keep it outside every repository. Independently set

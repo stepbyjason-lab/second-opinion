@@ -638,12 +638,12 @@ test("skill resolves the catalog path directly before declaring it missing", () 
   assert.match(skill, /검색 결과가 비었다는 이유만으로 설치 누락이나 카탈로그 오류라고 단정하지 않는다/);
 });
 
-test("0.9.12 public help and documentation describe cache-first ranked routing", () => {
+test("0.9.13 public help and documentation describe cache-first ranked routing", () => {
   const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
   const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
   const publicReadmeUrls = [new URL("../../../README.md", import.meta.url), new URL("../../../README.ko.md", import.meta.url)];
   const publicReadmes = publicReadmeUrls.filter((url) => existsSync(url)).map((url) => readFileSync(url, "utf8"));
-  assert.equal(plugin.version, "0.9.12");
+  assert.equal(plugin.version, "0.9.13");
   assert.ok(publicReadmes.length === 0 || publicReadmes.length === 2, "public snapshot must carry both README files");
   for (const text of [skill, ...publicReadmes]) {
     assert.match(text, /0\.9\.12/);
@@ -1933,7 +1933,7 @@ test("opt-in receipt appends typed JSONL for dry-run and invoked children", asyn
   assert.equal(dryRun.invoked, false);
   assert.equal(completed.invoked, true);
   for (const row of [dryRun, completed]) {
-    assert.deepEqual(Object.keys(row).sort(), ["argv", "attemptWaitsMs", "attempts", "completionTokenLimit", "cwd", "durationSec", "effectiveMode", "effort", "effortRequested", "errPath", "executable", "exit", "failureActor", "failureClass", "finishReason", "finish_reason", "incomplete_details", "inputProfile", "invoked", "lensId", "model", "modelReported", "modelRequested", "operation", "outPath", "outputCheckStatus", "outputChecks", "pid", "promptBytes", "promptSource", "provider", "remedy", "requestedMode", "schemaVersion", "successfulAttempt", "transport", "truncatedSuspected", "ts", "vendor", "vendorUsage", "vendorUsageStatus"].sort());
+    assert.deepEqual(Object.keys(row).sort(), ["argv", "attemptWaitsMs", "attempts", "completionTokenLimit", "cwd", "durationSec", "effectiveMode", "effort", "effortRequested", "errPath", "executable", "exit", "failureActor", "failureClass", "finishReason", "finish_reason", "incomplete_details", "inputProfile", "invoked", "lensId", "model", "modelReported", "modelRequested", "operation", "expectedTotal", "outPath", "outputCheckStatus", "outputChecks", "pid", "promptBytes", "promptSource", "provider", "remedy", "requestedMode", "schemaVersion", "successfulAttempt", "transport", "truncatedSuspected", "ts", "vendor", "vendorUsage", "vendorUsageStatus"].sort());
     assert.equal(row.schemaVersion, 1);
     assert.equal(row.vendor, "codex");
     assert.equal(row.transport, "cli");
@@ -2944,7 +2944,7 @@ test("closed portable emitter has an exact key set and no locator input seam", a
     "schemaVersion", "receiptKind", "ts", "transport", "vendor", "provider", "operation", "requestedMode",
     "effectiveMode", "inputProfile", "modelRequested", "model", "effort", "modelReported", "effortRequested",
     "truncatedSuspected", "promptSource", "promptBytes", "finish_reason", "finishReason", "incomplete_details", "lensId", "exit", "durationSec",
-    "invoked", "outputDeclared", "vendorUsage", "vendorUsageStatus", "outputCheckStatus", "outputChecks", "attempts",
+    "invoked", "outputDeclared", "vendorUsage", "vendorUsageStatus", "outputCheckStatus", "outputChecks", "expectedTotal", "attempts",
     "attemptWaitsMs", "successfulAttempt", "completionTokenLimit", "failureClass", "failureActor", "remedy",
   ]);
   assert.deepEqual(Object.keys(row.outputDeclared), ["stdout", "stderr"]);
@@ -2960,6 +2960,108 @@ test("closed portable emitter has an exact key set and no locator input seam", a
   const source = readFileSync(new URL("./portable-receipt.mjs", import.meta.url), "utf8");
   assert.doesNotMatch(source, /\b(?:cwd|outPath|errPath|pid)\b/);
   assert.doesNotMatch(source, /\.\.\.\s*(?:values|record|receipt|input)/);
+});
+
+test("--expect-total records the declared section count without judging it", async () => {
+  const base = ["--vendor", "codex", "--operation", "text", "--brief", brief, "--out", join(root, "declared.out")];
+  assert.equal(parseCli([...base, "--expect-output", "A", "--expect-total", "9"], root).expectedTotal, 9);
+  assert.equal(parseCli([...base, "--expect-output", "A"], root).expectedTotal, null,
+    "an unreported total stays null rather than defaulting to a count");
+
+  // A declared total with zero registered tokens leaves outputChecks null, where
+  // `total > null?.length` reads false and a partial registration reads as full.
+  assert.throws(() => parseCli([...base, "--expect-total", "9"], root), /requires at least one --expect-output/);
+  for (const bad of ["0", "-1", "2.5", "1001", "nine"]) {
+    assert.throws(() => parseCli([...base, "--expect-output", "A", "--expect-total", bad], root),
+      /--expect-total must be an integer from 1 to 1000/, `rejects ${bad}`);
+  }
+
+  // The case this exists for: every registered token matched, yet fewer were
+  // registered than existed. The aggregate still reads matched; only the pair tells.
+  const raw = join(root, "declared-raw.jsonl");
+  const portable = join(root, "declared-portable.jsonl");
+  const partial = () => fakeChild((child) => {
+    child.stdin.on("end", () => {
+      child.stdout.end("FIRST_TOKEN");
+      queueMicrotask(() => child.emit("close", 0, null));
+    });
+    child.stdin.resume();
+  });
+  assert.equal(await run({
+    ...FIXTURES[3], brief, cwd: root, timeout: 2, out: join(root, "declared-run.out"),
+    expectOutputs: ["FIRST_TOKEN"], expectedTotal: 3, dryRun: false,
+  }, {
+    spawn: partial, stderr: memoryWriter().stream,
+    env: { SECOND_OPINION_RECEIPT: raw, SECOND_OPINION_PORTABLE_RECEIPT: portable },
+  }), 0, "a partial registration still succeeds");
+  for (const path of [raw, portable]) {
+    const [row] = receiptLines(path);
+    assert.equal(row.expectedTotal, 3, "the declared total is recorded verbatim");
+    assert.deepEqual(row.outputChecks, [{ token: "FIRST_TOKEN", status: "matched" }]);
+    assert.equal(row.outputCheckStatus, "matched", "the aggregate keeps its established meaning");
+    assert.ok(row.expectedTotal > row.outputChecks.length, "the pair exposes the partial registration");
+  }
+
+  // An unreported call keeps the field present and null in both sinks.
+  const quietRaw = join(root, "undeclared-raw.jsonl");
+  const quietPortable = join(root, "undeclared-portable.jsonl");
+  assert.equal(await run({
+    ...FIXTURES[3], brief, cwd: root, timeout: 2, out: join(root, "undeclared-run.out"), dryRun: false,
+  }, {
+    spawn: partial, stderr: memoryWriter().stream,
+    env: { SECOND_OPINION_RECEIPT: quietRaw, SECOND_OPINION_PORTABLE_RECEIPT: quietPortable },
+  }), 0);
+  for (const path of [quietRaw, quietPortable]) {
+    const [row] = receiptLines(path);
+    assert.ok("expectedTotal" in row, "the field is always present");
+    assert.equal(row.expectedTotal, null, "an unreported total is null, not zero and not absent");
+  }
+
+  // Equal is the full-registration case and must stay accepted on both entry points.
+  // Without this, loosening the comparison to <= passes every other test while
+  // rejecting exactly the calls that registered everything they declared.
+  assert.equal(parseCli([...base, "--expect-output", "A", "--expect-output", "B", "--expect-total", "2"], root).expectedTotal, 2);
+  // Accepted boundaries, not only rejected ones: widening or narrowing the range
+  // silently turns legitimate declarations into exit 2 otherwise.
+  assert.equal(parseCli([...base, "--expect-output", "A", "--expect-total", "1"], root).expectedTotal, 1);
+  assert.equal(parseCli([...base, "--expect-output", "A", "--expect-total", "1000"], root).expectedTotal, 1000);
+  const equalAccepted = memoryWriter();
+  assert.equal(await run({
+    ...FIXTURES[3], brief, cwd: root, out: join(root, "equal.out"), dryRun: true,
+    expectOutputs: ["A", "B"], expectOutput: "A", expectedTotal: 2,
+  }, { stderr: equalAccepted.stream, stdout: memoryWriter().stream }), 0,
+    "a declared total equal to the registered count is a full registration, not a violation");
+  // parseCli is not the only entry point. run() is exported and called directly, so
+  // the same contract has to hold there: an unchecked value either reads as a full
+  // registration or throws inside the portable emitter, dropping the whole row.
+  for (const bad of [
+    { expectedTotal: 3 },
+    { expectOutputs: ["A"], expectOutput: "A", expectedTotal: 2.5 },
+    { expectOutputs: ["A"], expectOutput: "A", expectedTotal: 0 },
+    { expectOutputs: ["A"], expectOutput: "A", expectedTotal: 1001 },
+    { expectOutputs: ["A", "B"], expectOutput: "A", expectedTotal: 1 },
+  ]) {
+    const rejected = memoryWriter();
+    assert.equal(await run({ ...FIXTURES[3], brief, cwd: root, out: join(root, "direct.out"), dryRun: true, ...bad }, {
+      stderr: rejected.stream,
+    }), 2, `run() rejects ${JSON.stringify(bad)}`);
+    assert.match(rejected.value(), /expectedTotal/);
+  }
+  // The reading rule has to live where callers look, or each consumer invents one.
+  assert.match(usageText(), /--expect-total/);
+  for (const url of [
+    new URL("../../../README.md", import.meta.url),
+    new URL("../../../README.ko.md", import.meta.url),
+    new URL("../skills/second-opinion/SKILL.md", import.meta.url),
+  ]) {
+    const text = readFileSync(url, "utf8");
+    assert.match(text, /expect-total/);
+    // The rule itself, not just the flag name: a cleanup that drops these sentences
+    // removes the reason no derived coverage field was added.
+    assert.match(text, /outputChecks[.?]+length/, `${url} states what to compare against`);
+    assert.match(text, /전건|full registration/, `${url} names the equal reading`);
+    assert.match(text, /부분|only some of them/, `${url} names the greater reading`);
+  }
 });
 
 test("portable output checks share the twelve-item boundary and bound token text", async () => {

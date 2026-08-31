@@ -4,6 +4,15 @@
 > add `Planned release version: <plugin.json version>` under `## Unreleased`.
 > Replace it with the matching release heading when releasing.
 
+## 0.9.13 — 2026-08-31
+
+- `--expect-total <n>`을 추가했다. 호출자가 **전체 구획 수를 신고**하면 디스패처가 판정에 쓰지 않고
+  영수증 `expectedTotal`에만 기록한다(미신고면 `null`). exit code와 fail-open은 그대로다. 읽는 법은 셋 —
+  `null`은 미신고, `outputChecks.length`와 같으면 전건 등록, 크면 부분 등록이다. 이전에는
+  `outputCheckStatus: matched`가 「전건 등록」과 「일부만 등록」을 같은 값으로 냈다.
+  `--expect-total`은 `--expect-output`을 최소 하나 요구한다 — 신고만 있고 등록이 0이면
+  `outputChecks`가 `null`이라 부분 등록이 전건으로 읽힌다.
+
 ## 0.9.12 — 2026-08-29
 
 - `--expect-output`(ASCII token, 최대 1024자)을 최대 12회 반복할 수 있게 했다. 모든 token이 stdout에 literal로 있어야
