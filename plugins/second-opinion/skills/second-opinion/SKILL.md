@@ -407,7 +407,15 @@ ffmpeg로 프레임을 추출한 뒤 그 프레임들을 `-i`로 전달한다(�
 
 ## 사용량 (선택)
 
-호출 전후 quota가 궁금하면: `codexbar-cli usage -p codex --json` (Antigravity는 IDE 실행 중일 때만 계측 가능). 대량 호출 전 참고용. `totalTokens`에는 캐시 입력이 포함되고 캐시분은 할인되므로 **캐시 사용량을 보고하는 CLI 영수증에서만** 다음 기준으로 비교한다:
+**이 스킬은 quota를 재지 않는다.** 사용량 계측은 호출자 소관이다 — madi 호출자는 `tools/usage-guard/`를 쓴다:
+`node tools/usage-guard/checkpoint.mjs --provider <codex|claude|grok|antigravity>`, 전체는 `snapshot-all.mjs`.
+벤더 OAuth source를 그 자리에서 읽는 advisory scheduler이고 gate가 아니라, 조회 실패가 작업을 막지 않는다.
+
+⛔ **캐시된 수치로 잔량을 판단하지 마라.** 스냅샷에 시각이 붙어 있으면 그것부터 읽는다 —
+그 시각 뒤에 돈 호출은 반영돼 있지 않다. 낡은 값을 근거로 「여유 있다」고 적으면 그것이 거짓 기록이다.
+
+영수증끼리 사용량을 비교할 때 `totalTokens`를 그대로 쓰지 않는다. 캐시 입력이 포함되고 캐시분은
+할인되므로 **캐시 사용량을 보고하는 CLI 영수증에서만** 다음 기준으로 비교한다:
 
 ```
 비교 기준 = (inputTokens - cachedInputTokens) + outputTokens
