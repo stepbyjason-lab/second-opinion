@@ -47,6 +47,11 @@ plan/review 권한을 자동 적용하지 않는다.
 | `--mode review` | 같은 실제 project cwd를 전체 탐색하는 리뷰 | AGY native plan; Claude는 review identity를 유지한 closed `Read,Glob,Grep`; Codex native `exec review` — **권한 제한 없음(아래 주의)** |
 
 - 이번 mode는 text operation 전용이다.
+- ⚠ **읽기 전용 모드에는 shell이 없다 — 리뷰어는 테스트도 `git diff`도 못 돌린다.**
+  Claude·AGY의 plan/review는 도구가 `Read,Glob,Grep`뿐이라 **무엇이 바뀌었는지 스스로 알아낼 수단이 없다.**
+  그러니 호출자가 진다 — **변경 파일 목록과 unified diff 전문, 인용할 정본 전문을 brief 본문에 인라인**하고,
+  **스위트 결과는 호출자가 직접 재서 값으로 준다.** 경로만 주면 리뷰어는 그 자리를 안 읽고,
+  그 실패는 산출물에 드러나지 않는다 — 「안 봤다」가 아니라 「지적할 것이 없다」로 돌아온다.
 - **읽기 전용은 명시적 plan/review뿐이다.** mode 생략은 좁은 호출이 아니라 범용
   full-access 호출이며, 권한을 좁히려면 mode를 명시해야 한다.
 - ⚠ **`--mode review`의 강도는 벤더마다 다르다 — Codex에서는 권한을 제한하지 않는다.**
@@ -275,7 +280,8 @@ AGY headless는 command permission을 물을 수 없으므로 dispatcher가 expl
   하나 요구). 판정에 쓰지 않고 영수증 `expectedTotal`에만 남으며 exit code를 바꾸지 않는다. **읽는 법은 셋이다** —
   `expectedTotal`이 `null`이면 **미신고**라 부분 등록 여부를 알 수 없고, `outputChecks.length`와 **같으면 전건 등록**,
   **크면 부분 등록**이다. 신고가 없으면 `outputCheckStatus: matched`만으로는 전 구획이 돌았는지 알 수 없다.
-- `--model`은 디스플레이 라벨(`"Gemini 3.1 Pro (High)"`)이나 `agy models`가 출력하는 정규 slug(`gemini-3.1-pro-high`) 둘 다 유효(agy 1.1.5 실측). `agy models`는 이제 slug를, 모델 피커 화면은 라벨을 보여주니 어느 쪽이든 그대로 복사해 쓰면 된다. 형식이 깨졌거나 모르는 이름은 exit 1로 거부되니(구버전의 silent-downgrade 아님) 호출 후 exit code를 확인할 것.
+- `--model`은 디스플레이 라벨(`"Gemini 3.1 Pro (High)"`)이나 `agy models`가 출력하는 정규 slug(`gemini-3.1-pro-high`) 둘 다 유효하다. `agy models`는 slug를, 모델 피커 화면은 라벨을 보여준다. 형식이 깨졌거나 모르는 이름은 exit 1로 거부되니(구버전의 silent-downgrade 아님) 호출 후 exit code를 확인할 것.
+- ⚠ **agy 1.1.26부터 reasoning effort가 별도 축이다**(실측 2026-08-31). `--model gemini-3.8-flash --effort low|medium|high`가 정식형이고, dispatcher가 `--effort`를 그대로 전달한다. 옛 접미사(`gemini-3.8-flash-low`)는 **단독으로는 아직 통한다.** 다만 **둘을 섞으면 exit 1**이고(`--model gemini-3.8-flash-low conflicts with --effort=high`), **접미사 없는 이름을 effort 없이 주면 그것도 exit 1**이다(`requires --effort`). 어느 쪽도 조용히 한쪽을 고르지 않는다 — 이긴 값을 추측하지 말고 exit code를 읽어라.
 - **agy 영수증 한계**: 영수증의 `model`·`invoked`는 agy에도 기록되지만(요청 모델·실행 여부), 실측 토큰(`vendorUsage`)과 실제 응답 backend 확인은 **Codex 전용**이다. agy는 응답에 모델·session id를 안 실어(헤더 없음) 요청과 실제 실행 모델을 묶을 앵커가 없다. 대신 unknown 모델을 loud reject하므로 강등 위험은 낮다.
 → 호출 전 필수: `references/adapter-antigravity.md` 를 반드시 읽을 것 (Windows 호스트 주의·모델 라벨·이미지 생성·복구·기타 함정)
 

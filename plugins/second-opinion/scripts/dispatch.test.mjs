@@ -638,12 +638,12 @@ test("skill resolves the catalog path directly before declaring it missing", () 
   assert.match(skill, /검색 결과가 비었다는 이유만으로 설치 누락이나 카탈로그 오류라고 단정하지 않는다/);
 });
 
-test("0.9.13 public help and documentation describe cache-first ranked routing", () => {
+test("0.9.14 public help and documentation describe cache-first ranked routing", () => {
   const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
   const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
   const publicReadmeUrls = [new URL("../../../README.md", import.meta.url), new URL("../../../README.ko.md", import.meta.url)];
   const publicReadmes = publicReadmeUrls.filter((url) => existsSync(url)).map((url) => readFileSync(url, "utf8"));
-  assert.equal(plugin.version, "0.9.13");
+  assert.equal(plugin.version, "0.9.14");
   assert.ok(publicReadmes.length === 0 || publicReadmes.length === 2, "public snapshot must carry both README files");
   for (const text of [skill, ...publicReadmes]) {
     assert.match(text, /0\.9\.12/);
@@ -1435,9 +1435,38 @@ test("help is served without arguments, on --help, and inside the unknown-argume
   for (const token of listed) assert.ok(stderr.value().includes(token), `error usage missing ${token}`);
 });
 
+test("agy carries reasoning effort as its own flag", () => {
+  // agy 1.1.26 split effort out of the model name. Forwarding the flag is what
+  // lets a caller use the canonical spelling at all; dropping it silently sent
+  // every AGY call at the account default effort.
+  const parsed = parseCli(["--vendor", "agy", "--operation", "text", "--brief", brief, "--model", "gemini-3.8-flash", "--effort", "medium"], root);
+  assert.equal(parsed.effort, "medium");
+  const argv = buildVendorArgv({ ...parsed, cwd: root, timeout: 3600 });
+  const at = argv.indexOf("--effort");
+  assert.notEqual(at, -1, "agy argv carries --effort");
+  assert.equal(argv[at + 1], "medium");
+  // The dispatcher does not rewrite the older suffix spelling into the new one:
+  // agy rejects the combination loudly, and rewriting would hide what it received.
+  const legacy = parseCli(["--vendor", "agy", "--operation", "text", "--brief", brief, "--model", "gemini-3.8-flash-low"], root);
+  assert.equal(buildVendorArgv({ ...legacy, cwd: root, timeout: 3600 }).includes("--effort"), false);
+  // The contract lives here: a suffix spelling paired with --effort must reach agy
+  // exactly as the caller wrote it, so agy's exit 1 conflict stays a conflict.
+  // Rewriting it into the canonical pair would turn that refusal into a silent run
+  // and erase which spelling the vendor actually received.
+  const conflicting = parseCli(["--vendor", "agy", "--operation", "text", "--brief", brief, "--model", "gemini-3.8-flash-low", "--effort", "high"], root);
+  const conflictArgv = buildVendorArgv({ ...conflicting, cwd: root, timeout: 3600 });
+  assert.ok(conflictArgv.includes("gemini-3.8-flash-low"), "the suffix spelling survives untouched");
+  const conflictAt = conflictArgv.indexOf("--effort");
+  assert.notEqual(conflictAt, -1, "the separate effort flag survives too");
+  assert.equal(conflictArgv[conflictAt + 1], "high");
+  assert.match(usageText(), /AGY reasoning effort is its own axis since agy 1.1.26/);
+});
+
 test("unsupported and ambiguous CLI inputs exit 2", async () => {
   const cases = [
-    ["--vendor", "agy", "--operation", "text", "--brief", brief, "--effort", "high"],
+    // agy accepts low|medium|high since 1.1.26; anything past that is the vendor's
+    // rejection, so the dispatcher names the real set instead of forwarding it.
+    ["--vendor", "agy", "--operation", "text", "--brief", brief, "--effort", "ultra"],
     ["--vendor", "codex", "--operation", "text", "--brief", brief, "--input", input1],
     ["--vendor", "codex", "--operation", "image-analyze", "--brief", brief],
     ["--vendor", "codex", "--operation", "text", "--brief", brief, "--unknown", "x"],

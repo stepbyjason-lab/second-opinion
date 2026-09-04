@@ -265,6 +265,12 @@ export function buildVendorArgv(options) {
     argv.push("--print-timeout", `${options.timeout}s`);
   }
   if (model) argv.push("--model", model);
+  // agy 1.1.26 split reasoning effort out of the model name: a bare `--model
+  // gemini-3.8-flash` now exits 1 with `requires --effort (available: low,
+  // medium, high)`, while the older `-high` suffix still resolves. Forward what
+  // the caller asked for and let agy reconcile the two spellings — rewriting the
+  // slug here would hide which of them the vendor actually honoured.
+  if (effort) argv.push("--effort", effort);
   const directories = [options.cwd, ...(operation === "image-analyze" ? inputs.map((input) => dirname(input)) : [])].filter(Boolean);
   const seen = new Set();
   for (const directory of directories) {
@@ -297,7 +303,7 @@ export function buildVendorArgv(options) {
 // "한계" for the full disclosure.
 //
 // Management allowlists below reflect `codex --help` (0.144.1),
-// `agy --help` (1.1.3), and `grok --help` (1.0.5) as installed — re-derive if
+// `agy --help` (1.1.26), and `grok --help` (1.0.5) as installed — re-derive if
 // the CLIs change.
 const CODEX_MANAGEMENT = new Set([
   "login", "logout", "mcp", "mcp-server", "plugin", "app", "app-server",
@@ -333,7 +339,7 @@ const VALUE_FLAGS = {
     "-p", "--profile", "--remote", "--remote-auth-token-env",
     "--local-provider", "--enable", "--disable",
   ]),
-  agy: new Set(["--add-dir", "--agent", "--log-file", "--mode", "--model", "--project", "--print-timeout"]),
+  agy: new Set(["--add-dir", "--agent", "--effort", "--log-file", "--mode", "--model", "--project", "--print-timeout"]),
   grok: new Set([
     "-m", "--model", "--cwd", "--output-format", "--prompt-file", "--prompt-json",
     "--tools", "--disallowed-tools", "--permission-mode", "--effort",

@@ -89,8 +89,10 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
 | 이미지 생성: agy는 **지정 저장 위치를 무시**(자기 scratch 폴더에 저장), codex는 **쓰기 샌드박스 필요** + Windows 복사 실패 가능 | 벤더별 실제 산출물 위치를 알고, 파일 존재를 직접 확인 후 원한 위치로 옮김 — 벤더의 "저장했다"를 성공으로 안 침 |
 | "이상 없음"은 약한 신호(특히 Gemini의 false-negative 편향) | "문제를 못 찾음 ≠ 문제 없음" 명시 전달 |
 | Grok `--tools`는 이름이 전부 틀리면 조용히 열린다. Grok은 Claude/Cursor 하네스 설정을 기본으로 읽는다 | plan/review는 `--permission-mode plan`을 바닥으로 쓰고 격리 env 13개 강제(Claude 6 + Cursor 6 + `GROK_CODEX_SESSIONS_ENABLED`). 프로젝트 루트 `CLAUDE.md`는 남을 수 있다 |
+| AGY 호출이 effort를 모델 slug 안에 넣음 | agy 1.1.26부터 effort가 별도 축(`--effort low|medium|high`)이다. 옛 `-high` 접미사는 단독으로는 아직 통하지만 `--effort`와 섞으면 **한쪽을 고르는 게 아니라 exit 1**이고, 접미사 없는 이름을 effort 없이 주면 그것도 거부된다. dispatcher는 두 표기를 그대로 전달해 벤더가 실제로 받은 것이 영수증에 남게 한다 |
+| 로컬을 안 건드렸는데 AGY 기본 모델이 바뀜 | 기본값이 설정 파일이 아니라 Antigravity 계정 쪽에 있다. 실측 — 아무것도 안 고쳤는데 `gemini-3.7-flash`에서 `gemini-3.8-flash-high`로 옮겨갔다. **재현이 필요한 호출은 `--model`을 박을 것** |
 | Grok 리뷰 예시가 reasoning effort를 빼면 벤더 기본값으로 조용히 실행됨 | 표준 리뷰 예시는 가성비 기준 `--effort medium`을 명시. dispatch가 그대로 전달하고 영수증의 `effortRequested`에 요청값을 남김 |
-| linked Git worktree의 exact current diff를 Grok/AGY에 리뷰시킴 | explicit review에는 git shell이 없고 worktree `.git`은 파일일 수 있음. Git 메타데이터 탐색을 맡기지 말고 변경 파일 목록과 unified diff 전문을 brief에 넣음 |
+| 리뷰어에게 exact current diff 확인이나 스위트 실행을 시킴 | `--mode plan`·`--mode review`는 Claude·AGY에 읽기 전용 도구만 준다 — shell이 없어 `git diff`도 테스트 실행도 못 한다. linked worktree의 `.git`이 파일인 문제는 그 위에 겹친다. **변경 파일 목록과 unified diff 전문**, 그리고 인용할 정본 전문을 brief에 넣고, 스위트 결과는 **호출자가 직접 재서 값으로** 준다 |
 
 - **실행 영수증** — 벤더를 부른 뒤 관측한 것을 한 줄로 남긴다: 요청한 벤더·모델,
   알 수 있으면 실제 응답 backend, exit/timeout 상태, 거부된 대체가 있었으면 그 사실.

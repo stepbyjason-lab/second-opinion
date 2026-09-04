@@ -23,7 +23,7 @@
 //
 //   CALLING IT (brief is a file; its contents go to the vendor over stdin)
 //     node <dispatch> --vendor codex  --operation text --brief b.txt --cwd <dir> --out o.txt --err e.txt
-//     node <dispatch> --vendor agy    --operation text --brief b.txt --cwd <dir> --model "gemini-3.6-flash-high" --out o.txt --err e.txt
+//     node <dispatch> --vendor agy    --operation text --brief b.txt --cwd <dir> --model gemini-3.8-flash --effort medium --out o.txt --err e.txt
 //     node <dispatch> --vendor claude --operation text --brief b.txt --cwd <dir> --model sonnet --effort low --out o.txt --err e.txt
 //     node <dispatch> --vendor grok   --operation text --brief b.txt --cwd <dir> --model grok-4.6 --effort medium --out o.txt --err e.txt
 //
@@ -113,6 +113,9 @@ export function usageText() {
     "    any vendor-required --model, and the output paths. Reviewers must not edit.",
     "  Grok review baseline: add --model grok-4.6 --effort medium; the dispatcher",
     "    forwards --effort unchanged to the Grok CLI.",
+    "  AGY reasoning effort is its own axis since agy 1.1.26: pass --model gemini-3.8-flash --effort",
+    "    low|medium|high. The older -high suffix still resolves alone, but combining it with --effort",
+    "    exits 1 rather than picking a winner, and a bare model name without --effort is rejected too.",
     "  Linked-worktree Grok/AGY review: their explicit modes have no git shell. Put",
     "    the exact diff and changed-file list in the brief; never ask them to discover .git.",
     "",
@@ -593,14 +596,16 @@ export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
   if (statSync(brief).size > MAX_BRIEF_BYTES) throw new CliError("brief exceeds 8MB");
   assertDirectory(cwd, "cwd");
   if (effort !== undefined) {
-    if (!["codex", "claude", "grok"].includes(vendor)) throw new CliError("--effort is supported only for codex, claude, or grok");
+    if (!["codex", "claude", "grok", "agy"].includes(vendor)) throw new CliError("--effort is supported only for codex, claude, grok, or agy");
     const allowedEffort = route.efforts.length > 0
       ? route.efforts
-      : (vendor === "claude" ? ["low", "medium", "high", "xhigh", "max"] : ["low", "medium", "high", "xhigh", "max", "ultra"]);
+      : vendor === "claude" ? ["low", "medium", "high", "xhigh", "max"]
+        : vendor === "agy" ? ["low", "medium", "high"]
+          : ["low", "medium", "high", "xhigh", "max", "ultra"];
     // Name the accepted values, not just the rejection. Usage deliberately does
     // not restate per-vendor rules, so this error is the caller's only route to
     // a working call — "invalid --effort" alone leaves them guessing, and the
-    // accepted set differs by vendor (claude adds "max").
+    // accepted set differs by vendor (claude adds "max", agy stops at "high").
     if (!allowedEffort.includes(effort)) {
       throw new CliError(`invalid --effort: ${effort} (${vendor} accepts ${allowedEffort.join(", ")})`);
     }

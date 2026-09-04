@@ -4,7 +4,23 @@
 > add `Planned release version: <plugin.json version>` under `## Unreleased`.
 > Replace it with the matching release heading when releasing.
 
+## 0.9.14 — 2026-08-31
+
+- `--effort`를 **agy에도** 전달한다. agy 1.1.26이 reasoning effort를 모델 이름에서 분리해
+  `--effort low|medium|high`를 따로 받는데, dispatcher는 그 축을 막고 있어 caller가 접미사
+  표기밖에 못 썼다. 이제 두 표기를 **그대로** 넘긴다 — slug를 재작성하지 않으므로 벤더가 실제로
+  무엇을 받았는지가 영수증에 남는다. agy의 허용값은 `low|medium|high` 셋뿐이라 그것만 통과시킨다.
+- Documentation: agy 1.1.26 실측을 도움말·주석·`SKILL.md`·어댑터 문서·README 2종에 반영했다.
+  섞으면 거부된다는 것(`conflicts with --effort=high`), effort 없는 이름도 거부된다는 것
+  (`requires --effort`), 그리고 **기본 모델이 계정 쪽에 있어 로컬 변경 없이 바뀐다는 것**
+  (`gemini-3.7-flash` → `gemini-3.8-flash-high` 실측)을 적었다. 코드 주석의 기준 버전도 1.1.3 → 1.1.26.
+
 ## 0.9.13 — 2026-08-31
+
+- Documentation: 읽기 전용 모드의 제약을 **벤더 중립으로** 다시 적었다. 기존 문구가 Grok/AGY만
+  이름을 댔는데 Claude의 `--mode plan`·`--mode review`도 도구가 `Read,Glob,Grep`뿐이라 같은 제약이다 —
+  shell이 없어 `git diff`도 테스트 실행도 못 한다. 변경 파일 목록·unified diff 전문·인용 정본을
+  brief에 인라인하고 스위트 결과는 호출자가 재서 넘기라는 규율을 `SKILL.md`·README 2종에 적었다.
 
 - `--expect-total <n>`을 추가했다. 호출자가 **전체 구획 수를 신고**하면 디스패처가 판정에 쓰지 않고
   영수증 `expectedTotal`에만 기록한다(미신고면 `null`). exit code와 fail-open은 그대로다. 읽는 법은 셋 —

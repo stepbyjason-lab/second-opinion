@@ -35,6 +35,12 @@ dispatcher는 provider exit 0을 성공으로 승격하지 않고 exit 4로 닫�
 - ⚠️ argv로 줄 때(`-p "$(cat brief.txt)"`)만 적용되는 함정 둘: **`</dev/null` 필수**
   (stdin 안 닫으면 무한 hang) + **30,000자 한계** (Windows CreateProcess) — 특별한
   이유가 없으면 stdin 경로를 기본으로 쓸 것
+- ⚠️ **effort 축 분리 (agy 1.1.26 실측, 2026-08-31)** — 1.1.5까지는 effort가 slug 안에 녹아 있었는데 이제 `--effort low|medium|high`가 따로 있다. 실측 네 형태:
+  `--model gemini-3.8-flash --effort medium` → **exit 0**(정식형) · `--model gemini-3.8-flash-low` → **exit 0**(옛 접미사, 아직 유효) ·
+  `--model gemini-3.8-flash`(effort 없음) → **exit 1** `requires --effort (available: low, medium, high)` ·
+  `--model gemini-3.8-flash-low --effort high` → **exit 1** `conflicts with --effort=high`.
+  **섞으면 한쪽이 이기는 게 아니라 거부된다.** dispatcher는 slug를 다시 쓰지 않고 caller가 준 것을 그대로 넘긴다 — 재작성하면 벤더가 실제로 무엇을 받았는지가 영수증에서 사라진다.
+- ⚠️ **기본 모델은 계정 쪽에 있고 예고 없이 바뀐다.** 실측 — 설정을 하나도 안 건드렸는데 기본이 `gemini-3.7-flash`(2026-08-29)에서 `gemini-3.8-flash-high`(2026-08-31)로 옮겨갔다. **재현이 필요한 호출은 `--model`을 반드시 박는다.**
 - ⚠️ `--model` 형식 (agy 1.1.5 실측, 2026-07-22): **디스플레이 라벨**(`"Gemini 3.5 Flash (High)"`)과 **`agy models`가 출력하는 정규 slug**(`gemini-3.5-flash-medium`) **둘 다 그대로 받는다** — 어느 쪽을 복사해도 된다. **주의: `agy models`는 이제 라벨이 아니라 slug를 출력한다**(모델 피커 화면은 라벨을 보여줌 — 두 출처 형식이 다르다). 모르는·형식이 깨진 이름(옛 예시 `gemini-3-1-pro-high`처럼 버전에 하이픈, 또는 effort 빠진 `gemini-3.5-flash`)은 **exit 1로 거부**되고 available 목록을 stderr로 준다 — **조용히 강등하지 않는다.** (구버전 agy는 slug를 silent-ignore→계정 기본값 강등했으나 1.1.5는 loud reject로 바뀜. 그래도 호출 후 exit code는 확인할 것.)
 - 모델 메뉴 (`agy models` 실측, 2026-07-22 — 벤더가 바꿀 수 있으니 실행해 재확인).
   slug / (라벨): `gemini-3.6-flash-{high,medium,low}` (Gemini 3.6 Flash) ·
