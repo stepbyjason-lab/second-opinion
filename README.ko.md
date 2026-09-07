@@ -5,7 +5,7 @@
 Claude Code 안에서 **다른 벤더의 AI**(Codex/GPT, Antigravity/Gemini, Grok)를 일상어로 부려 쓰는
 어댑터 스킬 — 점검·리뷰·의견부터 작업 오프로드, 이미지 생성까지.
 
-**버전 0.9.12**
+**버전 0.9.16**
 
 > "이 설계 코덱스로 점검받고 싶어" / "안티그래비티한테 물어봐" / "그록으로 봐줘" / "교차 검증해줘"
 > "코덱스한테 로고 시안 이미지 만들어달라고 해줘" / "클로드 사용량 아끼게 이 번역은 제미나이로"
@@ -92,7 +92,7 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
 | AGY 호출이 effort를 모델 slug 안에 넣음 | agy 1.1.26부터 effort가 별도 축(`--effort low|medium|high`)이다. 옛 `-high` 접미사는 단독으로는 아직 통하지만 `--effort`와 섞으면 **한쪽을 고르는 게 아니라 exit 1**이고, 접미사 없는 이름을 effort 없이 주면 그것도 거부된다. dispatcher는 두 표기를 그대로 전달해 벤더가 실제로 받은 것이 영수증에 남게 한다 |
 | 로컬을 안 건드렸는데 AGY 기본 모델이 바뀜 | 기본값이 설정 파일이 아니라 Antigravity 계정 쪽에 있다. 실측 — 아무것도 안 고쳤는데 `gemini-3.7-flash`에서 `gemini-3.8-flash-high`로 옮겨갔다. **재현이 필요한 호출은 `--model`을 박을 것** |
 | Grok 리뷰 예시가 reasoning effort를 빼면 벤더 기본값으로 조용히 실행됨 | 표준 리뷰 예시는 가성비 기준 `--effort medium`을 명시. dispatch가 그대로 전달하고 영수증의 `effortRequested`에 요청값을 남김 |
-| 리뷰어에게 exact current diff 확인이나 스위트 실행을 시킴 | `--mode plan`·`--mode review`는 Claude·AGY에 읽기 전용 도구만 준다 — shell이 없어 `git diff`도 테스트 실행도 못 한다. linked worktree의 `.git`이 파일인 문제는 그 위에 겹친다. **변경 파일 목록과 unified diff 전문**, 그리고 인용할 정본 전문을 brief에 넣고, 스위트 결과는 **호출자가 직접 재서 값으로** 준다 |
+| 리뷰어에게 exact current diff 확인이나 스위트 실행을 시킴 | Claude plan/review에는 `git diff`와 이력 조회용 Bash/PowerShell이 있고 `--no-host-shell`로 제거할 수 있다. Grok·AGY explicit mode에는 git shell이 없으므로 linked-worktree 리뷰는 **변경 파일 목록과 unified diff 전문**을 brief에 넣고, 스위트 결과는 **호출자가 직접 재서 값으로** 준다 |
 
 - **실행 영수증** — 벤더를 부른 뒤 관측한 것을 한 줄로 남긴다: 요청한 벤더·모델,
   알 수 있으면 실제 응답 backend, exit/timeout 상태, 거부된 대체가 있었으면 그 사실.
@@ -148,21 +148,34 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
   있을 때만 findings를 채택한다. Claude result JSON의 실제 model·token usage·cost를
   `vendorUsage`에 결속하고 빈/깨진/다른 모델 출력은 exit 4로 거부한다. 디스패처는 중립
   broker로서 동일 벤더 호출을 기계 차단하지 않으며, 리뷰 독립성 인정 여부는 호출자
-  방법론(Madi 등)이 영수증을 대조해 판정한다. Claude child는 `--safe-mode`로 실행해
-  대상 프로젝트의 CLAUDE.md·훅·플러그인·MCP가 inline review brief를 덮어쓰지 못하게
-  하고, 부모 전용 `CLAUDECODE` marker는 child 환경에서 제거해 의도한 nested 호출이
-  vendor CLI에서 다시 거부되지 않게 한다. `--safe-mode`는 **구성 격리이지 filesystem
-  sandbox가 아니며** full-access와 공존한다 — 모든 mode에서 그대로 켜져 있다.
+  방법론(Madi 등)이 영수증을 대조해 판정한다. 호출자의 설정은 **두 경로**로 벤더 자식에게
+  간다 — 라이프사이클 훅이 이벤트마다 맥락을 밀어넣는 경로와, 벤더 CLI가 스스로 읽어
+  프롬프트에 붙이는 지시 문서(`AGENTS.md`·`CLAUDE.md`) 경로다. codex·claude는
+  `--mode plan|review`에서 **둘 다 기본 차단**이라 리뷰어가 호출자의 진행 상태 대신 brief를
+  본다. `--host-hooks`/`--host-docs`로 한 축만 다시 열고 `--no-host-hooks`/`--no-host-docs`로
+  `--mode default`에서도 막으며, 모든 호출이 `hostIsolation`을 두 영수증에 남긴다 — **실행 행은
+  자식에게 실제로 넘긴 플래그·환경변수**, 유효한 dry-run 행은 **넘길 계획**, 그 밖의 spawn 전
+  실패 행은 **빈 배열**로 적는다. 자식이 그것을 어떻게 집행했는지는 적지 않는다. **codex
+  홈에 놓인 `AGENTS.md`는 문서 스위치로 걷히지 않는다.** `--host-skills`(claude 전용)는
+  자식이 스킬·플러그인을 쓰게 하며, 구성을 통째로 닫던 스위치 하나를 대신하므로 훅·MCP·
+  CLAUDE.md는 그 경우 모든 mode에서 기본 차단이 된다. claude 리뷰어에게는 **git 이력을 읽도록
+  셸도 준다** — 명령 규칙 목록은 붙이지 않는다. 허용 목록이 도구를 묶지 못하는 것을 실측했고,
+  금지 목록은 같은 효과를 내는 다른 이름이 남아 증명이 될 수 없다. 리뷰어를 실제로 붙잡는 것은
+  brief의 금지 지시이며, `--no-host-shell`로 셸을 아예 닫을 수 있다. 이것은 **구성 격리이지 filesystem
+  sandbox가 아니며** full-access와 공존한다. 부모 전용 `CLAUDECODE` marker는 child
+  환경에서 제거해 의도한 nested 호출이 vendor CLI에서 다시 거부되지 않게 한다.
   기본값은 꺼짐이며, 설정 안 하면 아무것도 쓰지 않는다.
 
   text 호출에는 caller가 `--mode plan` 또는 `--mode review`를 명시할 수 있다. 두 mode는
   같은 실제 project cwd 전체를 유지한다. Claude는 plan/review identity를 receipt에 각각
-  보존하되 native plan workflow 없이 closed `Read,Glob,Grep` allowlist만 사용한다.
+  보존하고, native plan workflow 없이 기본 `Read,Glob,Grep,Bash,PowerShell`과
+  `--permission-mode dontAsk`를 사용한다. 스킬·플러그인은 기본 제외되며 `--host-skills`가
+  `Skill` 도구를 추가하고, `--no-host-shell`은 Bash/PowerShell을 제거한다.
   sandbox·worktree·snapshot·축약 packet을 만들지 않는다.
 
   **mode가 실제로 얼마나 조이는지는 벤더마다 다르고, Codex에서는 아무것도 조이지 않는다.**
-  Claude는 `--tools` allowlist로, AGY는 native plan + 읽기 전용 입력 프로필로 쓰기 도구를
-  없앤다. 그런데 Codex CLI에는 그 층이 없다 — 권한을 좁히는 수단이 샌드박스
+  Claude는 `--tools` allowlist에서 내장 Write·Edit를 빼되 셸은 기본으로 남기고, AGY는 native
+  plan + 읽기 전용 입력 프로필을 사용한다. 그런데 Codex CLI에는 그 층이 없다 — 권한을 좁히는 수단이 샌드박스
   (`-s read-only`)뿐이고 이 프로젝트는 샌드박스를 쓰지 않는다. Codex의 `exec review`는
   리뷰 워크플로를 고르는 것이지 권한 수준이 아니다(`codex exec review --help`의 옵션도
   `--uncommitted`·`--base` 같은 대상 지정뿐이다). 실측: `--mode review`로 부른 Codex
@@ -171,8 +184,9 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
   `--mode review`를 안전장치로 계산하지 말 것. Grok plan/review는 Codex보다 강하다 —
   `--permission-mode plan`과 닫힌 `--tools` allowlist. 도구 이름이 전부 틀리면
   fail-open이므로 `plan`이 바닥이다. `--mode`를 생략하면 기존 default 호출이며, Claude에서는 이것이 **full-access**
-  호출이다 — 모든 기본 도구와 비대화형 실행을 caller가 준 실제 cwd에서 갖는다. 읽기 전용은
-  명시적 `--mode plan|review`에서만 생기고, 권한 분리는 오직 flag 조합으로만 이뤄진다.
+  호출이다 — 모든 기본 도구와 비대화형 실행을 caller가 준 실제 cwd에서 갖는다. 제한된 도구 구성은
+  명시적 `--mode plan|review`에서만 생기며 Write·Edit는 없지만 git 셸은 기본으로 남으므로
+  filesystem 읽기 전용은 아니다. 권한 분리는 오직 flag 조합으로만 이뤄진다.
   receipt에는
   `requestedMode`·`effectiveMode`·`inputProfile`이 기록된다. 명시 mode의 출력이 비면 exit
   4로 실패한다. AGY explicit plan/review는

@@ -34,13 +34,25 @@ export function grokNeedsHarnessIsolation(options) {
     && (options.mode === "plan" || options.mode === "review");
 }
 
-export function applyGrokHarnessIsolationEnv(env = {}) {
+// Forcing an isolation variable means dropping whatever the caller already had
+// under that name, not writing on top of it: Windows resolves environment names
+// case-insensitively, so a caller's `grok_claude_hooks_enabled=true` or
+// `claude_code_disable_claude_mds=0` left in place would hand the child both
+// spellings and let it read the caller's value while the receipt records the
+// axis as closed. `names` says which variables this dispatcher owns; `forced`
+// says what they become, and may be empty when the caller asked for the axis to
+// stay open — the ownership is what has to be exercised either way.
+export function applyForcedIsolationEnv(env, names, forced = {}) {
   const isolated = { ...env };
-  const names = new Set(Object.keys(GROK_HARNESS_ISOLATION_ENV).map((key) => key.toUpperCase()));
+  const owned = new Set(names.map((key) => key.toUpperCase()));
   for (const key of Object.keys(isolated)) {
-    if (names.has(key.toUpperCase())) delete isolated[key];
+    if (owned.has(key.toUpperCase())) delete isolated[key];
   }
-  return { ...isolated, ...GROK_HARNESS_ISOLATION_ENV };
+  return { ...isolated, ...forced };
+}
+
+export function applyGrokHarnessIsolationEnv(env = {}) {
+  return applyForcedIsolationEnv(env, Object.keys(GROK_HARNESS_ISOLATION_ENV), GROK_HARNESS_ISOLATION_ENV);
 }
 
 const AGY_NATIVE_READONLY_PREFIX = Buffer.from(
@@ -173,12 +185,181 @@ export function resolveExecutable(vendor, options = {}) {
   throw new PolicyError("executable_not_found", `executable_not_found: canonical ${name} executable was not found`);
 }
 
-export function buildVendorArgv(options) {
+// The caller's own configuration reaches a vendor child by several paths: hooks
+// push context at lifecycle events, the CLI reads instruction files (AGENTS.md /
+// CLAUDE.md) on its own, and MCP servers arrive as tool definitions that cost
+// prompt whether or not the reviewer calls them. Keeping them out is a matter of
+// which flags and variables this dispatcher hands over.
+//
+// This returns exactly that: what we pass, not what state the child ends in.
+// Recording an outcome was the earlier shape and it cost far more than it was
+// worth — a state vocabulary, a table of which flag "closes" which axis, and a
+// test cross-checking the two, repaired five times between them. It also let the
+// record overstate: a deny list we passed was written down as the thing holding
+// the reviewer back, when measurement later showed the child's own policy did
+// that and our list did nothing. What we handed over is a fact we own; what the
+// child then did is the child's, and a reader can see the flags and judge.
+//
+// All four CLI vendors have invocation controls recorded here. Codex and
+// Claude use host-configuration switches; Grok also supplies its harness
+// environment and read-only tool controls; AGY records its explicit permission
+// mode. This function describes the planned invocation vector. Whether it was
+// applied is decided at the spawn/receipt boundary.
+const CLAUDE_DOC_ISOLATION_VAR = "CLAUDE_CODE_DISABLE_CLAUDE_MDS";
+export function hostIsolationPlan(options) {
   const vendor = normalizeVendor(options.vendor);
+  const argv = [];
+  const env = {};
+  if (vendor === "grok") {
+    // grok's devices are its own, but they are still things this dispatcher
+    // hands over, so they belong in the plan rather than being curated out of
+    // it. Recording an empty plan here once told a reader that a grok review had
+    // run with no tool narrowing and no harness isolation — the opposite of what
+    // happened. Whether a flag is "ours" is not a judgement the record should be
+    // making; it reports what was passed.
+    const readOnly = isReadOnlyMode(options);
+    argv.push("--permission-mode", readOnly ? "plan" : "bypassPermissions");
+    if (readOnly) argv.push("--tools", "read_file,grep,list_dir", "--no-subagents");
+    if (grokNeedsHarnessIsolation({ ...options, vendor })) Object.assign(env, GROK_HARNESS_ISOLATION_ENV);
+    return { argv, env };
+  }
+  if (vendor === "agy") {
+    argv.push(...(isReadOnlyMode(options) ? ["--mode", "plan"] : ["--dangerously-skip-permissions"]));
+    return { argv, env };
+  }
+  if (vendor === "codex") {
+    // `hooks` is a stable feature flag: --disable hooks silences every user,
+    // project, session and plugin lifecycle hook for this call only and leaves
+    // plugins, skills and MCP running. Measured on codex-cli 0.153.4.
+    if (blocks(options.hostHooks, options)) argv.push("--disable", "hooks");
+    // The project AGENTS.md is capped by this byte budget, so zero drops it. The
+    // CODEX_HOME copy is NOT covered — it loads through a different path and
+    // stays in the prompt. That gap is disclosed, not silently carried.
+    if (blocks(options.hostDocs, options)) argv.push("-c", "project_doc_max_bytes=0");
+    return { argv, env };
+  }
+  if (vendor !== "claude") return { argv, env };
+  // --safe-mode is one switch for six things at once (CLAUDE.md, skills,
+  // plugins, hooks, MCP, custom agents), and skills cannot be opened without
+  // dropping it. --disable-slash-commands is named separately because
+  // `claude --help` 2.1.251 defines it as "Disable all skills".
+  if (options.hostSkills !== "enabled") {
+    argv.push("--safe-mode", "--disable-slash-commands");
+    // --safe-mode is documented to set this itself, but that has never been
+    // measured here, and a caller's own differently-cased copy would otherwise
+    // ride along. The variable is stated rather than assumed.
+    env[CLAUDE_DOC_ISOLATION_VAR] = "1";
+    return { argv, env };
+  }
+  // With skills open the wholesale switch is gone, so everything it had been
+  // doing is restated one lever at a time — and defaults to on in every mode,
+  // not only explicit plan/review, because nothing else is holding host config
+  // back once it is dropped.
+  if (blocks(options.hostHooks, options, true)) argv.push("--settings", '{"disableAllHooks":true}');
+  // No --mcp-config is passed, so this leaves the child with no MCP server.
+  if (blocks(options.hostMcp, options, true)) argv.push("--strict-mcp-config");
+  if (blocks(options.hostDocs, options, true)) env[CLAUDE_DOC_ISOLATION_VAR] = "1";
+  return { argv, env };
+}
+
+// Read from the requested mode rather than the effective one. effectiveVendorMode
+// throws for combinations the vendor cannot serve, and a record of what was
+// handed over must never be the thing that raises — that is exactly the
+// regression this shape introduced once: the receipt producer threw from inside
+// the handler that was recording the failure, and the failure went unrecorded.
+function isReadOnlyMode(options) {
+  return options.mode === "plan" || options.mode === "review";
+}
+
+// A caller's explicit switch wins; otherwise explicit plan/review modes block and the
+// full-access default does not. `skillsOpen` forces the blocking default in
+// every mode, for the branch that has dropped the one switch that used to cover
+// it regardless of mode.
+function blocks(requested, options, skillsOpen = false) {
+  if (requested === "allowed") return false;
+  if (requested === "blocked") return true;
+  return skillsOpen || options.mode === "plan" || options.mode === "review";
+}
+
+// claude's document lever is an environment variable rather than a flag, so it
+// cannot ride in the argv. The dispatcher owns the name on every claude call —
+// not only where it sets a value — because Windows resolves environment names
+// case-insensitively: a caller's `claude_code_disable_claude_mds=0` left in
+// place would be read by the child while the receipt recorded that we had
+// passed `=1`, and an inner dispatch would inherit an outer `=1` on a call that
+// deliberately left documents open.
+export function applyVendorHostIsolationEnv(env = {}, options = {}) {
+  if (normalizeVendor(options.vendor) !== "claude") return env;
+  return applyForcedIsolationEnv(env, [CLAUDE_DOC_ISOLATION_VAR], hostIsolationPlan(options).env);
+}
+
+// The tool surface for a claude call. `default` is the general-purpose call and
+// must be able to do the work, not just describe it; explicit plan/review are
+// the restricted ones. No sandbox, worktree, or rewritten cwd is used as the
+// permission model — the vendor runs in the caller's real --cwd, and this
+// allowlist is what narrows the built-in tools.
+//
+// No command rule list is shipped with the shell. One was carried for several
+// passes and measurement (probe-pwsh.json, probe-norules.json) took it apart:
+// the allow rules did not confine the tool at all, and the denials attributed to
+// our list happen the same way without it, because the child's own policy sorts
+// read from mutating. A name list also cannot cover the effects it is named for
+// — `git checkout` needed `restore` and `switch`, and aliases and `git -C`
+// remained outside. A caller who needs the shell gone uses --no-host-shell,
+// which removes it rather than narrowing it.
+export function claudeToolArgv(options) {
+  if (!isReadOnlyMode(options)) return ["--dangerously-skip-permissions", "--tools=default"];
+  const shell = options.hostShell ?? "open";
+  const tools = ["Read", "Glob", "Grep"];
+  // Both shell names are listed because the registered one is platform
+  // dependent: measured on claude 2.1.251 for Windows, naming only Bash leaves
+  // the child with no shell at all — PowerShell is what registers.
+  if (shell === "open") tools.push("Bash", "PowerShell");
+  if (options.hostSkills === "enabled") tools.push("Skill");
+  const argv = [`--tools=${tools.join(",")}`];
+  // Naming a shell tool is not enough on its own: without a permission mode the
+  // headless child silently drops it, because nothing there can approve its use.
+  // `dontAsk` never prompts. Measured: read-oriented git runs under it and mutating
+  // git is refused by the child itself.
+  if (shell === "open") argv.push("--permission-mode", "dontAsk");
+  return argv;
+}
+
+function hostIsolationFor(options, vendor = normalizeVendor(options.vendor)) {
+  const plan = hostIsolationPlan({ ...options, vendor });
+  return {
+    argv: vendor === "claude"
+      ? [...plan.argv, ...claudeToolArgv({ ...options, vendor })]
+      : [...plan.argv],
+    env: Object.entries(plan.env).map(([name, value]) => `${name}=${value}`),
+  };
+}
+
+// This is a policy-plan query. It deliberately stays non-throwing because
+// failure receipts may ask it about a combination that cannot reach a child.
+export function hostIsolationRecord(options) {
+  const vendor = normalizeVendor(options.vendor);
+  try { effectiveVendorMode({ ...options, vendor }); } catch { return { argv: [], env: [] }; }
+  return hostIsolationFor({ ...options, vendor }, vendor);
+}
+
+// Build the executable argv and the receipt projection in the same operation.
+// `assemble` is the only insertion point for isolation argv, so the record
+// cannot omit or duplicate a run without changing this returned object itself.
+export function buildVendorInvocation(options) {
+  const vendor = normalizeVendor(options.vendor);
+  if (!VENDORS.includes(vendor)) {
+    throw new PolicyError("invalid_vendor", `invalid_vendor: unsupported vendor ${String(options.vendor)}`);
+  }
   const { operation, model, effort } = options;
   const effectiveMode = effectiveVendorMode({ ...options, vendor });
   const inputs = options.inputs ?? [];
   const isGitRepo = options.isGitRepo ?? true;
+  const hostIsolation = hostIsolationFor({ ...options, vendor }, vendor);
+  const assemble = (before, after = []) => ({
+    argv: [...before, ...hostIsolation.argv, ...after],
+    hostIsolation,
+  });
   if (vendor === "codex") {
     // `exec review` picks a review workflow, not a permission level — unlike the
     // Claude branch below, nothing here narrows what the vendor may touch. The
@@ -187,14 +368,15 @@ export function buildVendorArgv(options) {
     // still runs at whatever `sandbox_mode` the user's config sets. Measured: a
     // review dispatch recorded `sandbox: danger-full-access`. Callers must treat
     // the brief's own prohibitions as the only guard here.
-    const argv = effectiveMode === "review" ? ["exec", "review"] : ["exec"];
-    if (operation === "image-generate") argv.push("-s", "workspace-write");
-    if (!isGitRepo) argv.push("--skip-git-repo-check");
-    if (model) argv.push("-m", model);
-    if (effort) argv.push("-c", `model_reasoning_effort="${effort}"`);
-    if (operation === "image-analyze") for (const input of inputs) argv.push("-i", input);
-    argv.push("-");
-    return argv;
+    const before = effectiveMode === "review" ? ["exec", "review"] : ["exec"];
+    const after = [];
+    if (operation === "image-generate") after.push("-s", "workspace-write");
+    if (!isGitRepo) after.push("--skip-git-repo-check");
+    if (model) after.push("-m", model);
+    if (effort) after.push("-c", `model_reasoning_effort="${effort}"`);
+    if (operation === "image-analyze") for (const input of inputs) after.push("-i", input);
+    after.push("-");
+    return assemble(before, after);
   }
   if (vendor === "grok") {
     if (operation !== "text") {
@@ -203,42 +385,23 @@ export function buildVendorArgv(options) {
     if (!options.brief) {
       throw new PolicyError("invalid_mode", "invalid_mode: grok requires a brief file path");
     }
-    const argv = ["--prompt-file", resolve(options.brief), "--output-format", "json"];
-    if (model) argv.push("-m", model);
-    if (effort) argv.push("--effort", effort);
-    if (options.cwd) argv.push("--cwd", options.cwd);
+    const before = ["--prompt-file", resolve(options.brief), "--output-format", "json"];
+    if (model) before.push("-m", model);
+    if (effort) before.push("--effort", effort);
+    if (options.cwd) before.push("--cwd", options.cwd);
     // default stays bypassPermissions (headless, no prompt). plan/review use
     // native `plan` as a floor: --tools names that all miss fail-open, and
     // bypassPermissions would then approve writes. Measured grok 1.0.5.
-    argv.push("--permission-mode", effectiveMode === "default" ? "bypassPermissions" : "plan");
-    if (effectiveMode !== "default") argv.push("--tools", "read_file,grep,list_dir", "--no-subagents");
-    return argv;
+    return assemble(before);
   }
   if (vendor === "claude") {
-    const argv = [
+    return assemble([
       "-p",
       "--model", model,
       "--effort", effort,
       "--output-format", "json",
       "--no-session-persistence",
-      "--safe-mode",
-      "--disable-slash-commands",
-    ];
-    // default is the general-purpose call and must be able to do the work, not
-    // just describe it. The tool-less `--tools=` here was a review-only bridge
-    // (f6b6953) that later got frozen into the default branch (60a760f), which
-    // left the general call weaker than the read-only modes — an implementer had
-    // to ship patches as output text. Explicit plan/review keep the closed
-    // read-only allowlist; only they are restricted.
-    //
-    // No sandbox, worktree, or rewritten cwd is used as the permission model:
-    // the vendor runs in the caller's real --cwd. `--safe-mode` stays because it
-    // isolates configuration (CLAUDE.md, hooks, plugins, MCP), not the
-    // filesystem — `claude --help` 2.1.220 describes it as disabling
-    // customizations, and it says nothing about the built-in tools.
-    if (effectiveMode !== "default") argv.push("--tools=Read,Glob,Grep");
-    else argv.push("--dangerously-skip-permissions", "--tools=default");
-    return argv;
+    ]);
   }
   // --dangerously-skip-permissions: headless agy cannot prompt for tool
   // permissions, so it auto-DENIES them ("jetski: no output produced — a tool
@@ -258,26 +421,31 @@ export function buildVendorArgv(options) {
   // Propagating our own timeout keeps the two bounds coherent instead of
   // letting the shorter, invisible one win. A fixed constant would drift apart
   // again, so it is derived, not hardcoded.
-  const argv = effectiveMode === "plan"
-    ? ["--mode", "plan"]
-    : ["--dangerously-skip-permissions"];
-  if (Number.isInteger(options.timeout) && options.timeout > 0) {
-    argv.push("--print-timeout", `${options.timeout}s`);
+  if (vendor !== "agy") {
+    throw new PolicyError("invalid_vendor", `invalid_vendor: unsupported vendor ${String(options.vendor)}`);
   }
-  if (model) argv.push("--model", model);
+  const after = [];
+  if (Number.isInteger(options.timeout) && options.timeout > 0) {
+    after.push("--print-timeout", `${options.timeout}s`);
+  }
+  if (model) after.push("--model", model);
   // agy 1.1.26 split reasoning effort out of the model name: a bare `--model
   // gemini-3.8-flash` now exits 1 with `requires --effort (available: low,
   // medium, high)`, while the older `-high` suffix still resolves. Forward what
   // the caller asked for and let agy reconcile the two spellings — rewriting the
   // slug here would hide which of them the vendor actually honoured.
-  if (effort) argv.push("--effort", effort);
+  if (effort) after.push("--effort", effort);
   const directories = [options.cwd, ...(operation === "image-analyze" ? inputs.map((input) => dirname(input)) : [])].filter(Boolean);
   const seen = new Set();
   for (const directory of directories) {
     const key = process.platform === "win32" ? resolve(directory).toLowerCase() : resolve(directory);
-    if (!seen.has(key)) { seen.add(key); argv.push("--add-dir", directory); }
+    if (!seen.has(key)) { seen.add(key); after.push("--add-dir", directory); }
   }
-  return argv;
+  return assemble([], after);
+}
+
+export function buildVendorArgv(options) {
+  return buildVendorInvocation(options).argv;
 }
 
 // --- caller-scoped enforcement reference (see references/enforcement.md) ---

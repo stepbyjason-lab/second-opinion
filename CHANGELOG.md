@@ -4,6 +4,50 @@
 > add `Planned release version: <plugin.json version>` under `## Unreleased`.
 > Replace it with the matching release heading when releasing.
 
+## 0.9.16 — 2026-09-08
+
+- Claude plan/review는 훅·MCP·`CLAUDE.md`와 스킬·플러그인을 기본 차단하면서
+  Bash/PowerShell로 git 이력을 직접 읽는다. `--host-skills`는 스킬·플러그인만 명시적으로
+  열고 나머지 차단을 유지하며, `--no-host-shell`은 셸 자체를 제거한다.
+- CLI 영수증은 실제 invocation과 함께 조립된다. 실행 행은 실제 격리 argv/env, 유효한 dry-run은
+  계획, 그 밖의 spawn 전 실패는 빈 배열을 기록하며 네 벤더 모두 기록 argv가 실제 argv의 한
+  연속 구간임을 회귀 테스트로 확인한다.
+- 자체 도움말·README·SKILL·Claude/Codex 어댑터를 현재 동작에 맞추고, 제거된 git 명령 규칙
+  목록을 여전히 전달하는 것처럼 읽히던 설명과 깨진 Markdown 표를 바로잡았다.
+
+## 0.9.15 — 2026-09-06
+
+- 벤더 자식이 **호출자의 설정을 물려받지 않게** 하는 스위치를 넣었다. 호출자 설정은 두 경로로
+  간다 — 훅이 이벤트마다 맥락을 밀어넣는 경로와, CLI가 스스로 읽어 붙이는 지시 문서
+  (`AGENTS.md`·`CLAUDE.md`) 경로다. codex·claude는 `--mode plan|review`에서 **둘 다 기본
+  차단**이며, argv는 codex `--disable hooks` + `-c project_doc_max_bytes=0`, claude는
+  `--settings '{"disableAllHooks":true}'` + `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`이다.
+  `--host-hooks`/`--host-docs`가 한 축을 다시 열고 `--no-host-hooks`/`--no-host-docs`는
+  `--mode default`에서도 막는다. ⚠ **codex 홈의 `AGENTS.md`는 문서 스위치로 걷히지 않는다.**
+- `--host-skills`(claude 전용)로 자식이 **스킬·플러그인을 쓸 수 있다.** 스킬을 열려면
+  `--safe-mode`와 `--disable-slash-commands`가 **둘 다** 빠져야 하고(둘이 각각 스킬을 끈다),
+  그래서 그 스위치가 뭉쳐서 하던 일을 훅·MCP·CLAUDE.md 각각의 좁은 레버로 다시 세웠다.
+  기본값은 off다 — 켜면 개인 스킬 카탈로그 68,961 B가 함께 들어오고 호출당 범위를 좁히는
+  스위치가 없다.
+  ⚠ 켜면 호출자의 `permissions.allow` 규칙도 리뷰어에 로드된다(추론, 미실측) — adapter-claude 공시 참조.
+- claude plan/review mode에서 **git 이력을 직접 조회**할 수 있다. 셸 도구를 열되 무엇이 그것을
+  붙잡는지는 실측한 대로만 말한다 — `--tools`에 `Bash`만 넣으면 Windows 자식에는 셸이 아예 없고
+  (등록되는 이름이 `PowerShell`이다), `--permission-mode dontAsk` 없이는 셸이 통째로 사라지며,
+  `--allowed-tools`의 읽기용 git 규칙은 **묶지 못한다**(목록 밖 `git remote -v`가 실행됐다).
+  **어떤 명령 규칙 목록도 전달하지 않는다.** allow는 도구를 묶지 못하고 deny는 이름을 채워도
+  같은 효과를 내는 다른 이름이 남아 증명이 되지 않는다. 셸은 파일도 쓸 수 있으므로
+  리뷰어를 붙잡는 것은 brief의 금지 지시다(codex adapter가 이미 문서화한 자세와 같다).
+  엄격한 읽기 전용이 필요하면 `--no-host-shell`로 닫는다.
+- **claude 자식에게 호출자의 MCP 서버가 닿지 않는다** — 도구 정의가 통째로 프롬프트에 실려
+  컨텍스트 비용이 크다. `--host-mcp`/`--no-host-mcp`가 그 경로를 옮기며 다른 것과 규칙이 같다.
+  codex에는 per-call 수단이 없다(`--disable plugins`·`-c mcp_servers={}` 둘 다 자식 보고를
+  못 줄였다).
+- 두 영수증에 `hostIsolation {argv, env}`가 남는다 — **실행 행은 디스패처가 자식에게 실제로 넘긴
+  플래그·환경변수**, 유효한 dry-run 행은 **넘길 계획**, 그 밖의 spawn 전 실패 행은 **빈 배열**이다.
+  자식이 그것을 어떻게 집행했는지는 적지 않는다. 플래그를 넘긴 것과 그 플래그가 먹은 것은 다르고,
+  이 라운드에서 둘이 다른 경우를 실측했다. 초기 판에서 넘긴 거부 목록이 아니라 자식 자신의
+  정책이 변경계 git을 막았고, 최종 호출은 그 명령 규칙 목록을 전달하지 않는다.
+
 ## 0.9.14 — 2026-08-31
 
 - `--effort`를 **agy에도** 전달한다. agy 1.1.26이 reasoning effort를 모델 이름에서 분리해

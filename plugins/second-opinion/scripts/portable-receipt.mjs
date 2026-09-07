@@ -52,6 +52,25 @@ function expectedTotalValue(value) {
   if (!Number.isInteger(value) || value < 1 || value > MAX_EXPECT_TOTAL) invalid();
   return value;
 }
+// The invocation vector used to keep caller configuration out or to select the
+// vendor's permission/tool posture. On an invoked CLI row these are the flags
+// and environment variables actually handed to the child. A valid dry-run
+// carries its planned vector. Other pre-spawn failures carry two empty arrays.
+// This records dispatcher inputs, not claims about what the child enforced.
+const MAX_HOST_ISOLATION_ENTRIES = 32;
+const MAX_HOST_ISOLATION_ENTRY_BYTES = 512;
+function hostIsolationValue(value) {
+  if (value === null || value === undefined) return { argv: [], env: [] };
+  if (typeof value !== "object" || Array.isArray(value)) invalid();
+  for (const key of Object.keys(value)) if (key !== "argv" && key !== "env") invalid();
+  return { argv: hostIsolationList(value.argv), env: hostIsolationList(value.env) };
+}
+function hostIsolationList(value) {
+  if (!Array.isArray(value) || value.length > MAX_HOST_ISOLATION_ENTRIES) invalid();
+  // Flags and NAME=value pairs are short. The cap is here so this field cannot
+  // become a place free-form vendor text ends up in a portable row.
+  return value.map((entry) => string(entry, { max: MAX_HOST_ISOLATION_ENTRY_BYTES }));
+}
 function string(value, { nullable = false, max = MAX_FREE_STRING } = {}) {
   if (nullable && (value === null || value === undefined)) return null;
   if (typeof value !== "string" || value.length === 0 || value.length > max || /[\x00-\x1f\x7f]/.test(value)) invalid();
@@ -191,6 +210,7 @@ export function buildPortableReceipt(
   evidence = {},
   outputChecksValue = null,
   expectedTotal = null,
+  hostIsolation = null,
 ) {
   const timestamp = string(ts, { max: 32 });
   try { if (new Date(timestamp).toISOString() !== timestamp) invalid(); } catch { invalid(); }
@@ -232,6 +252,7 @@ export function buildPortableReceipt(
     outputCheckStatus: label(outputCheckStatus, OUTPUT_STATUSES),
     outputChecks: outputChecks(outputChecksValue),
     expectedTotal: expectedTotalValue(expectedTotal),
+    hostIsolation: hostIsolationValue(hostIsolation),
     attempts: attemptsValue,
     attemptWaitsMs: waitValues,
     successfulAttempt: successfulAttemptValue,

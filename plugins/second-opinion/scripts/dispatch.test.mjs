@@ -12,12 +12,15 @@ import {
   GROK_HARNESS_ISOLATION_ENV,
   PolicyError,
   applyGrokHarnessIsolationEnv,
+  applyVendorHostIsolationEnv,
   buildVendorArgv,
+  buildVendorInvocation,
   composeVendorInput,
   detectDirectInference,
   effectiveInputProfile,
   effectiveVendorMode,
   grokNeedsHarnessIsolation,
+  hostIsolationRecord,
   resolveExecutable,
 } from "./vendor-policy.mjs";
 import { executeCli, parseCli, resolveCodexModelAlias, resolveModelRoute, resolveVendorForModel, run, splitModelEffort, usageText } from "./dispatch.mjs";
@@ -638,15 +641,15 @@ test("skill resolves the catalog path directly before declaring it missing", () 
   assert.match(skill, /검색 결과가 비었다는 이유만으로 설치 누락이나 카탈로그 오류라고 단정하지 않는다/);
 });
 
-test("0.9.14 public help and documentation describe cache-first ranked routing", () => {
+test("0.9.16 public help and documentation describe cache-first ranked routing", () => {
   const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
   const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
   const publicReadmeUrls = [new URL("../../../README.md", import.meta.url), new URL("../../../README.ko.md", import.meta.url)];
   const publicReadmes = publicReadmeUrls.filter((url) => existsSync(url)).map((url) => readFileSync(url, "utf8"));
-  assert.equal(plugin.version, "0.9.14");
+  assert.equal(plugin.version, "0.9.16");
   assert.ok(publicReadmes.length === 0 || publicReadmes.length === 2, "public snapshot must carry both README files");
   for (const text of [skill, ...publicReadmes]) {
-    assert.match(text, /0\.9\.12/);
+    assert.match(text, /0\.9\.16/);
     assert.match(text, /model-catalog-v1\.json/);
     assert.match(text, /opus 4\.6/);
   }
@@ -766,21 +769,21 @@ const MODE_FIXTURES = [
     inputs: [], cwd: root,
     effectiveMode: "plan",
     inputProfile: "none",
-    argv: ["-p", "--model", "opus", "--effort", "high", "--output-format", "json", "--no-session-persistence", "--safe-mode", "--disable-slash-commands", "--tools=Read,Glob,Grep"],
+    argv: ["-p", "--model", "opus", "--effort", "high", "--output-format", "json", "--no-session-persistence", "--safe-mode", "--disable-slash-commands", "--tools=Read,Glob,Grep,Bash,PowerShell", "--permission-mode", "dontAsk"],
   },
   {
     vendor: "claude", operation: "text", mode: "review", model: "opus", effort: "high",
     inputs: [], cwd: root,
     effectiveMode: "review",
     inputProfile: "none",
-    argv: ["-p", "--model", "opus", "--effort", "high", "--output-format", "json", "--no-session-persistence", "--safe-mode", "--disable-slash-commands", "--tools=Read,Glob,Grep"],
+    argv: ["-p", "--model", "opus", "--effort", "high", "--output-format", "json", "--no-session-persistence", "--safe-mode", "--disable-slash-commands", "--tools=Read,Glob,Grep,Bash,PowerShell", "--permission-mode", "dontAsk"],
   },
   {
     vendor: "codex", operation: "text", mode: "review", model: "gpt model \"quoted\"",
     effort: "high", inputs: [], isGitRepo: false, cwd: root,
     effectiveMode: "review",
     inputProfile: "none",
-    argv: ["exec", "review", "--skip-git-repo-check", "-m", "gpt model \"quoted\"", "-c", "model_reasoning_effort=\"high\"", "-"],
+    argv: ["exec", "review", "--disable", "hooks", "-c", "project_doc_max_bytes=0", "--skip-git-repo-check", "-m", "gpt model \"quoted\"", "-c", "model_reasoning_effort=\"high\"", "-"],
   },
   {
     vendor: "grok", operation: "text", mode: "plan", model: "grok-4.6",
@@ -864,6 +867,87 @@ test("grok portable receipt keeps grok-result-json usage", async () => {
   assert.equal(receiptLines(portable)[0].vendorUsageStatus, "ok");
 });
 
+test("pre-spawn failures record no isolation while dry-runs retain the plan", async () => {
+  const captured = [];
+  const receiptWriters = {
+    raw: (_stderr, options, _exit, _startedAt, invoked) => {
+      captured.push({ sink: "raw", invoked, hostIsolation: options.hostIsolation });
+    },
+    portable: (_stderr, options, _exit, _startedAt, invoked) => {
+      captured.push({ sink: "portable", invoked, hostIsolation: options.hostIsolation });
+    },
+  };
+  const stdout = memoryWriter();
+  const stderr = memoryWriter();
+  const base = {
+    vendor: "grok",
+    operation: "text",
+    mode: "review",
+    model: "grok-4",
+    brief,
+    cwd: root,
+    timeout: 2,
+  };
+  const planned = {
+    argv: ["--permission-mode", "plan", "--tools", "read_file,grep,list_dir", "--no-subagents"],
+    env: Object.entries(GROK_HARNESS_ISOLATION_ENV).map(([name, value]) => `${name}=${value}`),
+  };
+
+  assert.equal(await run({ ...base, dryRun: false }, {
+    spawn: () => { throw new Error("must not spawn"); },
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    env: {},
+    receiptWriters,
+  }), 2);
+  assert.deepEqual(captured.splice(0), [
+    { sink: "raw", invoked: false, hostIsolation: { argv: [], env: [] } },
+    { sink: "portable", invoked: false, hostIsolation: { argv: [], env: [] } },
+  ]);
+
+  assert.equal(await run({
+    ...base,
+    out: join(root, "host-isolation-dry.out"),
+    err: join(root, "host-isolation-dry.err"),
+    dryRun: true,
+  }, {
+    spawn: () => { throw new Error("dry-run must not spawn"); },
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    env: {},
+    receiptWriters,
+  }), 0);
+  assert.deepEqual(captured.splice(0), [
+    { sink: "raw", invoked: false, hostIsolation: planned },
+    { sink: "portable", invoked: false, hostIsolation: planned },
+  ]);
+
+  const spawnFake = () => fakeChild((child) => {
+    child.stdin.on("end", () => {
+      child.stdout.end(grokResult());
+      child.stderr.end();
+      queueMicrotask(() => child.emit("close", 0, null));
+    });
+    child.stdin.resume();
+  });
+  assert.equal(await run({
+    ...base,
+    out: join(root, "host-isolation-run.out"),
+    err: join(root, "host-isolation-run.err"),
+    dryRun: false,
+  }, {
+    spawn: spawnFake,
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    env: {},
+    receiptWriters,
+  }), 0);
+  assert.deepEqual(captured.splice(0), [
+    { sink: "raw", invoked: true, hostIsolation: planned },
+    { sink: "portable", invoked: true, hostIsolation: planned },
+  ]);
+});
+
 test("grok plan and review use permission-mode plan as a floor under the tool allowlist", () => {
   const grokDefault = buildVendorArgv(GROK_FIXTURE);
   assert.deepEqual(
@@ -923,15 +1007,27 @@ test("grok plan and review force harness-compat isolation env without writing co
   assert.equal(Object.keys(GROK_HARNESS_ISOLATION_ENV).length, 13);
 });
 
-test("explicit plan and review modes map to closed provider-native argv", () => {
+test("explicit plan and review modes map to provider-native argv", () => {
   for (const fixture of MODE_FIXTURES) {
     assert.equal(effectiveVendorMode(fixture), fixture.effectiveMode, `${fixture.vendor}/${fixture.mode}`);
     assert.equal(effectiveInputProfile(fixture), fixture.inputProfile, `${fixture.vendor}/${fixture.mode}`);
     assert.deepEqual(buildVendorArgv(fixture), fixture.argv, `${fixture.vendor}/${fixture.mode}`);
     if (fixture.vendor === "claude") {
-      assert.equal(fixture.argv.includes("--permission-mode"), false, `${fixture.vendor}/${fixture.mode} must not enable a permission workflow`);
-      assert.equal(fixture.argv.some((value) => /(?:Write|Edit|Bash|Agent)/.test(value)), false, `${fixture.vendor}/${fixture.mode} must not expose write or process tools`);
-      assert.deepEqual(fixture.argv.filter((value) => value.startsWith("--tools=")), ["--tools=Read,Glob,Grep"], `${fixture.vendor}/${fixture.mode} closed tool allowlist`);
+      // dontAsk is what makes the shell reachable at all: without a permission
+      // mode the headless child drops it. The modes that would auto-approve
+      // writes, or stop tool execution entirely, stay out.
+      assert.equal(fixture.argv[fixture.argv.indexOf("--permission-mode") + 1], "dontAsk", `${fixture.vendor}/${fixture.mode} never prompts`);
+      for (const forbidden of ["plan", "acceptEdits", "bypassPermissions", "auto"]) {
+        assert.equal(fixture.argv.includes(forbidden), false, `${fixture.vendor}/${fixture.mode} must not use ${forbidden}`);
+      }
+      // The shell is here for git history only. Write and subagent tools stay
+      // out of --tools, and every rule naming a shell must name a git
+      // subcommand, so a non-git command can never be added as pre-approved.
+      assert.equal(fixture.argv.some((value) => /(?:Write|Edit|Agent)/.test(value)), false, `${fixture.vendor}/${fixture.mode} must not expose write or subagent tools`);
+      for (const rule of fixture.argv.filter((value) => /^(?:Bash|PowerShell)\(/.test(value))) {
+        assert.match(rule, /^(?:Bash|PowerShell)\(git [a-z-]+:\*\)$/, `${fixture.mode} shell rules name git subcommands only`);
+      }
+      assert.deepEqual(fixture.argv.filter((value) => value.startsWith("--tools=")), ["--tools=Read,Glob,Grep,Bash,PowerShell"], `${fixture.vendor}/${fixture.mode} closed tool allowlist`);
     }
   }
   assert.throws(
@@ -941,15 +1037,15 @@ test("explicit plan and review modes map to closed provider-native argv", () => 
 });
 
 // R033-H8. The Claude channel's `default` used to be `--tools=` — no tools at
-// all — while explicit --mode plan|review could at least read. The general
-// call was weaker than the read-only ones, so anything asked to implement had
+// all — while explicit --mode plan|review could at least inspect the workspace. The general
+// call was weaker than the restricted ones, so anything asked to implement had
 // to ship its patch as output text. That empty allowlist was a review-only
 // bridge (f6b6953) frozen into the default branch when explicit modes landed
 // (60a760f), and left in place by the review-identity fix (6a83b66). This test
 // pins the permission split so the bridge cannot be re-inherited: default is
-// full access, explicit plan/review stay read-only, and neither uses a sandbox,
+// full access, explicit plan/review omit Write/Edit but retain a git shell, and neither uses a sandbox,
 // worktree, snapshot, or rewritten cwd as the permission model.
-test("Claude default carries full tool access while explicit plan and review stay read-only", async () => {
+test("Claude default stays full access while explicit plan and review use the restricted tool set", async () => {
   const claudeDefault = FIXTURES.find((fixture) => fixture.vendor === "claude");
   const defaultArgv = buildVendorArgv(claudeDefault);
   assert.deepEqual(defaultArgv, claudeDefault.argv);
@@ -964,9 +1060,9 @@ test("Claude default carries full tool access while explicit plan and review sta
   assert.ok(defaultArgv.includes("--tools=default"), "default must open the full built-in tool set");
   assert.ok(defaultArgv.includes("--dangerously-skip-permissions"), "default must run non-interactively without a permission prompt");
 
-  // No read-only or permission-workflow behavior may leak back into default.
+  // No restricted-mode or permission-workflow behavior may leak back into default.
   assert.equal(defaultArgv.some((value) => value.startsWith("--permission-mode")), false, "default must not enable a permission workflow");
-  assert.equal(defaultArgv.some((value) => value.includes("Read,Glob,Grep")), false, "default must not inherit the read-only allowlist");
+  assert.equal(defaultArgv.some((value) => value.includes("Read,Glob,Grep")), false, "default must not inherit the restricted allowlist");
 
   // --safe-mode is configuration isolation (CLAUDE.md, hooks, plugins, MCP),
   // not a filesystem sandbox. It coexists with full access and stays.
@@ -977,10 +1073,10 @@ test("Claude default carries full tool access while explicit plan and review sta
   for (const fixture of readOnly) {
     const argv = buildVendorArgv(fixture);
     assert.deepEqual(argv, fixture.argv, fixture.mode);
-    assert.deepEqual(argv.filter((value) => value.startsWith("--tools=")), ["--tools=Read,Glob,Grep"], `${fixture.mode} closed read-only allowlist`);
+    assert.deepEqual(argv.filter((value) => value.startsWith("--tools=")), ["--tools=Read,Glob,Grep,Bash,PowerShell"], `${fixture.mode} restricted tool set`);
     assert.equal(argv.includes("--tools=default"), false, `${fixture.mode} must not open the full tool set`);
     assert.equal(argv.includes("--dangerously-skip-permissions"), false, `${fixture.mode} must not skip permissions`);
-    for (const forbidden of ["Write", "Edit", "Bash", "PowerShell", "Agent"]) {
+    for (const forbidden of ["Write", "Edit", "Agent"]) {
       assert.equal(argv.some((value) => value.includes(forbidden)), false, `${fixture.mode} must not expose ${forbidden}`);
     }
   }
@@ -1314,7 +1410,7 @@ test("Codex CLI dry-run separates requested shorthand from the normalized execut
   const value = JSON.parse(stdout.value());
   assert.equal(value.modelRequested, "luna@high");
   assert.equal(value.model, "gpt-5.6-luna");
-  assert.deepEqual(value.argv, ["exec", "review", "--skip-git-repo-check", "-m", "gpt-5.6-luna", "-c", "model_reasoning_effort=\"high\"", "-"]);
+  assert.deepEqual(value.argv, ["exec", "review", "--disable", "hooks", "-c", "project_doc_max_bytes=0", "--skip-git-repo-check", "-m", "gpt-5.6-luna", "-c", "model_reasoning_effort=\"high\"", "-"]);
 
   const explicit = parseCli(
     ["--vendor", "codex", "--operation", "text", "--brief", brief, "--model", "luna@high", "--effort", "xhigh"],
@@ -1962,7 +2058,7 @@ test("opt-in receipt appends typed JSONL for dry-run and invoked children", asyn
   assert.equal(dryRun.invoked, false);
   assert.equal(completed.invoked, true);
   for (const row of [dryRun, completed]) {
-    assert.deepEqual(Object.keys(row).sort(), ["argv", "attemptWaitsMs", "attempts", "completionTokenLimit", "cwd", "durationSec", "effectiveMode", "effort", "effortRequested", "errPath", "executable", "exit", "failureActor", "failureClass", "finishReason", "finish_reason", "incomplete_details", "inputProfile", "invoked", "lensId", "model", "modelReported", "modelRequested", "operation", "expectedTotal", "outPath", "outputCheckStatus", "outputChecks", "pid", "promptBytes", "promptSource", "provider", "remedy", "requestedMode", "schemaVersion", "successfulAttempt", "transport", "truncatedSuspected", "ts", "vendor", "vendorUsage", "vendorUsageStatus"].sort());
+    assert.deepEqual(Object.keys(row).sort(), ["argv", "attemptWaitsMs", "attempts", "completionTokenLimit", "cwd", "durationSec", "effectiveMode", "effort", "effortRequested", "errPath", "executable", "exit", "failureActor", "failureClass", "finishReason", "finish_reason", "incomplete_details", "inputProfile", "invoked", "hostIsolation", "lensId", "model", "modelReported", "modelRequested", "operation", "expectedTotal", "outPath", "outputCheckStatus", "outputChecks", "pid", "promptBytes", "promptSource", "provider", "remedy", "requestedMode", "schemaVersion", "successfulAttempt", "transport", "truncatedSuspected", "ts", "vendor", "vendorUsage", "vendorUsageStatus"].sort());
     assert.equal(row.schemaVersion, 1);
     assert.equal(row.vendor, "codex");
     assert.equal(row.transport, "cli");
@@ -1971,6 +2067,9 @@ test("opt-in receipt appends typed JSONL for dry-run and invoked children", asyn
     assert.equal(row.operation, "text");
     assert.equal(row.requestedMode, "default");
     assert.equal(row.effectiveMode, "default");
+    // The receipt must carry what was actually set, so a reader can tell an
+    // isolated review from a contaminated one without trusting the caller.
+    assert.deepEqual(row.hostIsolation, { argv: [], env: [] });
     assert.equal(row.inputProfile, "none");
     assert.equal(row.modelRequested, FIXTURES[0].model);
     assert.equal(row.model, FIXTURES[0].model);
@@ -2973,7 +3072,7 @@ test("closed portable emitter has an exact key set and no locator input seam", a
     "schemaVersion", "receiptKind", "ts", "transport", "vendor", "provider", "operation", "requestedMode",
     "effectiveMode", "inputProfile", "modelRequested", "model", "effort", "modelReported", "effortRequested",
     "truncatedSuspected", "promptSource", "promptBytes", "finish_reason", "finishReason", "incomplete_details", "lensId", "exit", "durationSec",
-    "invoked", "outputDeclared", "vendorUsage", "vendorUsageStatus", "outputCheckStatus", "outputChecks", "expectedTotal", "attempts",
+    "invoked", "outputDeclared", "vendorUsage", "vendorUsageStatus", "outputCheckStatus", "outputChecks", "expectedTotal", "hostIsolation", "attempts",
     "attemptWaitsMs", "successfulAttempt", "completionTokenLimit", "failureClass", "failureActor", "remedy",
   ]);
   assert.deepEqual(Object.keys(row.outputDeclared), ["stdout", "stderr"]);
@@ -3432,4 +3531,303 @@ test("help, comments, skill, READMEs, Claude adapter, changelog, and version tea
   const changelogRelease = changelog.match(/^##\s+(\d+\.\d+\.\d+)\b/m)?.[1];
   const unreleased = changelog.match(/^## Unreleased\n([\s\S]*?)(?=^## |$(?![\s\S]))/m)?.[1] ?? "";
   assert.ok(changelogRelease === plugin.version || new RegExp(`planned release version: ${plugin.version.replaceAll(".", "\\.")}`, "i").test(unreleased), "plugin.json must match the latest release heading or Unreleased's Planned release version");
+});
+
+
+// R033-H16. The caller's own configuration reaches a vendor child by several
+// paths — lifecycle hooks, the instruction files the CLI reads by itself, and
+// MCP servers arriving as tool definitions — and keeping them out is a matter of
+// which flags this dispatcher hands over. So the plan is asserted directly: what
+// we pass, per vendor and mode. There is no separate state vocabulary to keep in
+// step with it, which is what the earlier shape spent five repairs on.
+test("the isolation plan is the flags this dispatcher hands each vendor", () => {
+  const claude = { vendor: "claude", operation: "text", model: "opus", effort: "high" };
+  // codex takes one flag per path, defaulting on in explicit modes only.
+  assert.deepEqual(hostIsolationRecord({ vendor: "codex", operation: "text", mode: "review" }), {
+    argv: ["--disable", "hooks", "-c", "project_doc_max_bytes=0"], env: [],
+  });
+  assert.deepEqual(hostIsolationRecord({ vendor: "codex", operation: "text", mode: "default" }), { argv: [], env: [] });
+  // claude with skills closed carries the one wholesale switch, and states the
+  // document variable rather than trusting that switch to set it.
+  assert.deepEqual(hostIsolationRecord({ ...claude, mode: "review" }), {
+    argv: ["--safe-mode", "--disable-slash-commands", "--tools=Read,Glob,Grep,Bash,PowerShell", "--permission-mode", "dontAsk"],
+    env: ["CLAUDE_CODE_DISABLE_CLAUDE_MDS=1"],
+  });
+  // Opening skills drops that switch, so everything it was doing is restated one
+  // flag at a time — and in every mode, not only explicit plan/review.
+  assert.deepEqual(hostIsolationRecord({ ...claude, mode: "default", hostSkills: "enabled" }), {
+    argv: ["--settings", '{"disableAllHooks":true}', "--strict-mcp-config", "--dangerously-skip-permissions", "--tools=default"],
+    env: ["CLAUDE_CODE_DISABLE_CLAUDE_MDS=1"],
+  });
+  // agy and grok have their own devices, and those are still things this
+  // dispatcher hands over, so they are recorded rather than curated out. Leaving
+  // them empty once said a grok review had run with no tool narrowing and no
+  // harness isolation, which was the opposite of what happened.
+  assert.deepEqual(hostIsolationRecord({ vendor: "agy", operation: "text", mode: "review" }), { argv: ["--mode", "plan"], env: [] });
+  assert.deepEqual(hostIsolationRecord({ vendor: "agy", operation: "text", mode: "default" }), { argv: ["--dangerously-skip-permissions"], env: [] });
+  const grok = hostIsolationRecord({ vendor: "grok", operation: "text", mode: "review", brief: "b.txt" });
+  assert.deepEqual(grok.argv, ["--permission-mode", "plan", "--tools", "read_file,grep,list_dir", "--no-subagents"]);
+  assert.equal(grok.env.length, Object.keys(GROK_HARNESS_ISOLATION_ENV).length);
+  // A call with no vendor spawns nothing, so nothing was handed over.
+  assert.deepEqual(hostIsolationRecord({}), { argv: [], env: [] });
+});
+
+test("each switch moves its own path and leaves the others where they were", () => {
+  const skillsOpen = { vendor: "claude", operation: "text", mode: "review", model: "opus", effort: "high", hostSkills: "enabled" };
+  const reopenMcp = hostIsolationRecord({ ...skillsOpen, hostMcp: "allowed" });
+  assert.equal(reopenMcp.argv.includes("--strict-mcp-config"), false, "the MCP flag is dropped");
+  assert.ok(reopenMcp.argv.includes("--settings"), "and the hook flag is untouched");
+  assert.deepEqual(reopenMcp.env, ["CLAUDE_CODE_DISABLE_CLAUDE_MDS=1"], "as is the document variable");
+  const reopenDocs = hostIsolationRecord({ ...skillsOpen, hostDocs: "allowed" });
+  assert.deepEqual(reopenDocs.env, [], "re-allowing documents stops stating the variable");
+  assert.ok(reopenDocs.argv.includes("--strict-mcp-config"), "and leaves MCP closed");
+  // The blocking direction reaches the full-access mode, which would otherwise
+  // hand nothing over at all.
+  assert.deepEqual(hostIsolationRecord({ vendor: "codex", mode: "default", hostDocs: "blocked" }), {
+    argv: ["-c", "project_doc_max_bytes=0"], env: [],
+  });
+});
+
+test("vendor invocation assembles argv and receipt isolation together", () => {
+  const grokOptions = {
+    vendor: "grok", operation: "text", mode: "review", model: "m", effort: "high", brief, cwd: root,
+  };
+  const grokIsolation = {
+    argv: ["--permission-mode", "plan", "--tools", "read_file,grep,list_dir", "--no-subagents"],
+    env: Object.entries(GROK_HARNESS_ISOLATION_ENV).map(([name, value]) => `${name}=${value}`),
+  };
+  assert.deepEqual(buildVendorInvocation(grokOptions), {
+    argv: ["--prompt-file", resolve(brief), "--output-format", "json", "-m", "m", "--effort", "high", "--cwd", root, ...grokIsolation.argv],
+    hostIsolation: grokIsolation,
+  });
+
+  const agyOptions = {
+    vendor: "agy", operation: "text", mode: "review", model: "m", effort: "high", cwd: root, timeout: 1800,
+  };
+  assert.deepEqual(buildVendorInvocation(agyOptions), {
+    argv: ["--mode", "plan", "--print-timeout", "1800s", "--model", "m", "--effort", "high", "--add-dir", root],
+    hostIsolation: { argv: ["--mode", "plan"], env: [] },
+  });
+
+  assert.throws(
+    () => buildVendorArgv({ vendor: "bogus", operation: "text", mode: "plan" }),
+    (error) => error instanceof PolicyError && error.classification === "invalid_vendor",
+  );
+});
+
+test("every vendor invocation carries its receipt isolation as one contiguous argv run", () => {
+  const seen = new Set();
+  for (const options of [...FIXTURES, ...MODE_FIXTURES]) {
+    const { argv, hostIsolation } = buildVendorInvocation(options);
+    if (hostIsolation.argv.length === 0) continue;
+    let matches = 0;
+    for (let index = 0; index <= argv.length - hostIsolation.argv.length; index += 1) {
+      if (hostIsolation.argv.every((token, offset) => argv[index + offset] === token)) matches += 1;
+    }
+    assert.equal(matches, 1, `${options.vendor}/${options.mode ?? "default"}`);
+    seen.add(options.vendor);
+  }
+  assert.deepEqual(seen, new Set(["codex", "agy", "claude", "grok"]));
+});
+
+test("codex review blocks both host paths and each flag moves exactly one axis", () => {
+  const review = buildVendorArgv({ vendor: "codex", operation: "text", mode: "review", isGitRepo: true });
+  assert.deepEqual(review, ["exec", "review", "--disable", "hooks", "-c", "project_doc_max_bytes=0", "-"]);
+  const allowHooks = buildVendorArgv({ vendor: "codex", operation: "text", mode: "review", hostHooks: "allowed", isGitRepo: true });
+  assert.equal(allowHooks.includes("hooks"), false, "re-allowing hooks drops only that switch");
+  assert.ok(allowHooks.includes("project_doc_max_bytes=0"), "the document axis is untouched by the hook flag");
+  const blockInDefault = buildVendorArgv({ vendor: "codex", operation: "text", mode: "default", hostDocs: "blocked", isGitRepo: true });
+  assert.deepEqual(blockInDefault, ["exec", "-c", "project_doc_max_bytes=0", "-"]);
+});
+
+test("claude opens skills by replacing the wholesale switch with one lever per thing it had been doing", () => {
+  const base = { vendor: "claude", operation: "text", mode: "review", model: "opus", effort: "high" };
+  const closed = buildVendorArgv(base);
+  assert.ok(closed.includes("--safe-mode"), "skills off keeps the wholesale switch");
+  assert.ok(closed.includes("--disable-slash-commands"), "and the second switch that closes skills on its own");
+  assert.equal(closed.includes("Skill"), false, "so no skill can be invoked");
+
+  const open = buildVendorArgv({ ...base, hostSkills: "enabled" });
+  assert.equal(open.includes("--safe-mode"), false, "opening skills requires dropping the wholesale switch");
+  assert.equal(open.includes("--disable-slash-commands"), false);
+  // Everything that switch had been doing is restated here, so dropping it does
+  // not quietly re-open hooks, MCP or CLAUDE.md alongside skills.
+  assert.ok(open.includes('{"disableAllHooks":true}'), "hooks keep their own lever");
+  assert.ok(open.includes("--strict-mcp-config"), "MCP keeps its own lever");
+  assert.ok(open.includes("--tools=Read,Glob,Grep,Bash,PowerShell,Skill"), "the Skill tool is what makes a skill invocable at all");
+  assert.deepEqual(
+    applyVendorHostIsolationEnv({}, { ...base, hostSkills: "enabled" }),
+    { CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1" },
+    "CLAUDE.md keeps its own lever, on the env side",
+  );
+  // The wholesale switch sets the same variable itself, but the dispatcher owns
+  // it on every claude call rather than trusting that: an unverified premise is
+  // what let a caller's own spelling through on this branch.
+  assert.deepEqual(
+    applyVendorHostIsolationEnv({}, base),
+    { CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1" },
+    "the closed state is stated by the dispatcher on both branches",
+  );
+  assert.deepEqual(applyVendorHostIsolationEnv({}, { ...base, hostSkills: "enabled", hostDocs: "allowed" }), {}, "a caller that re-allows documents gets no env override");
+  // Owning the variable means dropping the caller's spellings whichever way the
+  // axis resolved — otherwise a re-allowed call inherits a `=1` from an outer
+  // dispatch and the receipt's "allowed" is a false record.
+  assert.deepEqual(
+    applyVendorHostIsolationEnv({ claude_code_disable_claude_mds: "1" }, { ...base, hostSkills: "enabled", hostDocs: "allowed" }),
+    {},
+    "re-allowing documents clears an inherited block instead of leaving it shadowed",
+  );
+  assert.deepEqual(
+    applyVendorHostIsolationEnv({ claude_code_disable_claude_mds: "0" }, base),
+    { CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1" },
+    "and the safe-mode branch does not inherit the caller's zero",
+  );
+});
+
+test("host isolation flags reject conflicting forms and vendors that expose no switch", () => {
+  assert.throws(
+    () => parseCli(["--vendor", "codex", "--operation", "text", "--brief", brief, "--host-hooks", "--no-host-hooks"], root),
+    /cannot both be given/,
+  );
+  assert.throws(
+    () => parseCli(["--vendor", "agy", "--operation", "text", "--brief", brief, "--no-host-docs"], root),
+    /supported only for codex or claude/,
+  );
+  assert.throws(
+    () => parseCli(["--vendor", "codex", "--operation", "text", "--brief", brief, "--host-skills"], root),
+    /supported only for claude/,
+  );
+  // An unstated axis stays undefined so the resolver can tell "caller said
+  // nothing" from "caller asked for the value that happens to be the default".
+  const parsed = parseCli(["--vendor", "codex", "--operation", "text", "--brief", brief, "--no-host-hooks"], root);
+  assert.equal(parsed.hostHooks, "blocked");
+  assert.equal(parsed.hostDocs, undefined);
+  assert.equal(parsed.hostSkills, undefined);
+});
+
+// R033-H16 reopen. A reviewer that cannot read change history has to be fed the
+// diff in prose, so the shell is opened deliberately. What holds it is measured,
+// not assumed: the allow rules did NOT confine the tool — an unlisted
+// `git remote -v` ran anyway — so no command list is carried. The shell is
+// either handed over or taken away, and the brief's prohibitions are the guard.
+test("the claude reviewer gets a shell for git history, and --no-host-shell takes it away", () => {
+  const base = { vendor: "claude", operation: "text", mode: "review", model: "opus", effort: "high" };
+  const open = buildVendorArgv(base);
+  // Both names are listed because the registered one is platform dependent:
+  // naming only Bash left a Windows child with no shell at all.
+  assert.ok(open.includes("--tools=Read,Glob,Grep,Bash,PowerShell"));
+  assert.ok(open.includes("--permission-mode"), "without a permission mode the headless child drops the shell");
+  // A per-command rule list is deliberately absent: it never confined the tool,
+  // and carrying one made it read as a guarantee that had to grow every pass.
+  assert.equal(open.some((value) => /^(Bash|PowerShell)\(/.test(value)), false, "no command rules are shipped");
+  assert.equal(open.includes("--allowed-tools"), false);
+  assert.equal(open.includes("--disallowed-tools"), false);
+
+  const closed = buildVendorArgv({ ...base, hostShell: "closed" });
+  assert.ok(closed.includes("--tools=Read,Glob,Grep"), "closing the shell restores the read-only set");
+  assert.equal(closed.includes("--permission-mode"), false, "and takes the permission mode with it");
+
+  // The record carries the tool line either way, so a reader sees which one the
+  // child got rather than being told whether a shell "was open".
+  assert.ok(hostIsolationRecord(base).argv.includes("--tools=Read,Glob,Grep,Bash,PowerShell"));
+  assert.ok(hostIsolationRecord({ ...base, hostShell: "closed" }).argv.includes("--tools=Read,Glob,Grep"));
+  // codex has no tool allowlist to narrow, so nothing about its tools is handed
+  // over and nothing about them is recorded.
+  assert.equal(hostIsolationRecord({ vendor: "codex", mode: "review" }).argv.some((t) => t.startsWith("--tools")), false);
+});
+
+test("--host-shell/--no-host-shell is accepted only for claude", () => {
+  assert.throws(
+    () => parseCli(["--vendor", "codex", "--operation", "text", "--brief", brief, "--no-host-shell"], root),
+    /supported only for claude/,
+  );
+  const parsed = parseCli(
+    ["--vendor", "claude", "--operation", "text", "--brief", brief, "--model", "opus", "--effort", "high",
+      "--out", join(root, "shell-flag.out"), "--err", join(root, "shell-flag.err"), "--mode", "review", "--no-host-shell"],
+    root,
+  );
+  assert.equal(parsed.hostShell, "closed");
+});
+
+test("host isolation flags are refused where they could not be honoured", () => {
+  const claude = (...extra) => ["--vendor", "claude", "--operation", "text", "--brief", brief,
+    "--model", "opus", "--effort", "high",
+    "--out", join(root, "refuse.out"), "--err", join(root, "refuse.err"), ...extra];
+  // --mode default always ships --tools=default, so a shell request there is
+  // rejected instead of being dropped on the floor.
+  assert.throws(() => parseCli(claude("--no-host-shell"), root), /requires --mode plan or --mode review/);
+  // Without --host-skills the child keeps the switch that blocks hooks and
+  // CLAUDE.md, and that switch has no per-axis opening.
+  assert.throws(() => parseCli(claude("--mode", "review", "--host-hooks"), root), /only with --host-skills/);
+  assert.throws(() => parseCli(claude("--mode", "review", "--host-docs"), root), /only with --host-skills/);
+  // The blocking direction still describes what happens, so it stays accepted.
+  assert.equal(parseCli(claude("--mode", "review", "--no-host-hooks"), root).hostHooks, "blocked");
+  // And with skills on, both directions are real.
+  assert.equal(parseCli(claude("--mode", "review", "--host-skills", "--host-docs"), root).hostDocs, "allowed");
+  // MCP joins that same switch, so it is refused and accepted on the same terms.
+  assert.throws(() => parseCli(claude("--mode", "review", "--host-mcp"), root), /only with --host-skills/);
+  assert.equal(parseCli(claude("--mode", "review", "--no-host-mcp"), root).hostMcp, "blocked");
+  assert.equal(parseCli(claude("--mode", "review", "--host-skills", "--host-mcp"), root).hostMcp, "allowed");
+  // codex can close hooks and documents per call but has no MCP lever at all,
+  // so the flag is refused there rather than recorded and ignored.
+  const codex = (...extra) => ["--vendor", "codex", "--operation", "text", "--brief", brief,
+    "--model", "gpt-5.1-codex-max", "--effort", "high",
+    "--out", join(root, "refuse-codex.out"), "--err", join(root, "refuse-codex.err"), ...extra];
+  assert.throws(() => parseCli(codex("--mode", "review", "--no-host-mcp"), root), /only for claude/);
+});
+
+// R033-H16 loop A. CLAUDE.md is blocked by an env var, not a flag, so no argv
+// assertion can see it. grok's isolation env is pinned the same way above;
+// without the claude equivalent, moving one line out of the spawn branch would
+// let the caller's CLAUDE.md back into the reviewer with every test still green.
+test("the claude child is spawned with CLAUDE.md disabled exactly when skills are open", async () => {
+  const base = {
+    vendor: "claude", operation: "text", mode: "review", model: "opus", effort: "high",
+    brief, cwd: root, timeout: 2, dryRun: false,
+  };
+  const spawnCapturing = (box) => (_executable, _argv, spawnOptions) => {
+    box.env = spawnOptions.env;
+    return fakeChild((child) => {
+      child.stdin.on("end", () => {
+        child.stdout.end(claudeResult());
+        child.stderr.end();
+        queueMicrotask(() => child.emit("close", 0, null));
+      });
+      child.stdin.resume();
+    });
+  };
+
+  const opened = {};
+  assert.equal(await run(
+    { ...base, hostSkills: "enabled", out: join(root, "mds-on.out"), err: join(root, "mds-on.err") },
+    { spawn: spawnCapturing(opened), stderr: memoryWriter().stream, env: {} },
+  ), 0);
+  assert.equal(opened.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS, "1", "opening skills drops --safe-mode, so the env half must carry CLAUDE.md");
+
+  // With skills closed --safe-mode sets the same variable itself, but the
+  // dispatcher states it rather than relying on that: the premise was never
+  // measured, and trusting it is what let a caller's own value through here.
+  const closed = {};
+  assert.equal(await run(
+    { ...base, out: join(root, "mds-off.out"), err: join(root, "mds-off.err") },
+    { spawn: spawnCapturing(closed), stderr: memoryWriter().stream, env: {} },
+  ), 0);
+  assert.equal(closed.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS, "1");
+
+  // Setting the key on top of the caller's environment is not enough. Windows
+  // resolves environment names case-insensitively, so a caller's own spelling
+  // left in place would hand the child both and let it read the 0 — with the
+  // receipt still recording docs "blocked" and this test green on an empty env.
+  const shadowed = {};
+  assert.equal(await run(
+    { ...base, hostSkills: "enabled", out: join(root, "mds-case.out"), err: join(root, "mds-case.err") },
+    {
+      spawn: spawnCapturing(shadowed),
+      stderr: memoryWriter().stream,
+      env: { claude_code_disable_claude_mds: "0" },
+    },
+  ), 0);
+  const mdsKeys = Object.keys(shadowed.env).filter((key) => key.toUpperCase() === "CLAUDE_CODE_DISABLE_CLAUDE_MDS");
+  assert.deepEqual(mdsKeys, ["CLAUDE_CODE_DISABLE_CLAUDE_MDS"], "the caller's spelling must be dropped, not shadowed");
+  assert.equal(shadowed.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS, "1");
 });

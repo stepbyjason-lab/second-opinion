@@ -2,7 +2,7 @@
 
 **English** | [한국어](./README.ko.md)
 
-![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.12-informational)
+![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.16-informational)
 
 **Use other AI vendors from inside Claude Code — in plain language.**
 Second opinions, task offloading, and vendor capabilities like image generation.
@@ -118,7 +118,7 @@ CLI launches are not worth that diagnostic cost.
 | An AGY call sets reasoning effort inside the model slug | agy 1.1.26 split effort onto its own `--effort low|medium|high`; the old `-high` suffix still resolves alone, but pairing it with `--effort` exits 1 instead of choosing, and a bare model name without `--effort` is rejected — the dispatcher forwards both spellings untouched so the receipt shows what the vendor actually received |
 | AGY's default model moves without any local change | it lives on the Antigravity account, not in a config file; measured moving from `gemini-3.7-flash` to `gemini-3.8-flash-high` with nothing edited locally, so pin `--model` on any call whose result must be reproducible |
 | Grok review examples that omit reasoning effort silently use the vendor default | the standard review example explicitly uses `--effort medium` for cost/quality balance; dispatch forwards it unchanged and the receipt retains `effortRequested` |
-| A review must inspect the exact current diff, or run the suite, to judge | `--mode plan` and `--mode review` hand Claude and AGY read-only tools only — no shell, so no `git diff` and no test run — and a linked worktree's `.git` can be a file besides; put the changed-file list, the full unified diff, and any canon text in the brief, and state the suite result you measured yourself rather than asking the vendor to produce it |
+| A review must inspect the exact current diff, or run the suite, to judge | Claude plan/review includes Bash/PowerShell for `git diff` and history; `--no-host-shell` removes it. Grok/AGY explicit modes still have no git shell, so linked-worktree reviews must put the changed-file list and full unified diff in the brief and state any suite result the caller measured |
 
 - **Execution receipts** — after every vendor call the skill states what was
   actually observed: the vendor and model requested, the real backend if known,
@@ -184,10 +184,27 @@ CLI launches are not worth that diagnostic cost.
   `--err` progress, then accept findings only after a completed output and receipt.
   Claude result JSON binds the observed model
   family, token usage, and cost into `vendorUsage`; empty, malformed, or
-  wrong-model output returns exit 4. The Claude child runs in `--safe-mode`, so
-  project instructions, hooks, plugins, and MCP servers cannot override the inline
-  review brief. `--safe-mode` is configuration isolation, not a filesystem
-  sandbox — it coexists with full tool access and stays on in every mode.
+  wrong-model output returns exit 4. Two separate paths carry the caller's own
+  configuration into a vendor child — lifecycle hooks, and the instruction files
+  the CLI reads by itself (`AGENTS.md`, `CLAUDE.md`) — and in `--mode plan|review`
+  both are blocked by default for codex and claude, so a reviewer sees the brief
+  instead of the caller's progress state. `--host-hooks`/`--host-docs` re-allow
+  one path, `--no-host-hooks`/`--no-host-docs` block it in `--mode default` too,
+  and every call records `hostIsolation` in both receipts — an invoked row has
+  the flags and environment variables actually handed the child, a valid dry-run
+  has its planned vector, and every other pre-spawn failure has empty arrays.
+  What the child then enforced is not recorded:
+  passing a flag and the flag taking effect are different things, and this round
+  measured a case where they were not the same. An `AGENTS.md` in the
+  codex home is NOT covered by the document switch. `--host-skills` (claude only)
+  lets the child run skills and plugins; it replaces the one switch that had been
+  closing configuration wholesale, so hooks, MCP, and `CLAUDE.md` then block by
+  default in every mode. A claude reviewer also gets a shell so it can read git
+  history, and no command rule list is shipped with it: allow rules were measured
+  not to confine the tool at all, and a deny list of subcommand names can never
+  cover the effects it is named for. The brief's own prohibitions are the guard,
+  and `--no-host-shell` removes the shell rather than narrowing it. None of this is a
+  filesystem sandbox — it is configuration isolation and coexists with tool access.
   The dispatcher operates as a neutral broker and does not
   hard-block same-vendor calls; it removes the parent-only `CLAUDECODE` marker
   from the child environment so an intentional nested invocation can start.
@@ -197,12 +214,15 @@ CLI launches are not worth that diagnostic cost.
   Callers may explicitly add `--mode plan` or `--mode review` to text dispatches.
   These modes keep the same real project cwd; they do not create a sandbox,
   worktree, snapshot, or reduced review packet. For Claude, plan/review identities
-  remain distinct in the receipt but both use only the closed `Read,Glob,Grep` tool
-  allowlist—without native plan workflow.
+  remain distinct in the receipt and both use `Read,Glob,Grep,Bash,PowerShell` plus
+  `--permission-mode dontAsk` by default, without native plan workflow. Skills and
+  plugins stay off unless `--host-skills` adds the `Skill` tool; `--no-host-shell`
+  removes Bash/PowerShell instead.
 
   **How much a mode actually restricts depends on the vendor, and for Codex it
-  restricts nothing.** Claude removes the write tools through its `--tools`
-  allowlist and AGY through native plan plus a read-only input profile, but the
+  restricts nothing.** Claude removes the built-in Write/Edit tools through its
+  `--tools` allowlist but retains a shell by default; AGY uses native plan plus a
+  read-only input profile. The
   Codex CLI has no such layer — its only way to narrow permissions is the sandbox
   (`-s read-only`), which this project does not use. Codex's `exec review` selects
   a review workflow, not a permission level (`codex exec review --help` offers only
@@ -215,8 +235,10 @@ CLI launches are not worth that diagnostic cost.
   `--tools` allowlist. Unknown tool names fail-open, so `plan` is the floor.
   Omitting `--mode` preserves the existing default call, which for Claude is the
   **full-access** one: all built-in tools plus non-interactive execution, in the
-  caller's real cwd. Read-only comes only from an explicit `--mode plan|review`;
-  the permission split is flags alone, never an isolation primitive.
+  caller's real cwd. The restricted tool set comes only from explicit
+  `--mode plan|review`; it removes Write/Edit but retains the git shell by default,
+  so it is not filesystem read-only. The permission split is flags alone, never an
+  isolation primitive.
   Receipts record `requestedMode`, `effectiveMode`, and `inputProfile`. Explicit modes
   fail closed with exit 4 on empty output. AGY explicit plan/review automatically
   applies the `agy-native-readonly/v1` input profile so an ordinary brief that mentions

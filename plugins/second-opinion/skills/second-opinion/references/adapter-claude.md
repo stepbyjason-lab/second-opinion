@@ -23,7 +23,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor claude --operation text
 ```
 
 같은 실제 project cwd를 읽는 plan/review는 각각 `--mode plan|review`를 추가한다. 둘 다
-native plan workflow를 켜지 않고 closed `Read,Glob,Grep` 도구로 번역되며, receipt의
+native plan workflow를 켜지 않고 `Read,Glob,Grep` + 읽기용 셸로 번역되며, receipt의
 `requestedMode`·`effectiveMode`는 각각 plan/review로 보존된다. mode 생략은 아래 full-access
 default 호출이며 자동으로 plan/review가 되지 않는다. 즉 읽기 전용은 명시적
 `--mode plan|review`뿐이고, 권한을 좁히려면 반드시 mode를 명시해야 한다.
@@ -81,8 +81,8 @@ dispatcher 규율에서는 303.92초에 exit 0·실제 `claude-opus-4-8`·유효
 | 호출 | requested/effective | 권한 | cwd |
 |---|---|---|---|
 | mode 생략 | `default/default` | 모든 기본 도구 + 비대화형 실행 | caller가 준 실제 cwd |
-| `--mode plan` | `plan/plan` | `Read,Glob,Grep`만 | 같은 실제 cwd |
-| `--mode review` | `review/review` | `Read,Glob,Grep`만 | 같은 실제 cwd |
+| `--mode plan` | `plan/plan` | `Read,Glob,Grep` + 셸(명령 규칙 없음) | 같은 실제 cwd |
+| `--mode review` | `review/review` | `Read,Glob,Grep` + 셸(명령 규칙 없음) | 같은 실제 cwd |
 
 default Claude child는 `--safe-mode --disable-slash-commands
 --dangerously-skip-permissions --tools=default`인 **full-access 호출**이다. 기본 도구
@@ -92,15 +92,64 @@ default Claude child는 `--safe-mode --disable-slash-commands
 `vendorUsageStatus=ok`였다. 따라서 brief에 파일 경로와 저장소 조사 지시를 그대로 줄 수
 있으며, 결과를 출력 텍스트에 실어 나를 필요가 없다.
 
-읽기 전용은 명시적 `--mode plan|review`뿐이다. 두 mode는 같은 `--safe-mode`를 유지하되
-`--tools=Read,Glob,Grep`로 실제 project cwd 전체를 읽기만 한다. `--permission-mode`와
-native plan workflow는 사용하지 않고, `--dangerously-skip-permissions`도 붙이지 않는다.
-Write·Edit·Bash·PowerShell·Agent는 제공하지 않는다.
+제한된 도구 구성은 명시적 `--mode plan|review`뿐이다. 두 mode는
+`--tools=Read,Glob,Grep,Bash,PowerShell`로 실제 project cwd를 탐색한다. native plan workflow와
+`--dangerously-skip-permissions`는 사용하지 않고 `--permission-mode dontAsk`를 붙인다.
+Write·Edit·Agent는 제공하지 않지만 셸은 파일을 쓸 수 있으므로 filesystem 읽기 전용은 아니다.
 
-`--safe-mode`는 세 mode 모두에 남는다. 이것은 **구성 격리**(대상 프로젝트의 CLAUDE.md·
-hook·plugin·MCP 비활성)이지 filesystem sandbox가 아니며, full-access와 공존한다 —
-`claude --help` 2.1.220은 customization 비활성만 설명하고 내장 도구에는 아무 말도 하지
-않는다. 권한 모델로 sandbox·worktree·snapshot·packet 분리·cwd 재작성은 사용하지 않는다.
+### 리뷰어의 git 조회 (R033-H16, 2026-09-06 실측)
+
+리뷰어가 변경 이력을 못 읽으면 diff를 산문으로 떠먹여야 한다. 그래서 읽기 전용 mode에도 셸을
+연다. 무엇이 그 셸을 붙잡는지는 **재본 대로만** 적는다.
+
+| 넣은 것 | 실측 결과 |
+|---|---|
+| `--tools`에 `Bash`만 | 자식 도구 목록에 셸이 **없다**. Windows에서 등록되는 셸은 `PowerShell`이다 |
+| `--tools`에 두 이름 다 | `SHELL=PowerShell` · `git status --short`가 돈다 |
+| `--permission-mode dontAsk` | 없으면 셸이 통째로 사라진다. 헤드리스에서 승인 주체가 없어서다 |
+| `--allowed-tools` 읽기용 git 규칙 | **안 묶는다.** 목록에 없는 `git remote -v`가 그대로 실행됐다 |
+
+⚠ **그래서 어느 목록도 싣지 않는다.** allow는 도구를 안 묶고, deny는 이름을 채워도 증명이 되지
+않는다 — `checkout`을 막으면 `restore`·`switch`가 남고, 그 뒤로 `branch -D`·`worktree`·
+`update-ref`·별칭·`git -C`가 계속 남는다. 매번 옳게 채워도 다음이 항상 기다리는 모양이라,
+목록을 들고 있는 것 자체가 없는 보증을 있는 것처럼 읽히게 한다. 셸이 도는 이상 리뷰어는 파일도
+쓴다. 실제로 붙잡는 것은 **brief의 금지 지시**이며, 이는 codex adapter가 이미 문서화한 것과 같은
+자세다. 엄격한 읽기 전용이 필요하면 `--no-host-shell`로 셸을 **없앤다** — `--tools=Read,Glob,Grep`
+으로 돌아간다.
+
+`--safe-mode`는 **`--host-skills`를 주지 않은 모든 호출**에 남는다. 이것은 **구성 격리**
+(대상 프로젝트의 CLAUDE.md·hook·plugin·MCP 비활성)이지 filesystem sandbox가 아니며,
+full-access와 공존한다 — `claude --help` 2.1.251은 customization 비활성만 설명하고 내장
+도구에는 아무 말도 하지 않는다.
+
+`--host-skills`를 주면 그 스위치 하나가 빠진다. 스킬을 열려면 다른 길이 없다 —
+`--disable-slash-commands`의 정의문이 `claude --help` 2.1.251에서 **"Disable all skills"**
+이고, `--safe-mode`도 skills를 따로 끄기 때문에 **둘 다** 빠져야 스킬이 산다. 그래서 그
+스위치가 하던 일이 각각의 좁은 레버로 다시 세워진다.
+
+| `--safe-mode`가 뭉쳐서 끄던 것 | 대체 레버 |
+|---|---|
+| hook | `--settings '{"disableAllHooks":true}'` — 인라인 `--settings`가 훅 게이트가 읽는 source 중 하나라 파일을 건드리지 않고 그 호출만 끈다 |
+| MCP | `--strict-mcp-config` — `--mcp-config`를 주지 않으므로 서버가 하나도 남지 않는다 |
+| CLAUDE.md | `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` — `--safe-mode`가 스스로 세우던 값이라 이 갈래에서만 직접 세운다 |
+| skill·plugin | 없앤다. 이것이 목적이다 |
+
+`--host-skills` 갈래에서는 훅·문서 차단이 읽기 전용 mode뿐 아니라 **모든 mode에서 기본**이다.
+`--safe-mode`가 사라진 뒤에는 호스트 설정을 막는 것이 그 레버들밖에 없기 때문이다. 켠 호출에는
+`--tools`에 `Skill`이 더해진다 — 스킬이 살아 있어도 그 도구가 없으면 부를 수단이 없다.
+
+⚠ **`--host-skills`는 네 번째 축도 연다 — 호출자의 권한 규칙이다.** `--safe-mode`가 빠지면서
+user settings가 로드되고, 거기 `permissions.allow`가 있으면 그 규칙이 리뷰어에도 적용된다(이
+머신 기준 117줄이며 `Bash(git *)`를 포함한다). 별도 deny 목록 없이 호스트의 allow 목록이
+들어오는 셈이다. `--setting-sources`로 설정 로드를 끊으면 플러그인 활성 목록이 같이 죽어 스킬 자체가
+사라지므로, 닫지 않고 공시한다. **이것은 enabledPlugins가 같은 경로로 살아나는 것을 프로브로
+확인한 데서 나온 추론이고, 권한 규칙이 실제로 상속되는지는 아직 직접 재지 않았다.**
+
+켤 때 무엇이 함께 들어오는지 재두었다(2026-09-06 실측): 개인 스킬 219개, 설명줄만 68,961 B.
+호출당 범위를 좁히는 스위치는 없다 — `strictPluginOnlyCustomization`은 machine 단위
+`managed-settings.json` 키라 호출마다 지정할 수 없다. 그래서 기본값은 off다.
+
+권한 모델로 sandbox·worktree·snapshot·packet 분리·cwd 재작성은 사용하지 않는다.
 권한은 오직 위 표의 mode별 flag 조합으로 결정되며, 자식은 항상 caller가 준 실제 cwd에서
 실행된다.
 

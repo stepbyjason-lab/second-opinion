@@ -46,7 +46,7 @@ import { appendFileSync, closeSync, createWriteStream, mkdirSync, openSync, read
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DISPATCH_MODES, OPERATIONS, PolicyError, VENDORS, applyGrokHarnessIsolationEnv, buildVendorArgv, composeVendorInput, effectiveInputProfile, effectiveVendorMode, executableName, grokNeedsHarnessIsolation, normalizeVendor, resolveExecutable } from "./vendor-policy.mjs";
+import { DISPATCH_MODES, OPERATIONS, PolicyError, VENDORS, applyGrokHarnessIsolationEnv, applyVendorHostIsolationEnv, buildVendorInvocation, composeVendorInput, effectiveInputProfile, effectiveVendorMode, executableName, grokNeedsHarnessIsolation, hostIsolationRecord, normalizeVendor, resolveExecutable } from "./vendor-policy.mjs";
 import { appendPortableReceipt, buildPortableReceipt, MAX_EXPECT_OUTPUTS, MAX_EXPECT_TOTAL, MAX_FREE_STRING, preparePortableUsage } from "./portable-receipt.mjs";
 
 export const MAX_BRIEF_BYTES = 8 * 1024 * 1024;
@@ -59,7 +59,10 @@ const MODEL_CATALOG_FAILURE_TTL_MS = 5 * 60 * 1000;
 const MODEL_CATALOG_FILENAME = "model-catalog-v1.json";
 const RECEIPT_CONFIG_FILENAME = "config.json";
 const MAX_RECEIPT_CONFIG_BYTES = 1024 * 1024;
-const SINGLE_OPTIONS = new Set(["--vendor", "--operation", "--brief", "--cwd", "--model", "--effort", "--mode", "--timeout", "--out", "--err", "--lens-id", "--expect-total", "--dry-run"]);
+const SINGLE_OPTIONS = new Set(["--vendor", "--operation", "--brief", "--cwd", "--model", "--effort", "--mode", "--timeout", "--out", "--err", "--lens-id", "--expect-total", "--dry-run", "--host-hooks", "--no-host-hooks", "--host-docs", "--no-host-docs", "--host-mcp", "--no-host-mcp", "--host-skills", "--host-shell", "--no-host-shell"]);
+// Flags that stand alone instead of taking a value. They still live in
+// SINGLE_OPTIONS so the unknown-argument and duplicate checks cover them.
+const BOOLEAN_OPTIONS = new Set(["--dry-run", "--host-hooks", "--no-host-hooks", "--host-docs", "--no-host-docs", "--host-mcp", "--no-host-mcp", "--host-skills", "--host-shell", "--no-host-shell"]);
 // Accepted --vendor spellings: the canonical set plus the "antigravity" alias
 // normalizeVendor() folds into "agy". Kept next to VENDORS so a new vendor is
 // one edit, and so usage text and validation cannot disagree.
@@ -151,6 +154,21 @@ export function usageText() {
     "  recorded as expectedTotal without changing exit codes. Compare it with outputChecks.length: equal means every",
     "  section was registered, greater means the caller registered only some of them; a total below the",
     "  registered count is rejected, so those two readings are the only ones a receipt can carry.",
+    "  Host isolation (codex, claude): in --mode plan/review the caller's lifecycle hooks and the instruction",
+    "  files the vendor CLI reads on its own (AGENTS.md, CLAUDE.md) are blocked by default, so a reviewer sees",
+    "  the brief instead of the caller's own progress state. --host-hooks / --host-docs re-allow one axis and",
+    "  --no-host-hooks / --no-host-docs block it in --mode default too. A codex home AGENTS.md is NOT covered.",
+    "  Skills and plugins stay off by default. --host-skills (claude only) enables them and drops the switch that was",
+    "  closing configuration wholesale, so hooks/docs then block by default in every mode. A claude reviewer",
+    "  also gets a shell so it can read git history. No command rule list is shipped with it: allow rules were",
+    "  measured not to confine the tool at all, so the brief's own prohibitions are the guard and a caller who",
+    "  needs the shell gone uses --no-host-shell, which removes it rather than narrowing it. A claude child also",
+    "  gets none of the caller's MCP servers; --host-mcp (claude only, and only alongside --host-skills) puts them",
+    "  back and --no-host-mcp blocks them in --mode default too. codex has no per-call equivalent.",
+    "  Both receipts record hostIsolation {argv, env}. On an invoked row it is the exact invocation",
+    "  vector handed to the child; a valid dry-run records the vector it would hand over; every other",
+    "  pre-spawn failure records empty arrays. AGY/Grok permission and tool controls, and Grok's harness",
+    "  isolation variables, are included. The field does not claim that the child enforced those inputs.",
     "",
     "  Which flags a given vendor/operation/mode actually requires is enforced by",
     "  validation, not repeated here — run the call and the error names exactly",
@@ -550,8 +568,10 @@ export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
     }
     if (seen.has(flag)) throw new CliError(`duplicate option: ${flag}`);
     seen.add(flag);
-    if (flag === "--dry-run") raw.dryRun = true;
-    else {
+    if (BOOLEAN_OPTIONS.has(flag)) {
+      if (flag === "--dry-run") raw.dryRun = true;
+      else raw[flag.slice(2)] = true;
+    } else {
       if (index + 1 >= argv.length || argv[index + 1].startsWith("--")) throw new CliError(`${flag} requires a value`);
       raw[flag.slice(2)] = argv[++index];
     }
@@ -640,6 +660,45 @@ export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
     if (!out) throw new CliError("claude requires --out to preserve and validate the result JSON");
     if (!err) throw new CliError("claude requires --err to preserve vendor stderr");
   }
+  // Host isolation is two axes, and each has an explicit form in both directions
+  // so a caller can override the mode-derived default either way. Only codex and
+  // claude expose per-call switches for them — accepting the flags for agy or
+  // grok would promise something the argv does not deliver.
+  const hostHooks = hostIsolationSwitch(raw, "host-hooks", "no-host-hooks");
+  const hostDocs = hostIsolationSwitch(raw, "host-docs", "no-host-docs");
+  const hostMcp = hostIsolationSwitch(raw, "host-mcp", "no-host-mcp");
+  const hostSkills = raw["host-skills"] === true ? "enabled" : undefined;
+  // "open"/"closed" rather than allowed/blocked: this axis says whether the
+  // reviewer was handed a shell at all, not whether host config reached it.
+  const hostShellSwitch = hostIsolationSwitch(raw, "host-shell", "no-host-shell");
+  const hostShell = hostShellSwitch === undefined ? undefined : (hostShellSwitch === "allowed" ? "open" : "closed");
+  if (hostShell !== undefined && vendor !== "claude") {
+    throw new CliError("--host-shell/--no-host-shell is supported only for claude");
+  }
+  // --mode default always ships the full built-in tool set, so a shell request
+  // there could not be honoured. Rejecting it beats accepting a flag and then
+  // recording a state the argv contradicts.
+  if (hostShell !== undefined && mode !== "plan" && mode !== "review") {
+    throw new CliError("--host-shell/--no-host-shell requires --mode plan or --mode review");
+  }
+  if ((hostHooks !== undefined || hostDocs !== undefined) && vendor !== "codex" && vendor !== "claude") {
+    throw new CliError("--host-hooks/--no-host-hooks and --host-docs/--no-host-docs are supported only for codex or claude");
+  }
+  // codex has no per-call way to keep its MCP servers out of a child, so taking
+  // the flag there would record a state the argv never produced.
+  if (hostMcp !== undefined && vendor !== "claude") {
+    throw new CliError("--host-mcp/--no-host-mcp is supported only for claude");
+  }
+  // Without --host-skills the claude child keeps --safe-mode, which blocks hooks,
+  // CLAUDE.md and MCP by itself and cannot be told to let one of them through.
+  // The blocking direction still matches what happens, so only the re-allowing
+  // form is refused.
+  if (vendor === "claude" && hostSkills === undefined && (hostHooks === "allowed" || hostDocs === "allowed" || hostMcp === "allowed")) {
+    throw new CliError("--host-hooks/--host-docs/--host-mcp re-allow host configuration only with --host-skills; without it the claude child keeps a switch that blocks all three");
+  }
+  if (hostSkills !== undefined && vendor !== "claude") {
+    throw new CliError("--host-skills is supported only for claude");
+  }
   // Default is the dispatcher cost backstop, NOT a caller work limit. A short fixed timeout
   // kills legitimate heavy reasoning (codex high/xhigh reading several files) and
   // the child is SIGTERM'd before its final message reaches stdout — the recurring
@@ -657,7 +716,19 @@ export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
   return {
     vendor, operation: raw.operation, mode, brief, cwd, modelRequested, model, effortRequested, effort, inputs, timeout, out, err,
     expectOutput, ...(expectOutputs.length ? { expectOutputs } : {}), expectedTotal, lensId, dryRun: raw.dryRun ?? false,
+    hostHooks, hostDocs, hostMcp, hostSkills, hostShell,
   };
+}
+
+// Returns undefined when neither form was given, so the isolation plan can
+// tell "caller said nothing" from "caller asked for the default value".
+function hostIsolationSwitch(raw, allowFlag, blockFlag) {
+  const allow = raw[allowFlag] === true;
+  const block = raw[blockFlag] === true;
+  if (allow && block) throw new CliError(`--${allowFlag} and --${blockFlag} cannot both be given`);
+  if (allow) return "allowed";
+  if (block) return "blocked";
+  return undefined;
 }
 
 function isGitRepository(cwd) {
@@ -1034,6 +1105,7 @@ function writeReceipt(stderr, options, exit, startedAt, invoked, outputCheckStat
       outputCheckStatus,
       outputChecks: options.outputChecks ?? null,
       expectedTotal: options.expectedTotal ?? null,
+      hostIsolation: options.hostIsolation,
       attempts: invoked ? 1 : 0,
       attemptWaitsMs: invoked ? [0] : [],
       successfulAttempt: invoked && exit === 0 ? 1 : null,
@@ -1090,6 +1162,7 @@ function writePortableReceipt(stderr, options, exit, startedAt, invoked, outputC
       evidence,
       options.outputChecks ?? null,
       options.expectedTotal ?? null,
+      options.hostIsolation,
     );
     appendPortableReceipt(target, record);
   } catch {
@@ -1109,11 +1182,18 @@ function warnPortableReceiptFailure(stderr) {
 }
 
 function writeDispatchReceipts(stderr, options, exit, startedAt, invoked, outputCheckStatus, env, vendorObservation, writers, internalReceipt, sinks) {
+  // Spawned rows record the vector actually handed to the child. A valid dry-run
+  // records its plan. Every other pre-spawn failure records nothing, even when
+  // argv assembly itself had succeeded.
+  const hostIsolation = options.hostIsolation && (invoked || options.dryRun)
+    ? options.hostIsolation
+    : { argv: [], env: [] };
+  const resolved = { ...options, hostIsolation };
   try {
-    (writers?.raw ?? writeReceipt)(stderr, options, exit, startedAt, invoked, outputCheckStatus, env, vendorObservation, sinks);
+    (writers?.raw ?? writeReceipt)(stderr, resolved, exit, startedAt, invoked, outputCheckStatus, env, vendorObservation, sinks);
   } catch { /* An unexpected raw sink failure cannot affect dispatch or its sibling. */ }
   try {
-    (writers?.portable ?? writePortableReceipt)(stderr, options, exit, startedAt, invoked, outputCheckStatus, env, vendorObservation, sinks);
+    (writers?.portable ?? writePortableReceipt)(stderr, resolved, exit, startedAt, invoked, outputCheckStatus, env, vendorObservation, sinks);
   } catch {
     warnPortableReceiptFailure(stderr);
   }
@@ -1124,7 +1204,7 @@ function writeDispatchReceipts(stderr, options, exit, startedAt, invoked, output
         SECOND_OPINION_RECEIPT: internalReceipt,
         SECOND_OPINION_PORTABLE_RECEIPT: "",
       };
-      (writers?.raw ?? writeReceipt)({ write: () => true }, options, exit, startedAt, invoked, outputCheckStatus, internalEnv, vendorObservation, {
+      (writers?.raw ?? writeReceipt)({ write: () => true }, resolved, exit, startedAt, invoked, outputCheckStatus, internalEnv, vendorObservation, {
         receipt: internalReceipt,
         portableReceipt: undefined,
       });
@@ -1209,6 +1289,10 @@ export function writeApiDispatchReceipts(stderr, options, exit, startedAt, env =
         outputCheckStatus: "not-requested",
         outputChecks: null,
         expectedTotal: null,
+        // The API transport spawns no CLI child, so nothing was handed over.
+        // This policy query deliberately returns an empty CLI isolation record for a
+        // call with no vendor; CLI invocations use buildVendorInvocation instead.
+        hostIsolation: hostIsolationRecord({}),
         attempts: actualAttempts,
         attemptWaitsMs,
         successfulAttempt: options.successfulAttempt ?? null,
@@ -1381,8 +1465,8 @@ export async function run(options, deps = { spawn }) {
     return 2;
   }
   const isGitRepo = options.isGitRepo ?? isGitRepository(options.cwd);
-  let argv;
-  try { argv = buildVendorArgv({ ...options, isGitRepo }); }
+  let invocation;
+  try { invocation = buildVendorInvocation({ ...options, isGitRepo }); }
   catch (error) {
     const code = error instanceof PolicyError ? 2 : 3;
     const detail = error.message ?? "vendor mode resolution failed";
@@ -1390,8 +1474,10 @@ export async function run(options, deps = { spawn }) {
     writeDispatchReceipts(parentStderr, options, code, startedAt, false, outputCheckStatus, env, undefined, receiptWriters, internalReceipt, resolvedReceiptSinks);
     return code;
   }
+  const { argv, hostIsolation } = invocation;
   options = {
     ...options,
+    hostIsolation,
     receiptArgv: redactArgv(argv, env),
     receiptExecutable: executableName(options.vendor),
     receiptModelRequested: redactNullable(options.modelRequested ?? options.model, env),
@@ -1472,6 +1558,7 @@ export async function run(options, deps = { spawn }) {
       const isolateGrok = grokNeedsHarnessIsolation(options);
       if (rawReceiptConfigured || hasEnvKey(env, "SECOND_OPINION_PORTABLE_RECEIPT") || options.vendor === "claude" || isolateGrok) {
         spawnOptions.env = isolateGrok ? applyGrokHarnessIsolationEnv(env) : { ...env };
+        spawnOptions.env = applyVendorHostIsolationEnv(spawnOptions.env, options);
         for (const key of Object.keys(spawnOptions.env)) {
           const upper = key.toUpperCase();
           if (upper === "SECOND_OPINION_PORTABLE_RECEIPT"

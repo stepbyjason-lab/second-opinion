@@ -67,8 +67,8 @@ Codex CLI에는 이 계약이 요구하는 non-sandbox native plan mapping이 �
 `--mode plan`은 호출 전 `mode_unsupported`로 실패하며 default로 폴백하지 않는다.
 
 ⚠ **Codex의 `--mode review`는 권한을 제한하지 않는다 — Codex CLI의 한계다.**
-Claude는 `--tools` allowlist로, AGY는 native plan + 읽기 전용 입력 프로필로 쓰기 도구를
-실제로 없앤다. Codex에는 그 층이 없다 — 권한을 좁히는 수단이 샌드박스(`-s read-only`)
+Claude는 `--tools` allowlist에서 내장 Write·Edit를 빼되 셸은 기본으로 남기고, AGY는 native
+plan + 읽기 전용 입력 프로필을 사용한다. Codex에는 그 층이 없다 — 권한을 좁히는 수단이 샌드박스(`-s read-only`)
 뿐인데 이 프로젝트는 샌드박스를 쓰지 않는다(맥락 전달이 어렵고 결과 품질이 떨어진다).
 `codex exec review --help`가 내놓는 옵션도 `--uncommitted`·`--base`처럼 **무엇을 볼지**를
 고르는 것이지 권한이 아니다. 실측: `--mode review`로 부른 호출의 영수증에
@@ -77,6 +77,31 @@ Claude는 `--tools` allowlist로, AGY는 native plan + 읽기 전용 입력 프�
 → **Codex 리뷰에서 파일을 지키는 것은 brief의 금지 지시뿐이다.** `--mode review`를
 읽기 전용 보증으로 계산하지 말고, 쓰기 금지가 중요하면 brief에 명시하고 호출 후
 `git status`로 확인한다.
+
+### 호스트 설정 격리 — 훅과 지시 문서
+
+호출자의 설정은 **두 경로**로 codex 자식에게 간다. 하나는 라이프사이클 훅이고, 다른 하나는
+codex CLI가 스스로 읽어 프롬프트에 붙이는 `AGENTS.md`다. `--mode review`는 둘 다 기본 차단이며
+argv에 `--disable hooks`와 `-c project_doc_max_bytes=0`이 붙는다.
+
+- **훅** — `hooks`는 codex의 정식 feature 이름이고 `--disable hooks`는 `-c features.hooks=false`와
+  같다. 실측(codex-cli 0.153.4): `codex features list --disable hooks`에서 `hooks`가 `false`로
+  뒤집히는 동안 `plugins`와 `skill_search`는 `true`로 남는다. **플러그인·스킬·MCP 도구를 끄는
+  스위치가 아니다** — 다만 그 플러그인이 훅으로만 제공하던 부가 동작은 함께 멈춘다.
+- **문서** — `project_doc_max_bytes`는 프로젝트 `AGENTS.md`의 바이트 상한이라 0이면 안 붙는다.
+  ⚠ **`CODEX_HOME`의 `AGENTS.md`는 이 키로 걷히지 않는다.** 다른 경로로 실려 그대로 남는다.
+  실측(2026-09-06): 어떤 레포에서 `codex debug prompt-input`이 기본 57,489 B였고
+  `-c project_doc_max_bytes=0`으로 54,967 B가 됐는데(프로젝트 `AGENTS.md` 2,429 B가 빠졌다),
+  전역 문서의 지시 블록은 그대로 남았다. `CODEX_HOME` 자체를 비운 경우에만 13,461 B로 떨어졌다.
+
+`--host-hooks`/`--host-docs`로 한 축을 다시 열고, `--no-host-hooks`/`--no-host-docs`로
+`--mode default`에서도 막는다. 영수증의 `hostIsolation`은 **실행 행에는 넘긴 플래그, 유효한
+dry-run 행에는 계획, 그 밖의 spawn 전 실패 행에는 빈 배열**을 남긴다. 리뷰를 받는 쪽은 호출자
+진술이 아니라 그 목록을 보고 판정한다. 그것이 실제로 무엇을 막았는지까지 영수증이 말하지는
+않는다 — 집행은 자식 CLI의 것이다.
+
+**`codex debug prompt-input`은 모델 호출 없이** 「모델이 실제로 보는 입력」을 JSON으로 낸다 —
+문서 오염을 공짜로 계측하는 자리다. 다만 훅은 런타임에 붙으므로 **이 명령으로는 안 잡힌다.**
 
 - 비-git cwd는 디스패처가 `--skip-git-repo-check`를 자동 판정·삽입한다
 - 출력 머리에 taskkill 한글 잡음(프로세스 정리 메시지)이 섞일 수 있음 — 본문만 취하면 됨
