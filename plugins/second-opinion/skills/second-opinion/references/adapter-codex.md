@@ -95,7 +95,11 @@ argv에 `--disable hooks`와 `-c project_doc_max_bytes=0`이 붙는다.
   전역 문서의 지시 블록은 그대로 남았다. `CODEX_HOME` 자체를 비운 경우에만 13,461 B로 떨어졌다.
 
 `--host-hooks`/`--host-docs`로 한 축을 다시 열고, `--no-host-hooks`/`--no-host-docs`로
-`--mode default`에서도 막는다. 영수증의 `hostIsolation`은 **실행 행에는 넘긴 플래그, 유효한
+`--mode`를 안 준 호출에서도 막는다. ⚠ **`--mode default`는 인자가 아니다** — 「default」는
+`--mode`를 아예 생략하는 것이고, 값으로 주면 `exit 2`로 거절된다. 산문 산출이 필요한 codex
+호출(리뷰 워크플로 형식에 눌리면 안 되는 경우)이 정확히 이 형태다 —
+`--vendor codex --operation text --no-host-hooks --no-host-docs`, `--mode` 없이.
+영수증의 `hostIsolation`은 **실행 행에는 넘긴 플래그, 유효한
 dry-run 행에는 계획, 그 밖의 spawn 전 실패 행에는 빈 배열**을 남긴다. 리뷰를 받는 쪽은 호출자
 진술이 아니라 그 목록을 보고 판정한다. 그것이 실제로 무엇을 막았는지까지 영수증이 말하지는
 않는다 — 집행은 자식 CLI의 것이다.

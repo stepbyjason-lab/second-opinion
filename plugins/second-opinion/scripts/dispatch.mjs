@@ -157,14 +157,14 @@ export function usageText() {
     "  Host isolation (codex, claude): in --mode plan/review the caller's lifecycle hooks and the instruction",
     "  files the vendor CLI reads on its own (AGENTS.md, CLAUDE.md) are blocked by default, so a reviewer sees",
     "  the brief instead of the caller's own progress state. --host-hooks / --host-docs re-allow one axis and",
-    "  --no-host-hooks / --no-host-docs block it in --mode default too. A codex home AGENTS.md is NOT covered.",
+    "  --no-host-hooks / --no-host-docs block it in a call with no --mode too. A codex home AGENTS.md is NOT covered.",
     "  Skills and plugins stay off by default. --host-skills (claude only) enables them and drops the switch that was",
     "  closing configuration wholesale, so hooks/docs then block by default in every mode. A claude reviewer",
     "  also gets a shell so it can read git history. No command rule list is shipped with it: allow rules were",
     "  measured not to confine the tool at all, so the brief's own prohibitions are the guard and a caller who",
     "  needs the shell gone uses --no-host-shell, which removes it rather than narrowing it. A claude child also",
     "  gets none of the caller's MCP servers; --host-mcp (claude only, and only alongside --host-skills) puts them",
-    "  back and --no-host-mcp blocks them in --mode default too. codex has no per-call equivalent.",
+    "  back and --no-host-mcp blocks them in a call with no --mode too. codex has no per-call equivalent.",
     "  Both receipts record hostIsolation {argv, env}. On an invoked row it is the exact invocation",
     "  vector handed to the child; a valid dry-run records the vector it would hand over; every other",
     "  pre-spawn failure records empty arrays. AGY/Grok permission and tool controls, and Grok's harness",
@@ -592,7 +592,10 @@ export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
   // same drift that made the prose usage wrong applies to error strings.
   if (!OPERATIONS.includes(raw.operation)) throw new CliError(`--operation must be one of: ${OPERATIONS.join(", ")}`);
   if (raw.mode !== undefined && !DISPATCH_MODES.filter((mode) => mode !== "default").includes(raw.mode)) {
-    throw new CliError(`--mode must be one of: ${DISPATCH_MODES.filter((mode) => mode !== "default").join(", ")}`);
+    // "default" is not a value this flag takes — it is what a call without the
+    // flag already is. Callers have read the help's "in --mode default too" as
+    // an invocation and lost a dispatch to it, so the refusal says the remedy.
+    throw new CliError(`--mode must be one of: ${DISPATCH_MODES.filter((mode) => mode !== "default").join(", ")} (omit --mode for the full-access default call)`);
   }
   const mode = raw.mode ?? "default";
   try { effectiveVendorMode({ vendor, operation: raw.operation, mode }); }

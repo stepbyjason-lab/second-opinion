@@ -189,7 +189,7 @@ CLI launches are not worth that diagnostic cost.
   the CLI reads by itself (`AGENTS.md`, `CLAUDE.md`) — and in `--mode plan|review`
   both are blocked by default for codex and claude, so a reviewer sees the brief
   instead of the caller's progress state. `--host-hooks`/`--host-docs` re-allow
-  one path, `--no-host-hooks`/`--no-host-docs` block it in `--mode default` too,
+  one path, `--no-host-hooks`/`--no-host-docs` block it in a call with no `--mode` too,
   and every call records `hostIsolation` in both receipts — an invoked row has
   the flags and environment variables actually handed the child, a valid dry-run
   has its planned vector, and every other pre-spawn failure has empty arrays.

@@ -311,7 +311,8 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor claude --operation text
 - 호출자 설정은 **두 경로**로 자식에게 간다 — 훅이 이벤트마다 밀어넣는 경로와, CLI가 스스로
   읽어 붙이는 지시 문서(`AGENTS.md`·`CLAUDE.md`) 경로다. codex·claude는 `--mode plan|review`
   에서 둘 다 기본 차단이라 리뷰어가 brief를 본다. `--host-hooks`/`--host-docs`가 한 축을 다시
-  열고, `--no-host-hooks`/`--no-host-docs`는 `--mode default`에서도 막는다. **codex 홈의
+  열고, `--no-host-hooks`/`--no-host-docs`는 `--mode`를 안 준 호출에서도 막는다.
+  ⚠ **`--mode default`는 인자가 아니다** — 「default」는 `--mode`를 아예 안 주는 것이다. **codex 홈의
   `AGENTS.md`는 문서 스위치로 걷히지 않는다** — 영수증의 `hostIsolation`은 **실행 행에는 넘긴
   플래그·환경변수, 유효한 dry-run 행에는 계획, 그 밖의 spawn 전 실패 행에는 빈 배열**을 적으므로
   호출자 진술 대신 그 목록으로 판정한다. 자식이 그것을 어떻게 집행했는지까지는 적지 않는다.

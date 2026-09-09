@@ -153,7 +153,7 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
   프롬프트에 붙이는 지시 문서(`AGENTS.md`·`CLAUDE.md`) 경로다. codex·claude는
   `--mode plan|review`에서 **둘 다 기본 차단**이라 리뷰어가 호출자의 진행 상태 대신 brief를
   본다. `--host-hooks`/`--host-docs`로 한 축만 다시 열고 `--no-host-hooks`/`--no-host-docs`로
-  `--mode default`에서도 막으며, 모든 호출이 `hostIsolation`을 두 영수증에 남긴다 — **실행 행은
+  `--mode`를 안 준 호출에서도 막으며, 모든 호출이 `hostIsolation`을 두 영수증에 남긴다 — **실행 행은
   자식에게 실제로 넘긴 플래그·환경변수**, 유효한 dry-run 행은 **넘길 계획**, 그 밖의 spawn 전
   실패 행은 **빈 배열**로 적는다. 자식이 그것을 어떻게 집행했는지는 적지 않는다. **codex
   홈에 놓인 `AGENTS.md`는 문서 스위치로 걷히지 않는다.** `--host-skills`(claude 전용)는
