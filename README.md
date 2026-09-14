@@ -2,7 +2,7 @@
 
 **English** | [한국어](./README.ko.md)
 
-![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.16-informational)
+![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.17-informational)
 
 **Use other AI vendors from inside Claude Code — in plain language.**
 Second opinions, task offloading, and vendor capabilities like image generation.
@@ -132,6 +132,12 @@ CLI launches are not worth that diagnostic cost.
   calls also carry measured token usage read from Codex's own session log
   (input, cached input, output, reasoning, total, context window, quota used).
   Optional `--expect-output <ASCII token, max 1024 chars>` may be repeated up to twelve times.
+  `--expect-output-file <path>` supplies the same tokens from a file instead — one per UTF-8
+  line (optional BOM, LF or CRLF, line edges trimmed, blank lines ignored, at least one token
+  required), so a generator's ordered list is handed over as a file rather than retyped into
+  repeated flags. The two forms cannot be combined: tokens come from one source per call, so a
+  written order is never interleaved with a typed one. A rejected token names the flag you
+  passed and the failing token's position and value.
   Every token is checked literally in stdout; any missing token returns exit 4,
   names every missing token on stderr, and preserves the raw output file.
   `outputCheckStatus` remains the aggregate compatibility value. Both receipts
@@ -139,8 +145,10 @@ CLI launches are not worth that diagnostic cost.
   tokens, or `null` when no output check was requested.
   Because those records retain literal tokens, never place either receipt sink under
   a vendor-readable `--cwd` or reuse it as a later vendor input: a replay could falsely satisfy a check.
-  Optional `--expect-total <n>` declares how many sections existed (1..1000; it requires at least one
-  `--expect-output`). It is recorded as `expectedTotal` and never used in judgement, so exit codes are
+  Optional `--expect-total <n>` declares how many sections existed (1..1000; it requires expected
+  output tokens, from either form, and is never derived from the file's line count — deriving it
+  would make full and partial registration indistinguishable, which is the one thing it exists to
+  tell apart). It is recorded as `expectedTotal` and never used in judgement, so exit codes are
   unchanged. Read it three ways: `null` means unreported, so partial registration cannot be ruled out;
   equal to `outputChecks.length` is a full registration — every section was registered; greater means the caller registered
   only some of them. Without it, `outputCheckStatus: matched` cannot tell those apart.

@@ -604,9 +604,18 @@ test("generation help and documentation teach the repaired safety contracts", ()
 
 test("Madi review fast path stays present in help and user documentation", () => {
   const help = usageText();
-  assert.match(help, /MADI REVIEW EXAMPLE/);
-  assert.match(help, /node dispatch\.mjs --vendor codex --operation text --mode review --brief <review-brief\.txt>/);
-  assert.match(help, /--cwd <review-target> --out <review\.out> --err <review\.err>/);
+  // The example is the shape both madi gates measured and kept, not a minimal invocation.
+  // Surveyed across every recorded invoked receipt in the madi repository: codex gate calls
+  // pin --model/--effort, pass no --mode (its native review workflow replaces the brief's
+  // report format), block host config explicitly instead, and register completion tokens —
+  // six or seven for an author gate, one to three for a review gate. An example without the
+  // tokens teaches a call whose early stop looks like a clean finish.
+  assert.match(help, /MADI GATE EXAMPLE/);
+  assert.match(help, /node dispatch\.mjs --vendor codex --model gpt-5\.6-terra --effort high --brief <gate-brief\.txt>/);
+  assert.match(help, /--cwd <target> --out <gate\.out> --err <gate\.err> --no-host-hooks --no-host-docs/);
+  assert.match(help, /--expect-output-file <tokens\.txt> --expect-total 7/);
+  assert.match(help, /No --mode on codex: its native review workflow replaces the brief's report format/);
+  assert.match(help, /A Claude reviewer takes --mode review/);
   assert.match(help, /Reviewers must not edit/);
   assert.match(help, /Grok review baseline: add --model grok-4\.6 --effort medium/);
   assert.match(help, /Linked-worktree Grok\/AGY review: their explicit modes have no git shell/);
@@ -615,7 +624,12 @@ test("Madi review fast path stays present in help and user documentation", () =>
   const grokAdapter = readFileSync(new URL("../skills/second-opinion/references/adapter-grok.md", import.meta.url), "utf8");
   const readme = readFileSync(new URL("../../../README.md", import.meta.url), "utf8");
   const koreanReadme = readFileSync(new URL("../../../README.ko.md", import.meta.url), "utf8");
-  assert.match(skill, /Madi 리뷰 바로 보내기/);
+  // SKILL.md carries the same one-shape-for-both-gates section as the help, including the
+  // token counts that separate the two and the codex mode rule.
+  assert.match(skill, /Madi 게이트 바로 보내기 — 저자게이트·리뷰게이트/);
+  assert.match(skill, /여섯이나 일곱/, "SKILL.md states the author gate's token count");
+  assert.match(skill, /하나에서 셋/, "SKILL.md states the review gate's token count");
+  assert.match(skill, /codex에 `--mode review`를 붙이지 않는 이유/);
   assert.match(skill, /독립 2차 패스/);
   assert.match(skill, /--model grok-4\.6 --effort medium/);
   assert.match(skill, /Linked Git worktree에서 현재 diff를 리뷰할 때/);
@@ -641,15 +655,15 @@ test("skill resolves the catalog path directly before declaring it missing", () 
   assert.match(skill, /검색 결과가 비었다는 이유만으로 설치 누락이나 카탈로그 오류라고 단정하지 않는다/);
 });
 
-test("0.9.16 public help and documentation describe cache-first ranked routing", () => {
+test("0.9.17 public help and documentation describe cache-first ranked routing", () => {
   const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
   const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
   const publicReadmeUrls = [new URL("../../../README.md", import.meta.url), new URL("../../../README.ko.md", import.meta.url)];
   const publicReadmes = publicReadmeUrls.filter((url) => existsSync(url)).map((url) => readFileSync(url, "utf8"));
-  assert.equal(plugin.version, "0.9.16");
+  assert.equal(plugin.version, "0.9.17");
   assert.ok(publicReadmes.length === 0 || publicReadmes.length === 2, "public snapshot must carry both README files");
   for (const text of [skill, ...publicReadmes]) {
-    assert.match(text, /0\.9\.16/);
+    assert.match(text, /0\.9\.17/);
     assert.match(text, /model-catalog-v1\.json/);
     assert.match(text, /opus 4\.6/);
   }
@@ -2442,6 +2456,195 @@ test("--expect-output matches across chunks and fails closed without changing ra
   assert.deepEqual(receiptLines(planWorkflowReceipt).map((row) => [row.requestedMode, row.effectiveMode, row.exit, row.outputCheckStatus]), [["plan", "plan", 4, "missing"]]);
 });
 
+const H17_TOKENS = ["TOKEN_ONE", "TOKEN_TWO", "TOKEN_THREE", "TOKEN_FOUR", "TOKEN_FIVE", "TOKEN_SIX"];
+function matchedTokenSpawn(tokens = H17_TOKENS) {
+  return () => fakeChild((child) => {
+    child.stdin.on("end", () => {
+      child.stdout.end(tokens.join(" | "));
+      queueMicrotask(() => child.emit("close", 0, null));
+    });
+    child.stdin.resume();
+  });
+}
+async function expectedFileReceipt(expectFile, stem, extraArgs = []) {
+  const receipt = join(root, `${stem}.jsonl`);
+  const options = parseCli([
+    "--vendor", "codex", "--brief", brief, "--out", join(root, `${stem}.out`),
+    "--expect-output-file", expectFile, ...extraArgs,
+  ], root);
+  assert.equal(await run(options, {
+    spawn: matchedTokenSpawn(), stderr: memoryWriter().stream,
+    env: { SECOND_OPINION_RECEIPT: receipt },
+  }), 0);
+  return receiptLines(receipt)[0];
+}
+
+test("omitting --operation produces the same text argv as an explicit text operation", async () => {
+  const invoke = async (operationArgs) => {
+    const stdout = memoryWriter(), stderr = memoryWriter();
+    assert.equal(await executeCli([
+      "--vendor", "codex", ...operationArgs, "--brief", brief, "--dry-run",
+    ], { cwd: root, stdout: stdout.stream, stderr: stderr.stream, env: {} }), 0, stderr.value());
+    return JSON.parse(stdout.value());
+  };
+  assert.deepEqual(await invoke([]), await invoke(["--operation", "text"]));
+});
+
+test("an omitted operation is recorded as text in the receipt", async () => {
+  const receipt = join(root, "omitted-operation.jsonl");
+  assert.equal(await executeCli([
+    "--vendor", "codex", "--brief", brief, "--dry-run",
+  ], { cwd: root, stdout: memoryWriter().stream, stderr: memoryWriter().stream, env: { SECOND_OPINION_RECEIPT: receipt } }), 0);
+  assert.equal(receiptLines(receipt)[0].operation, "text");
+});
+
+test("an omitted operation with --input is rejected as a text call", () => {
+  assert.throws(() => parseCli([
+    "--vendor", "codex", "--brief", brief, "--input", input1,
+  ], root), /--input is supported only for image-analyze/);
+});
+
+test("--expect-output-file preserves six LF-delimited tokens in receipt order", async () => {
+  const expectFile = join(root, "expect-lf.txt");
+  writeFileSync(expectFile, `  ${H17_TOKENS[0]}  \n\n${H17_TOKENS[1]}\n \t \n${H17_TOKENS.slice(2).join("\n")}\n`, "utf8");
+  const row = await expectedFileReceipt(expectFile, "expect-lf");
+  assert.deepEqual(row.outputChecks, H17_TOKENS.map((token) => ({ token, status: "matched" })));
+});
+
+test("--expect-output-file accepts UTF-8 BOM, CRLF, and a trailing newline", async () => {
+  const expectFile = join(root, "expect-windows.txt");
+  writeFileSync(expectFile, Buffer.concat([
+    Buffer.from([0xef, 0xbb, 0xbf]),
+    Buffer.from(`${H17_TOKENS.join("\r\n")}\r\n`, "utf8"),
+  ]));
+  const row = await expectedFileReceipt(expectFile, "expect-windows");
+  assert.deepEqual(row.outputChecks, H17_TOKENS.map((token) => ({ token, status: "matched" })));
+});
+
+test("--expect-output-file applies whitespace, length, and count validation", () => {
+  const fixtures = [
+    // Each rejection names the flag the caller used and the failing token, so a
+    // twelve-line file does not have to be bisected by hand.
+    ["expect-space.txt", "GOOD_ONE\nBAD TOKEN\n", /^--expect-output-file token 2 "BAD TOKEN" must be a 1 to 1024 character ASCII token without whitespace$/],
+    ["expect-non-ascii.txt", "토큰\n", /^--expect-output-file token 1 "토큰" must be .* ASCII token without whitespace$/],
+    ["expect-long.txt", `${"x".repeat(1025)}\n`, /^--expect-output-file token 1 "x{40}…" must be a 1 to 1024 character/],
+    ["expect-many.txt", `${Array.from({ length: 13 }, (_value, index) => `TOKEN_${index}`).join("\n")}\n`, /^--expect-output-file may contain at most 12 tokens \(found 13\)$/],
+    ["expect-invalid-utf8.txt", Buffer.from([0xc3, 0x28]), /^--expect-output-file must be a readable UTF-8 file: /],
+    ["expect-missing-dir", null, /^--expect-output-file must be an existing regular file: /],
+  ];
+  for (const [name, contents, message] of fixtures) {
+    const expectFile = join(root, name);
+    if (contents === null) mkdirSync(expectFile, { recursive: true });
+    else writeFileSync(expectFile, contents, "utf8");
+    // Anchored against error.message: assert.throws with a bare RegExp tests
+    // String(error), which carries the "CliError: " name prefix.
+    assert.throws(() => parseCli([
+      "--vendor", "codex", "--brief", brief, "--out", join(root, `${name}.out`), "--expect-output-file", expectFile,
+    ], root), (error) => message.test(error.message), name);
+  }
+});
+
+test("--expect-output-file requires --out", () => {
+  const expectFile = join(root, "expect-needs-out.txt");
+  writeFileSync(expectFile, "TOKEN_ONE\n", "utf8");
+  assert.throws(() => parseCli([
+    "--vendor", "codex", "--brief", brief, "--expect-output-file", expectFile,
+  ], root), (error) => error.message === "--expect-output-file requires --out");
+});
+
+test("empty and whitespace-only --expect-output-file inputs name the rejected file", () => {
+  for (const [name, contents] of [["expect-empty.txt", ""], ["expect-blank.txt", " \r\n\t\r\n"]]) {
+    const expectFile = join(root, name);
+    writeFileSync(expectFile, contents, "utf8");
+    assert.throws(() => parseCli([
+      "--vendor", "codex", "--brief", brief, "--out", join(root, `${name}.out`), "--expect-output-file", expectFile,
+    ], root), (error) => /contains no tokens/.test(error.message) && error.message.includes(expectFile), name);
+  }
+});
+
+test("--expect-output and --expect-output-file cannot be combined", () => {
+  const expectFile = join(root, "expect-exclusive.txt");
+  writeFileSync(expectFile, "TOKEN_ONE\n", "utf8");
+  assert.throws(() => parseCli([
+    "--vendor", "codex", "--brief", brief, "--out", join(root, "expect-exclusive.out"),
+    "--expect-output", "TOKEN_TWO", "--expect-output-file", expectFile,
+  ], root), /cannot both be given/);
+});
+
+test("--expect-output-file gets the same alias protection as --brief and --input", async () => {
+  const expectFile = join(root, "expect-alias.txt");
+  const original = `${H17_TOKENS.join("\n")}\n`;
+  for (const flag of ["--out", "--err"]) {
+    writeFileSync(expectFile, original, "utf8");
+    const stderr = memoryWriter();
+    const outputArgs = flag === "--out" ? ["--out", expectFile] : ["--out", join(root, "expect-alias.out"), "--err", expectFile];
+    assert.equal(await executeCli([
+      "--vendor", "codex", "--brief", brief, "--expect-output-file", expectFile, ...outputArgs,
+    ], { cwd: root, stderr: stderr.stream, env: {} }), 2, flag);
+    assert.match(stderr.value(), /must not equal --expect-output-file/);
+    assert.equal(readFileSync(expectFile, "utf8"), original, flag);
+  }
+  for (const [envName, message] of [
+    ["SECOND_OPINION_RECEIPT", /raw receipt sink/],
+    ["SECOND_OPINION_PORTABLE_RECEIPT", /must not refer to an input or output file/],
+  ]) {
+    writeFileSync(expectFile, original, "utf8");
+    const stderr = memoryWriter();
+    assert.equal(await executeCli([
+      "--vendor", "codex", "--brief", brief, "--expect-output-file", expectFile, "--out", join(root, "expect-alias.out"), "--dry-run",
+    ], { cwd: root, stderr: stderr.stream, env: { [envName]: expectFile } }), 2, envName);
+    assert.match(stderr.value(), message);
+    assert.equal(readFileSync(expectFile, "utf8"), original, envName);
+  }
+  // run() is its own entry point, so a caller that bypasses parseCli must be refused there as well.
+  writeFileSync(expectFile, original, "utf8");
+  const stderr = memoryWriter();
+  let spawned = false;
+  assert.equal(await run({
+    vendor: "codex", operation: "text", brief, cwd: root, out: expectFile, timeout: 2,
+    expectOutputFile: expectFile, expectOutputs: H17_TOKENS, expectOutput: H17_TOKENS[0],
+  }, { spawn: () => { spawned = true; throw new Error("must not spawn"); }, stderr: stderr.stream, env: {} }), 2);
+  assert.equal(spawned, false);
+  assert.match(stderr.value(), /must not equal --expect-output-file/);
+  assert.equal(readFileSync(expectFile, "utf8"), original);
+});
+
+test("--expect-total remains caller-declared with --expect-output-file", async () => {
+  const expectFile = join(root, "expect-total-file.txt");
+  writeFileSync(expectFile, `${H17_TOKENS.join("\n")}\n`, "utf8");
+  const row = await expectedFileReceipt(expectFile, "expect-total-file", ["--expect-total", "8"]);
+  assert.equal(row.expectedTotal, 8);
+  assert.equal(row.outputChecks.length, 6);
+});
+
+test("existing explicit-operation dry-run output and receipt retain the pinned baseline", async () => {
+  const receipt = join(root, "h17-existing-baseline.jsonl");
+  const stdout = memoryWriter(), stderr = memoryWriter();
+  assert.equal(await executeCli([
+    "--vendor", "codex", "--operation", "text", "--brief", brief, "--dry-run",
+  ], { cwd: root, stdout: stdout.stream, stderr: stderr.stream, env: { SECOND_OPINION_RECEIPT: receipt } }), 0, stderr.value());
+  assert.deepEqual(JSON.parse(stdout.value()), {
+    vendor: "codex", operation: "text", requestedMode: "default", effectiveMode: "default", inputProfile: "none",
+    modelRequested: null, model: null, executable: "codex", argv: ["exec", "--skip-git-repo-check", "-"],
+    stdinMode: "brief-file", cwd: root,
+  });
+  const row = receiptLines(receipt)[0];
+  delete row.ts; delete row.durationSec; delete row.pid;
+  assert.deepEqual(row, {
+    schemaVersion: 1, transport: "cli", vendor: "codex", provider: null, operation: "text",
+    requestedMode: "default", effectiveMode: "default", inputProfile: "none", modelRequested: null, model: null,
+    effort: null, modelReported: "none", effortRequested: null, truncatedSuspected: null, promptSource: null,
+    promptBytes: 0, finish_reason: null, finishReason: null, incomplete_details: null, lensId: null, exit: 0,
+    invoked: false, cwd: root, outPath: null, errPath: null, argv: ["exec", "--skip-git-repo-check", "-"],
+    executable: "codex", vendorUsage: null, vendorUsageStatus: "not-invoked", outputCheckStatus: "not-requested",
+    outputChecks: null, expectedTotal: null, hostIsolation: { argv: [], env: [] }, attempts: 0, attemptWaitsMs: [],
+    successfulAttempt: null, completionTokenLimit: { requested: null, status: "not-applicable-cli" },
+    failureClass: null, failureActor: null, remedy: null,
+  });
+  assert.match(usageText(), /\[--operation <op>\]/);
+  assert.match(usageText(), /--expect-output-file/);
+});
+
 test("repeated --expect-output preserves order, requires every token, and rejects a thirteenth", async () => {
   const ordered = ["FIRST_TOKEN", "SECOND_TOKEN", "THIRD_TOKEN"];
   assert.match(usageText(), /max 1024 chars/);
@@ -3190,6 +3393,29 @@ test("--expect-total records the declared section count without judging it", asy
     assert.match(text, /전건|full registration/, `${url} names the equal reading`);
     assert.match(text, /부분|only some of them/, `${url} names the greater reading`);
   }
+});
+
+test("the token-file form and the operation default are taught where callers read", () => {
+  // Same guard as --expect-total above, for the same reason: a flag that only the
+  // help mentions is a flag the caller never learns exists. The rules pinned here
+  // are the two a caller cannot derive from the flag name — that the two token
+  // sources are exclusive, and that omitting --operation is text rather than a
+  // guess at the operation.
+  for (const pattern of [/--expect-output-file/, /Omit --operation/]) assert.match(usageText(), pattern);
+  for (const url of [
+    new URL("../../../README.md", import.meta.url),
+    new URL("../../../README.ko.md", import.meta.url),
+    new URL("../skills/second-opinion/SKILL.md", import.meta.url),
+  ]) {
+    const text = readFileSync(url, "utf8");
+    assert.match(text, /expect-output-file/, `${url} names the token-file flag`);
+    assert.match(text, /함께 (줄 수는 없다|주면 거절)|cannot be combined/, `${url} states that the two sources are exclusive`);
+  }
+  // The invocation form lives in SKILL.md, so the operation default is pinned there
+  // rather than in the READMEs, which never show a --operation argument at all.
+  const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
+  assert.match(skill, /`--operation`은 생략하면 `text`/, "SKILL.md states the operation default");
+  assert.match(skill, /`--input`을 주면 추론하지 않고 거절/, "SKILL.md states that omission is not read as an image call");
 });
 
 test("portable output checks share the twelve-item boundary and bound token text", async () => {

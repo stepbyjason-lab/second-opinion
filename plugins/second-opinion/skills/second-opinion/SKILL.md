@@ -14,7 +14,7 @@ description: >
 
 # second-opinion — 외부 AI 어댑터
 
-**버전 0.9.16** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). SuperGrok 구독 CLI vendor `grok`. (정본 버전은 `plugin.json`.)
+**버전 0.9.17** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). SuperGrok 구독 CLI vendor `grok`. (정본 버전은 `plugin.json`.)
 
 이 스킬은 **아무것도 차단하지 않는다** — 중개(relay)만 한다. 디스패처는 커맨드 정합성을 위한 도구일 뿐이다. "Claude가 디스패처를 반드시 거치게" 강제하는 것은 **부르는 쪽(caller)의 책임**이다 → [references/enforcement.md](references/enforcement.md).
 
@@ -76,19 +76,42 @@ plan/review 권한을 자동 적용하지 않는다.
 - 지원하지 않는 조합은 default로 조용히 폴백하지 않는다.
 - 명시적 plan/review가 0바이트를 반환하면 provider exit 0이어도 dispatcher exit 4다.
 
-## Madi 리뷰 바로 보내기
+## Madi 게이트 바로 보내기 — 저자게이트·리뷰게이트
 
-Madi 패널에서 가장 흔한 코드 리뷰는 먼저 아래 한 건을 보낸다. `review-brief.txt`에는 위의
-5필드(역할/대상/제약/출력 형식/Do NOT)를 넣고, 특히 **번호 목록·P0~P3 심각도·파일/줄 근거·파일
-수정 금지**를 명시한다.
+**둘은 같은 호출이다.** madi 저장소의 실제 발주 영수증을 전수로 세어 보면(2026-08~09, 저자게이트
+25건·리뷰게이트 45건) 저자게이트와 리뷰게이트가 벤더·모델·mode·격리 플래그까지 같고 **brief와 완주
+토큰만 다르다.** 그래서 아래 한 형태가 둘을 덮는다.
+
+**brief는 게이트의 조립기가 만든다 — 손으로 짜지 않는다.** 저자게이트와 리뷰게이트는 각자 조립기를
+갖고 있고, 완주 토큰·동결 범위·렌즈 전문도 거기서 나온다. 어느 조립기를 쓰는지는 madi 지도
+(`MADI-MAP.md`)의 저자게이트·리뷰게이트 행이 가리킨다. 위의 5필드(역할/대상/제약/출력 형식/Do NOT)는
+**게이트가 아닌 일반 호출을 손으로 조립할 때**의 지침이다.
 
 ```bash
-node <dispatch> --vendor codex --operation text --mode review --brief review-brief.txt \
-  --cwd <review-target> --out review.out --err review.err
+node <dispatch> --vendor codex --model gpt-5.6-terra --effort high \
+  --brief gate-brief.txt --cwd <target> --out gate.out --err gate.err \
+  --no-host-hooks --no-host-docs \
+  --expect-output-file tokens.txt --expect-total 7
 ```
 
-독립 2차 패스는 같은 brief·`--cwd`·`--mode review`를 보존하고 `--vendor`, 해당 벤더가 요구하는
-`--model`, `--out`/`--err`만 바꿔 보낸다. Grok 2차 패스의 **표준 effort는 가성비 기준
+**완주 토큰이 둘의 유일한 차이다.** 저자게이트는 단계마다 하나 — build, 산출물 종별 자체검증, 상류
+대조 두 간선, 수리, 재실행, 그리고 2회차부터 판본 대조 — **여섯이나 일곱**이다. 리뷰게이트는 렌즈마다
+하나로 **보통 하나에서 셋**이라, 파일보다 `--expect-output`을 반복하는 게 간단하다. 어느 쪽이든 이
+개수가 **끝까지 간 호출과 중간에 멈춘 호출을 가르는 유일한 근거**다 — 산출물만 봐서는 안 갈린다.
+`--expect-total`은 자동 계산되지 않고 호출자가 「구획이 몇이었나」를 직접 신고하는 값이다.
+
+**codex에 `--mode review`를 붙이지 않는 이유** — codex의 native review 워크플로는 **자기 보고 형식을
+brief 위에 덮는다.** brief가 findings 형식을 정하는 게이트에서는 그 형식이 진다(실측: R75e가 run 1을
+`--mode review`로 보냈다가 run 2·3에서 뺐다). 게다가 codex의 review는 권한을 좁히지도 않으므로(아래 ⚠)
+mode로 얻을 게 없다. 그래서 **mode를 빼고 격리를 직접 준다** — `--no-host-hooks --no-host-docs`.
+실측 분포도 그렇다: 토큰을 거는 codex 게이트 발주는 대부분 mode 없이 나간다. Claude 리뷰어는 반대로
+`--mode review`를 쓴다 — 그쪽은 mode가 실제로 권한을 좁히고 호스트 설정도 기본 차단한다.
+
+**모델·effort는 항상 박는다.** 실측 70건 전부 `@high`이고 모델이 지정돼 있다(codex `gpt-5.6-terra`·
+`gpt-5.6-sol`, Claude `opus`). codex는 `--model`이 필수가 아니지만 게이트 발주는 재현성 때문에 박는다.
+
+독립 2차 패스는 같은 brief·`--cwd`를 보존하고 `--vendor`, 그 벤더의 `--model`/`--effort`,
+위 mode 규칙, `--out`/`--err`만 바꿔 보낸다. Grok 2차 패스의 **표준 effort는 가성비 기준
 `medium`**이다(`--model grok-4.6 --effort medium`). 결과의 영수증에서 실제 `vendor`·`model`·
 `requestedMode`/`effectiveMode`를 확인한 뒤에만 Madi 패널 증거로 사용한다. Codex의 review는
 워크플로 선택일 뿐 권한 격리가 아니므로, 이 명령만으로 쓰기가 막힌다고 간주하지 않는다.
@@ -111,6 +134,11 @@ node <dispatch> --vendor codex --operation text --mode review --brief review-bri
 | 이미지 생성 (사용자가 요청한 경우) | 둘 다 가능 (실측 2026-07-03) | 아래 "파일 산출물 과업" — 채널별 조건 상이 |
 
 ## 공통: brief 파일 먼저
+
+**`--operation`은 생략하면 `text`다.** 아래 벤더별 예시는 `--operation text`를 명시하지만, 텍스트
+호출에서는 빼도 같은 호출이다(영수증에도 `text`로 남는다). 이미지 과업(`image-analyze`·
+`image-generate`)만 명시해야 한다 — 생략을 이미지로 읽는 경로는 없고, `--operation` 없이
+`--input`을 주면 추론하지 않고 거절한다.
 
 프롬프트+대상 콘텐츠를 **임시 brief 파일**로 만든다(스크래치패드 디렉토리).
 - 시크릿·자격증명·원시 repo 덤프 금지 — 필요한 부분만 발췌해 큐레이션 (내용이 통째로 외부 벤더에 전송된다). **전송 전 확인·마스킹**: brief 지시부에 API키·토큰·비밀번호·`.env`·자격증명이 실수로 섞이지 않았는지 보고, 있으면 마스킹하거나 뺀다 — 「결과 전달 원칙」 #5(stderr 출력 redact)와 **대칭**으로 입력(brief)도 지킨다. 단 검토·번역·오프로드 **대상 내용에 원래 들어 있는** 예제·더미·모의 자격증명은 그 과업의 정당한 내용이라 건드리지 않는다(마스킹은 지시부에 실수로 섞인 실제 시크릿에 한정 — 스캐너가 아니라 조립 시 지키는 규율).
@@ -276,12 +304,19 @@ AGY headless는 command permission을 물을 수 없으므로 dispatcher가 expl
 - 디스패처는 요청 `--cwd`를 AGY의 `--add-dir`로 항상 결속한다. process cwd와 영수증 cwd만
   맞고 AGY가 이전 host workspace를 읽던 0.8.3 결함을 막는다.
 - 파일 읽기 성공을 hidden token으로 확인해야 하는 호출은 `--out <path>`와
-  `--expect-output <ASCII-token, 최대 1024자>`을 함께 쓴다. 이 flag는 최대 12회 반복할 수 있으며 명령줄
+  `--expect-output <ASCII-token, 최대 1024자>`을 함께 쓴다. 이 flag는 최대 12회 반복할 수 있으며 준
   순서대로 모든 token을 stdout에서 literal 검사한다. token은 brief나 vendor argv로 보내지 않고,
   하나라도 없으면 dispatcher/receipt exit 4이며 stderr가 빠진 token 이름 전부를 낸다. token 원문은
   영수증에 남으므로 두 영수증 sink를 벤더가 읽을 수 있는 `--cwd` 아래나 다음 호출 입력으로 두지 않는다.
-- 구획이 여럿인 호출은 `--expect-total <n>`으로 **전체 구획 수를 신고**한다(1~1000, `--expect-output`을 최소
-  하나 요구). 판정에 쓰지 않고 영수증 `expectedTotal`에만 남으며 exit code를 바꾸지 않는다. **읽는 법은 셋이다** —
+- **token 목록을 기계가 냈으면 `--expect-output-file <경로>`로 파일째 넘긴다** — UTF-8 한 줄에 token
+  하나(BOM 허용, LF·CRLF 둘 다, 줄 앞뒤 공백은 벗기고 빈 줄은 무시, token이 하나도 없으면 거절).
+  검증은 `--expect-output`과 같고, 두 형태를 한 호출에 함께 주면 거절한다 — 출처가 둘이면 순서가
+  섞이고, 옮겨 적다 순서가 뒤집히는 것이 이 flag가 없애려는 사고다. 거절되면 **실제로 준 flag
+  이름과 몇 번째 token이 무엇인지**를 함께 낸다. 이 파일도 `--brief`·`--input`과 같이 `--out`·`--err`·
+  영수증 sink와 같은 파일일 수 없다.
+- 구획이 여럿인 호출은 `--expect-total <n>`으로 **전체 구획 수를 신고**한다(1~1000, 두 형태 중 어느
+  쪽으로든 기대 token을 최소 하나 요구한다. **파일 줄 수로 자동 설정하지 않는다** — 그러면 전건 등록과
+  부분 등록이 항상 같아져 이 값이 가르려던 구별이 사라진다). 판정에 쓰지 않고 영수증 `expectedTotal`에만 남으며 exit code를 바꾸지 않는다. **읽는 법은 셋이다** —
   `expectedTotal`이 `null`이면 **미신고**라 부분 등록 여부를 알 수 없고, `outputChecks.length`와 **같으면 전건 등록**,
   **크면 부분 등록**이다. 신고가 없으면 `outputCheckStatus: matched`만으로는 전 구획이 돌았는지 알 수 없다.
 - `--model`은 디스플레이 라벨(`"Gemini 3.1 Pro (High)"`)이나 `agy models`가 출력하는 정규 slug(`gemini-3.1-pro-high`) 둘 다 유효하다. `agy models`는 slug를, 모델 피커 화면은 라벨을 보여준다. 형식이 깨졌거나 모르는 이름은 exit 1로 거부되니(구버전의 silent-downgrade 아님) 호출 후 exit code를 확인할 것.
@@ -416,9 +451,10 @@ ffmpeg로 프레임을 추출한 뒤 그 프레임들을 `-i`로 전달한다(�
 5. 벤더 stderr/에러를 사용자에게 relay할 때만 32자 이상 연속 토큰을 `[REDACTED]`로 마스킹한다 — 정상 산출물·벤더 입력·로컬 파일 접근에는 적용하지 않는다(해시·ID 오탐 주의).
 6. **실행 영수증** — 벤더를 부른 뒤 한 줄로 관측을 남긴다: **요청 벤더·모델 → (알면) 실제 응답 backend → exit/timeout 상태 → 모델 대체가 거부됐으면 그 사실**. "요청 = 실행"을 가정하지 말고 실제 벌어진 것을 적는다 — 라벨 오형식 silent-ignore(모델이 조용히 계정 기본값으로 강등)를 이 영수증이 드러낸다. 순서는 위대로 고정하되 사람이 읽는 한 줄이면 된다(엄격 `Key: Value` 스키마는 불필요). 부르는 쪽(madi 등)이 지정 모델이 실제로 불렸는지 확인할 유일한 신뢰 근거다. 파일 영수증은 opt-in이며 `SECOND_OPINION_RECEIPT`에 JSONL 경로를 설정한다. Codex 호출은 `vendorUsage`과 `vendorUsageStatus`에 rollout 실측을 남기며, `null`은 호출하지 않았다는 뜻이 아니라 수집 불가일 수도 있다. **동시 dispatch 호출마다 서로 다른 `--err` 경로를 사용한다** — 경로를 재사용하면 뒤 호출의 truncate와 앞 호출의 append가 `session id:`를 섞어 사용량을 잘못 귀속시킬 수 있다.
    Claude 호출은 result JSON의 실제 model·token usage·cost를 `vendorUsage`에 남기며
-   요청 model과 실제 family가 다르면 exit 4다. 선택적 `--expect-output` 호출은 영수증의 `outputCheckStatus`에 `matched`·`missing`·
+   요청 model과 실제 family가 다르면 exit 4다. 선택적 기대 token 호출(`--expect-output` 또는
+   `--expect-output-file`)은 영수증의 `outputCheckStatus`에 `matched`·`missing`·
    `not-requested`·`not-evaluated` 중 하나를 남기고, raw·portable 양쪽의 항상 존재하는
-   `outputChecks`에는 명령줄 순서대로 원문 token과 `matched`·`missing` 상태를 남긴다. token을
+   `outputChecks`에는 준 순서대로 원문 token과 `matched`·`missing` 상태를 남긴다. token을
    요청하지 않으면 `outputChecks`는 빈 배열이 아니라 `null`이다.
 7. **portable 영수증** — raw 영수증은 재현용 locator를 보존하므로 저장소 밖에 둔다.
    `SECOND_OPINION_PORTABLE_RECEIPT`는 raw와 독립적으로 opt-in하는 누적 JSONL sink다. 닫힌

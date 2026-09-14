@@ -21,11 +21,13 @@
 //                   Only if the host provides no catalog or manifest should a
 //                   caller discover the current version in that host's own cache.
 //
-//   CALLING IT (brief is a file; its contents go to the vendor over stdin)
-//     node <dispatch> --vendor codex  --operation text --brief b.txt --cwd <dir> --out o.txt --err e.txt
-//     node <dispatch> --vendor agy    --operation text --brief b.txt --cwd <dir> --model gemini-3.8-flash --effort medium --out o.txt --err e.txt
-//     node <dispatch> --vendor claude --operation text --brief b.txt --cwd <dir> --model sonnet --effort low --out o.txt --err e.txt
-//     node <dispatch> --vendor grok   --operation text --brief b.txt --cwd <dir> --model grok-4.6 --effort medium --out o.txt --err e.txt
+//   CALLING IT (brief is a file; its contents go to the vendor over stdin.
+//   --operation is omitted below because omitting it means text; the two image
+//   operations are the ones that have to be named.)
+//     node <dispatch> --vendor codex  --brief b.txt --cwd <dir> --out o.txt --err e.txt
+//     node <dispatch> --vendor agy    --brief b.txt --cwd <dir> --model gemini-3.8-flash --effort medium --out o.txt --err e.txt
+//     node <dispatch> --vendor claude --brief b.txt --cwd <dir> --model sonnet --effort low --out o.txt --err e.txt
+//     node <dispatch> --vendor grok   --brief b.txt --cwd <dir> --model grok-4.6 --effort medium --out o.txt --err e.txt
 //
 //   RECEIPTS — SECOND_OPINION_RECEIPT remains private and keeps its raw v1
 //   locators. SECOND_OPINION_PORTABLE_RECEIPT is an independent, optional JSONL
@@ -45,6 +47,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, closeSync, createWriteStream, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { TextDecoder } from "node:util";
 import { fileURLToPath } from "node:url";
 import { DISPATCH_MODES, OPERATIONS, PolicyError, VENDORS, applyGrokHarnessIsolationEnv, applyVendorHostIsolationEnv, buildVendorInvocation, composeVendorInput, effectiveInputProfile, effectiveVendorMode, executableName, grokNeedsHarnessIsolation, hostIsolationRecord, normalizeVendor, resolveExecutable } from "./vendor-policy.mjs";
 import { appendPortableReceipt, buildPortableReceipt, MAX_EXPECT_OUTPUTS, MAX_EXPECT_TOTAL, MAX_FREE_STRING, preparePortableUsage } from "./portable-receipt.mjs";
@@ -59,7 +62,7 @@ const MODEL_CATALOG_FAILURE_TTL_MS = 5 * 60 * 1000;
 const MODEL_CATALOG_FILENAME = "model-catalog-v1.json";
 const RECEIPT_CONFIG_FILENAME = "config.json";
 const MAX_RECEIPT_CONFIG_BYTES = 1024 * 1024;
-const SINGLE_OPTIONS = new Set(["--vendor", "--operation", "--brief", "--cwd", "--model", "--effort", "--mode", "--timeout", "--out", "--err", "--lens-id", "--expect-total", "--dry-run", "--host-hooks", "--no-host-hooks", "--host-docs", "--no-host-docs", "--host-mcp", "--no-host-mcp", "--host-skills", "--host-shell", "--no-host-shell"]);
+const SINGLE_OPTIONS = new Set(["--vendor", "--operation", "--brief", "--cwd", "--model", "--effort", "--mode", "--timeout", "--out", "--err", "--lens-id", "--expect-output-file", "--expect-total", "--dry-run", "--host-hooks", "--no-host-hooks", "--host-docs", "--no-host-docs", "--host-mcp", "--no-host-mcp", "--host-skills", "--host-shell", "--no-host-shell"]);
 // Flags that stand alone instead of taking a value. They still live in
 // SINGLE_OPTIONS so the unknown-argument and duplicate checks cover them.
 const BOOLEAN_OPTIONS = new Set(["--dry-run", "--host-hooks", "--no-host-hooks", "--host-docs", "--no-host-docs", "--host-mcp", "--no-host-mcp", "--host-skills", "--host-shell", "--no-host-shell"]);
@@ -83,6 +86,23 @@ function assertDirectory(path, label) {
   try { if (!statSync(path).isDirectory()) throw new Error(); }
   catch { throw new CliError(`${label} must be an existing directory: ${path}`); }
 }
+// One token per line, because the producer is a composer writing an array and the
+// consumer was a human retyping it — that retyping is what this flag removes, so
+// the format has to survive whatever wrote the file. A Windows producer adds a BOM
+// and CRLF, and an editor leaves trailing spaces; all three would otherwise die in
+// the "no whitespace" check below with the file looking correct to the caller.
+// Trimming each line makes "ignore blank lines" a special case of one rule rather
+// than a second rule. Zero tokens is refused rather than treated as "no check
+// requested": the caller named a file, so an empty one is a mistake, not a choice.
+function expectedOutputsFromFile(path) {
+  assertRegularFile(path, "--expect-output-file");
+  let text;
+  try { text = new TextDecoder("utf-8", { fatal: true }).decode(readFileSync(path)); }
+  catch { throw new CliError(`--expect-output-file must be a readable UTF-8 file: ${path}`); }
+  const tokens = text.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (tokens.length === 0) throw new CliError(`--expect-output-file contains no tokens: ${path}`);
+  return tokens;
+}
 
 // Usage text is derived from the same constants the parser enforces, so a new
 // flag or vendor shows up here without a second edit. A caller that guessed
@@ -101,7 +121,7 @@ export function usageText() {
   return [
     "second-opinion dispatcher — call an external vendor through one audited path.",
     "",
-    "  node dispatch.mjs [--vendor <v>] --operation <op> --brief <file> [options]",
+    "  node dispatch.mjs [--vendor <v>] [--operation <op>] --brief <file> [options]",
     "  node dispatch.mjs --request-json <file> --response-json <file>",
     "",
     `  vendors    : ${VENDOR_INPUTS.join(", ")}`,
@@ -109,11 +129,21 @@ export function usageText() {
     `  flags      : ${flags}`,
     `  help       : ${[...HELP_FLAGS].join(" ")}  (first argument only)`,
     "",
-    "  MADI REVIEW EXAMPLE (first-pass code review):",
-    "    node dispatch.mjs --vendor codex --operation text --mode review --brief <review-brief.txt>",
-    "      --cwd <review-target> --out <review.out> --err <review.err>",
-    "  Independent second pass: keep the same brief/cwd/mode, change only --vendor,",
-    "    any vendor-required --model, and the output paths. Reviewers must not edit.",
+    "  MADI GATE EXAMPLE — the author gate and the review gate send the same call. Only the brief",
+    "    and the completion tokens differ, so this one shape covers both:",
+    "    node dispatch.mjs --vendor codex --model gpt-5.6-terra --effort high --brief <gate-brief.txt>",
+    "      --cwd <target> --out <gate.out> --err <gate.err> --no-host-hooks --no-host-docs",
+    "      --expect-output-file <tokens.txt> --expect-total 7",
+    "  Tokens: an author gate registers one per stage — build, the artifact's own check, the two scope",
+    "    edges, repair, rerun, and the revision check from the second round on, so six or seven. A",
+    "    review gate registers one per lens, usually one to three, where repeating --expect-output is",
+    "    simpler than a file. Either way that count is what separates a finished run from one that",
+    "    stopped early, and --expect-total stays the caller's own declaration of how many there were.",
+    "  No --mode on codex: its native review workflow replaces the brief's report format with its own",
+    "    and narrows no permissions, so the isolation a mode would have given is passed explicitly",
+    "    instead. A Claude reviewer takes --mode review, which blocks host configuration by itself.",
+    "  Independent second pass: keep the same brief and --cwd, change only --vendor, that vendor's",
+    "    --model/--effort, its mode rule above, and the output paths. Reviewers must not edit.",
     "  Grok review baseline: add --model grok-4.6 --effort medium; the dispatcher",
     "    forwards --effort unchanged to the Grok CLI.",
     "  AGY reasoning effort is its own axis since agy 1.1.26: pass --model gemini-3.8-flash --effort",
@@ -123,6 +153,10 @@ export function usageText() {
     "    the exact diff and changed-file list in the brief; never ask them to discover .git.",
     "",
     "  --brief is a FILE; Codex/AGY/Claude receive it on stdin, Grok via --prompt-file.",
+    "  Omit --operation for a text call; image-analyze and image-generate must be explicit.",
+    "  Omission is never read as an image call: an omitted operation with --input is rejected, not inferred.",
+    "  THE NEXT BLOCK IS --request-json ONLY. A --vendor call has none of it — no retries, no",
+    "  silence detection, no caller deadline. Skip to \"--cwd is the vendor's workspace\" for those.",
     "  --request-json selects one named HTTP/subscription provider with same-provider retry,",
     "  payload-silence detection, an optional caller deadline, and provider attribution.",
     "  Cross-provider routing and budgets belong to the caller; budget is rejected.",
@@ -135,6 +169,9 @@ export function usageText() {
     "  --response-json cannot alias request/env/receipt files and is replaced atomically.",
     "  Subscription generation honors receipt sinks; HTTP generation records them too.",
     "  Receipts retain requested/executed model, effort, stop, prompt-byte, and attempt evidence.",
+    "  Codex token usage is read back from Codex's own rollout log and is not always there in time:",
+    "  roughly one invoked codex call in five recorded none. `vendorUsage: null` is therefore not",
+    "  evidence that the vendor did not run — read `vendorUsageStatus` to tell the two apart.",
     "  Run provider-probe.mjs explicitly for a one-shot status/duration/failure-class table.",
     "  Without --vendor, --model is matched against a cache-first provider catalog.",
     "  Catalog metadata is cached for 24h at ~/.second-opinion/model-catalog-v1.json.",
@@ -142,15 +179,27 @@ export function usageText() {
     "  Degraded fallback retries after 5m; the active Codex local cache is re-read.",
     "  Model separators/case and effort labels (light/very-high/maximum) are normalized.",
     "  --cwd is the vendor's workspace; omitted, it is this process's directory.",
-    "  --brief/--input/--out/--err resolve from THIS process's directory, not --cwd.",
+    "  --brief/--input/--expect-output-file/--out/--err resolve from THIS process's directory, not --cwd.",
     "  Vendor-native flags (agy --add-dir, codex -s) are assembled internally.",
     "  Default --timeout is a 3600s cost backstop, not a review deadline. Never give a",
     "  review a short timeout (for example 300s): run it in background, observe liveness/--err, then require a receipt.",
+    "  It is also the ONLY automatic stop on this path: a --vendor call has no silence detection, so a",
+    "  vendor that stalls burns the whole hour before anything interrupts it — measured once at 3600.1s",
+    "  for no output at all. A growing --err file is the liveness signal; nothing else will cut in. Long",
+    "  work is normal here (half of recorded calls ran past six minutes), so judge by --err, not elapsed time.",
     "  --dry-run prints the argv without running the vendor.",
     `  --expect-output <ASCII token, max ${MAX_FREE_STRING} chars> may be repeated up to ${MAX_EXPECT_OUTPUTS} times with --out; every token`,
     "  must occur literally in stdout or the dispatcher exits 4 and names every missing token on stderr.",
+    "  --expect-output-file <path> reads those tokens from a file instead — one per UTF-8 line (optional BOM;",
+    "  LF or CRLF), line edges trimmed, blank lines ignored, at least one token required, same validation.",
+    "  It cannot be combined with --expect-output: one call takes its tokens from one source, so the order a",
+    "  composer wrote cannot be interleaved with an order someone typed.",
+    "  A rejected token names the flag you actually passed and the failing token's position and value, so a",
+    "  twelve-line file does not have to be bisected by hand.",
     "  Choose tokens that are not substrings of one another; literal matching does not infer token boundaries.",
-    `  --expect-total <n> declares how many sections existed (1..${MAX_EXPECT_TOTAL}); it requires --expect-output and is`,
+    "  --brief/--input/--expect-output-file must not name the same file as --out/--err or a receipt sink;",
+    "  the dispatcher exits 2 before opening any output, so an input file is never truncated by its own call.",
+    `  --expect-total <n> declares how many sections existed (1..${MAX_EXPECT_TOTAL}); it requires expected output tokens and is`,
     "  recorded as expectedTotal without changing exit codes. Compare it with outputChecks.length: equal means every",
     "  section was registered, greater means the caller registered only some of them; a total below the",
     "  registered count is rejected, so those two readings are the only ones a receipt can carry.",
@@ -178,7 +227,10 @@ export function usageText() {
     // succeeds and looks restricted while running at full access.
     "  --mode plan|review narrows permissions on Claude, AGY, and Grok. Codex has no",
     "  tool allowlist — its review runs at whatever sandbox_mode its own config",
-    "  sets, so the brief's no-edit prohibition is the only guard there.",
+    "  sets, so the brief's no-edit prohibition is the only guard there. It also",
+    "  costs something: codex's native review workflow returns its own report shape,",
+    "  so a brief that specifies the findings format loses to it. Give codex no --mode",
+    "  when the brief owns the output, and pass --no-host-hooks/--no-host-docs directly.",
     "",
     "LOCATING THIS FILE — never hardcode a version directory:",
     "  Claude Code : \"$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs\", or installPath from",
@@ -590,7 +642,8 @@ export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
   validateModelValue(model);
   // Accepted values come from the constant, not a hand-typed copy of it — the
   // same drift that made the prose usage wrong applies to error strings.
-  if (!OPERATIONS.includes(raw.operation)) throw new CliError(`--operation must be one of: ${OPERATIONS.join(", ")}`);
+  const operation = raw.operation ?? "text";
+  if (!OPERATIONS.includes(operation)) throw new CliError(`--operation must be one of: ${OPERATIONS.join(", ")}`);
   if (raw.mode !== undefined && !DISPATCH_MODES.filter((mode) => mode !== "default").includes(raw.mode)) {
     // "default" is not a value this flag takes — it is what a call without the
     // flag already is. Callers have read the help's "in --mode default too" as
@@ -598,7 +651,7 @@ export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
     throw new CliError(`--mode must be one of: ${DISPATCH_MODES.filter((mode) => mode !== "default").join(", ")} (omit --mode for the full-access default call)`);
   }
   const mode = raw.mode ?? "default";
-  try { effectiveVendorMode({ vendor, operation: raw.operation, mode }); }
+  try { effectiveVendorMode({ vendor, operation, mode }); }
   catch (error) {
     if (error instanceof PolicyError) throw new CliError(error.message);
     throw error;
@@ -609,7 +662,11 @@ export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
   const inputs = raw.inputs.map((value) => absoluteFrom(startCwd, value));
   const out = raw.out ? absoluteFrom(startCwd, raw.out) : undefined;
   const err = raw.err ? absoluteFrom(startCwd, raw.err) : undefined;
-  const expectOutputs = raw.expectOutputs ?? [];
+  const expectOutputFile = raw["expect-output-file"] === undefined ? undefined : absoluteFrom(startCwd, raw["expect-output-file"]);
+  if (raw.expectOutputs !== undefined && expectOutputFile !== undefined) {
+    throw new CliError("--expect-output and --expect-output-file cannot both be given");
+  }
+  const expectOutputs = expectOutputFile === undefined ? (raw.expectOutputs ?? []) : expectedOutputsFromFile(expectOutputFile);
   const expectOutput = expectOutputs[0];
   const lensId = raw["lens-id"] ?? null;
   if (lensId !== null && (lensId.length < 1 || lensId.length > 64 || /[\x00-\x1f\x7f]/.test(lensId))) {
@@ -633,14 +690,26 @@ export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
       throw new CliError(`invalid --effort: ${effort} (${vendor} accepts ${allowedEffort.join(", ")})`);
     }
   }
-  if (raw.operation === "image-analyze") {
+  if (operation === "image-analyze") {
     if (inputs.length === 0) throw new CliError("image-analyze requires at least one --input");
     for (const input of inputs) assertRegularFile(input, "input");
   } else if (inputs.length > 0) throw new CliError("--input is supported only for image-analyze");
-  if (expectOutputs.length > MAX_EXPECT_OUTPUTS) throw new CliError(`--expect-output may be repeated at most ${MAX_EXPECT_OUTPUTS} times`);
+  // The rejection names the flag the caller actually used and the token that
+  // failed: a twelve-line token file gives the caller nothing to bisect by, and
+  // this error is the only route to a working call (usage does not restate it).
+  const tokenSource = expectOutputFile === undefined ? "--expect-output" : "--expect-output-file";
+  if (expectOutputs.length > MAX_EXPECT_OUTPUTS) {
+    throw new CliError(expectOutputFile === undefined
+      ? `--expect-output may be repeated at most ${MAX_EXPECT_OUTPUTS} times`
+      : `--expect-output-file may contain at most ${MAX_EXPECT_OUTPUTS} tokens (found ${expectOutputs.length})`);
+  }
   if (expectOutput !== undefined) {
-    if (!out) throw new CliError("--expect-output requires --out");
-    if (expectOutputs.some((value) => value.length > MAX_FREE_STRING || !/^[\x21-\x7e]+$/.test(value))) throw new CliError(`--expect-output must be a 1 to ${MAX_FREE_STRING} character ASCII token without whitespace`);
+    if (!out) throw new CliError(`${tokenSource} requires --out`);
+    const invalidIndex = expectOutputs.findIndex((value) => value.length > MAX_FREE_STRING || !/^[\x21-\x7e]+$/.test(value));
+    if (invalidIndex >= 0) {
+      const preview = JSON.stringify(expectOutputs[invalidIndex].length > 40 ? `${expectOutputs[invalidIndex].slice(0, 40)}…` : expectOutputs[invalidIndex]);
+      throw new CliError(`${tokenSource} token ${invalidIndex + 1} ${preview} must be a 1 to ${MAX_FREE_STRING} character ASCII token without whitespace`);
+    }
   }
   const expectedTotal = raw["expect-total"] === undefined ? null : Number(raw["expect-total"]);
   if (expectedTotal !== null) {
@@ -657,7 +726,7 @@ export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
     }
   }
   if (vendor === "claude") {
-    if (raw.operation !== "text") throw new CliError("claude supports only --operation text");
+    if (operation !== "text") throw new CliError("claude supports only --operation text");
     if (!model) throw new CliError("claude requires --model");
     if (!effort) throw new CliError("claude requires --effort");
     if (!out) throw new CliError("claude requires --out to preserve and validate the result JSON");
@@ -711,14 +780,15 @@ export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
   // observed rather than cut off by a short limit such as 300 seconds.
   const timeout = raw.timeout === undefined ? 3600 : Number(raw.timeout);
   if (!Number.isInteger(timeout) || timeout < 1 || timeout > 3600) throw new CliError("--timeout must be an integer from 1 to 3600");
-  const conflicts = outputConflicts({ brief, inputs, out, err });
+  const conflicts = outputConflicts({ brief, inputs, expectOutputFile, out, err });
   if (conflicts.brief) throw new CliError("--out/--err must not equal --brief");
   if (conflicts.input) throw new CliError("--out/--err must not equal --input");
+  if (conflicts.expectOutputFile) throw new CliError("--out/--err must not equal --expect-output-file");
   if (conflicts.outputs) throw new CliError("--out and --err must not refer to the same file");
-  if (receiptConflicts({ brief, inputs, out, err }, deps.env ?? process.env)) throw new CliError("--out/--err must not equal the resolved raw receipt sink");
+  if (receiptConflicts({ brief, inputs, expectOutputFile, out, err }, deps.env ?? process.env)) throw new CliError("--out/--err must not equal the resolved raw receipt sink");
   return {
-    vendor, operation: raw.operation, mode, brief, cwd, modelRequested, model, effortRequested, effort, inputs, timeout, out, err,
-    expectOutput, ...(expectOutputs.length ? { expectOutputs } : {}), expectedTotal, lensId, dryRun: raw.dryRun ?? false,
+    vendor, operation, mode, brief, cwd, modelRequested, model, effortRequested, effort, inputs, timeout, out, err,
+    expectOutputFile, expectOutput, ...(expectOutputs.length ? { expectOutputs } : {}), expectedTotal, lensId, dryRun: raw.dryRun ?? false,
     hostHooks, hostDocs, hostMcp, hostSkills, hostShell,
   };
 }
@@ -777,25 +847,33 @@ function sameFile(left, right) {
     return samePath(left, right);
   }
 }
+// Every file the caller hands this dispatcher and every file it writes. The
+// receipt sinks must not alias any of them, and the outputs must not alias any
+// input. One list, so a new caller-supplied file (the expected-output token
+// file was the first) cannot be protected in one check and forgotten in another.
+function callerFiles(options) {
+  return [options.brief, ...(options.inputs ?? []), options.expectOutputFile, options.out, options.err].filter(Boolean);
+}
 function outputConflicts(options) {
   const outputs = [options.out, options.err].filter(Boolean);
   return {
     brief: outputs.some((output) => sameFile(output, options.brief)),
     input: (options.inputs ?? []).some((input) => outputs.some((output) => sameFile(output, input))),
+    expectOutputFile: Boolean(options.expectOutputFile && outputs.some((output) => sameFile(output, options.expectOutputFile))),
     outputs: Boolean(options.out && options.err && sameFile(options.out, options.err)),
   };
 }
 function receiptConflicts(options, env, sinks) {
   const receipt = receiptPath(env, sinks);
   if (!receipt) return false;
-  return [options.brief, ...(options.inputs ?? []), options.out, options.err].filter(Boolean).some((value) => sameFile(receipt, value));
+  return callerFiles(options).some((value) => sameFile(receipt, value));
 }
 function portableConfigError(options, env, sinks) {
   const portable = portableReceiptPath(env, sinks);
   if (!portable) return null;
   const raw = receiptPath(env, sinks);
   if (raw && sameFile(raw, portable)) return "SECOND_OPINION_RECEIPT and SECOND_OPINION_PORTABLE_RECEIPT must not refer to the same file";
-  if ([options.brief, ...(options.inputs ?? []), options.out, options.err].filter(Boolean).some((value) => sameFile(portable, value))) {
+  if (callerFiles(options).some((value) => sameFile(portable, value))) {
     return "SECOND_OPINION_PORTABLE_RECEIPT must not refer to an input or output file";
   }
   return null;
@@ -1063,7 +1141,7 @@ function writeReceipt(stderr, options, exit, startedAt, invoked, outputCheckStat
   try {
     const receipt = receiptPath(env, sinks);
     if (!receipt) return;
-    if ([options.brief, ...(options.inputs ?? []), options.out, options.err].filter(Boolean).some((value) => sameFile(receipt, value))) return;
+    if (callerFiles(options).some((value) => sameFile(receipt, value))) return;
     mkdirSync(dirname(receipt), { recursive: true });
     const existing = statSync(receipt, { throwIfNoEntry: false });
     let separator = "";
@@ -1392,6 +1470,7 @@ export async function run(options, deps = { spawn }) {
     model: options.vendor === "codex" ? resolveCodexModelAlias(options.model, env) : options.model,
     brief: absoluteFrom(process.cwd(), options.brief),
     inputs: (options.inputs ?? []).map((input) => absoluteFrom(process.cwd(), input)),
+    expectOutputFile: options.expectOutputFile ? absoluteFrom(process.cwd(), options.expectOutputFile) : undefined,
     out: options.out ? absoluteFrom(process.cwd(), options.out) : undefined,
     err: options.err ? absoluteFrom(process.cwd(), options.err) : undefined,
   };
@@ -1442,6 +1521,10 @@ export async function run(options, deps = { spawn }) {
   }
   if (conflicts.input) {
     parentStderr.write("dispatch validation error: --out/--err must not equal --input\n");
+    return 2;
+  }
+  if (conflicts.expectOutputFile) {
+    parentStderr.write("dispatch validation error: --out/--err must not equal --expect-output-file\n");
     return 2;
   }
   if (conflicts.outputs) {
