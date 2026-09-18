@@ -155,6 +155,11 @@ export function usageText() {
     "  --brief is a FILE; Codex/AGY/Claude receive it on stdin, Grok via --prompt-file.",
     "  Omit --operation for a text call; image-analyze and image-generate must be explicit.",
     "  Omission is never read as an image call: an omitted operation with --input is rejected, not inferred.",
+    // The sibling above taught its own omission and this one did not, so a caller who
+    // read that line reached for --mode default and got a validation error instead.
+    // What each mode does per vendor is further down; this is only what omitting means.
+    "  Omit --mode for the full-access default call: plan and review are the only values it takes,",
+    "  and `--mode default` is rejected rather than treated as the omission it looks like.",
     "  THE NEXT BLOCK IS --request-json ONLY. A --vendor call has none of it — no retries, no",
     "  silence detection, no caller deadline. Skip to \"--cwd is the vendor's workspace\" for those.",
     "  --request-json selects one named HTTP/subscription provider with same-provider retry,",
@@ -177,6 +182,10 @@ export function usageText() {
     "  Catalog metadata is cached for 24h at ~/.second-opinion/model-catalog-v1.json.",
     "  A fresh-cache miss refreshes once; refresh failure uses last-known-good data.",
     "  Degraded fallback retries after 5m; the active Codex local cache is re-read.",
+    "  With --vendor, --model is still resolved against that one vendor's catalog, but only",
+    "  from what is already there: a pinned vendor never refreshes, and anything short of",
+    "  exactly one model forwards --model unchanged instead of renaming your call. A catalog",
+    "  name that is yours plus a trailing version or effort is a different model, never a match.",
     "  Model separators/case and effort labels (light/very-high/maximum) are normalized.",
     "  --cwd is the vendor's workspace; omitted, it is this process's directory.",
     "  --brief/--input/--expect-output-file/--out/--err resolve from THIS process's directory, not --cwd.",
@@ -270,15 +279,49 @@ export function splitModelEffort(model, effort) {
   return { model: model.slice(0, separator), effort: normalized };
 }
 
-export function resolveCodexModelAlias(model, env = process.env) {
+// A call that pins --vendor still gets its model name resolved through that
+// vendor's catalog, so `--vendor agy --model "opus 4.6"` reaches agy as the slug
+// agy publishes instead of a string it will reject at the far end. Two rules keep
+// the resolution from ever making a call worse than the caller wrote it:
+//
+//   * it never goes looking. Discovering a catalog means spawning provider CLIs,
+//     and the pinned-vendor path is precisely the one that does not pay that cost
+//     — so this reads only what is already on disk and never triggers a refresh.
+//     A missing, stale, or unavailable catalog therefore yields no models, which
+//     lands on the second rule rather than on an error.
+//   * anything short of exactly one winning model returns the caller's own string.
+//     Forwarding a name the vendor rejects costs one clear vendor error; renaming
+//     a model the caller got right sends the call somewhere nobody asked for, and
+//     the receipt would name the substitute as if it had been requested. So a
+//     "variant" boundary match — the catalog name is the caller's name plus
+//     trailing version or effort tokens — is dropped before the winners are
+//     picked, not merely outranked: it is the one match kind that answers a
+//     different model than the one that was asked for.
+export function resolveVendorModelAlias(vendor, model, deps = {}) {
   if (!model) return model;
   try {
-    const matches = rankedCatalogMatches(model, "codex", codexModelCatalog(env));
-    const best = winningMatches(matches);
-    return best.length === 1 ? best[0].model : model;
+    const matches = rankedCatalogMatches(model, vendor, availableVendorCatalog(vendor, deps))
+      .filter((match) => match.boundary !== "variant");
+    const resolved = [...new Set(winningMatches(matches).map((match) => match.model))];
+    return resolved.length === 1 ? resolved[0] : model;
   } catch {
     return model;
   }
+}
+
+// Codex's catalog is a file under the active CODEX_HOME, so it is read live for
+// that home — the unified cache deliberately never reuses a Codex row written
+// under a different one. Every other vendor is read from the unified cache
+// exactly as it stands, because refreshing it is a process spawn.
+function availableVendorCatalog(vendor, deps = {}) {
+  if (deps.modelCatalogs) return normalizeCatalog(vendor, deps.modelCatalogs[vendor]).models;
+  if (vendor === "codex") return codexModelCatalog(deps.env ?? process.env);
+  const cached = readCatalogCache(deps)?.catalogs?.[vendor];
+  return cached?.available === true ? cached.models : [];
+}
+
+export function resolveCodexModelAlias(model, env = process.env) {
+  return resolveVendorModelAlias("codex", model, { env });
 }
 
 function codexModelCatalog(env = process.env) {
@@ -529,8 +572,18 @@ function rankedCatalogMatches(requested, vendor, catalog) {
       matches.push({ vendor, model: `claude-${key.replace(/ /g, "-")}`, rank: 70, record });
       continue;
     }
-    if (aliases.some((alias) => alias.endsWith(` ${key}`) || alias.startsWith(`${key} `))) {
-      matches.push({ vendor, model: record.canonical, rank: 40, record });
+    // Both of these are the same rank, but they are not the same kind of guess,
+    // and a caller who pinned --vendor needs them told apart. "namespace": the
+    // catalog name carries leading tokens the caller left off, so `claude-opus-4-6`
+    // and `anthropic/claude-opus-4-6` are the same model. "variant": the catalog
+    // name carries TRAILING tokens the caller did not write, and those tokens are
+    // what distinguishes one model from another — `claude-sonnet-4` would become
+    // `claude-sonnet-4-6` and `gpt-oss-120b` would become `gpt-oss-120b-medium`.
+    // Ranking is unchanged so automatic routing, where the caller has delegated
+    // the name outright, still weighs the two the same way it always has.
+    const namespace = aliases.some((alias) => alias.endsWith(` ${key}`));
+    if (namespace || aliases.some((alias) => alias.startsWith(`${key} `))) {
+      matches.push({ vendor, model: record.canonical, rank: 40, record, boundary: namespace ? "namespace" : "variant" });
     }
   }
   return matches;
@@ -636,7 +689,14 @@ export function parseCli(argv, startCwd = process.cwd(), deps = {}) {
   validateModelValue(model);
   if (raw.vendor !== undefined && !VENDOR_INPUTS.includes(raw.vendor)) throw new CliError(`--vendor must be one of: ${VENDOR_INPUTS.join(", ")}`);
   if (!raw.vendor && !model) throw new CliError("--vendor is required when --model is omitted");
-  const route = raw.vendor ? { vendor: normalizeVendor(raw.vendor), model, efforts: [] } : resolveModelRouteDetailed(model, deps);
+  // A pinned vendor keeps its own effort rules: the catalog is consulted for the
+  // model name only, and `efforts` stays empty so the per-vendor list below still
+  // governs. Binding the matched record's efforts here would let a cache decide
+  // which efforts a pinned vendor accepts — a different promise than this one.
+  const pinnedVendor = raw.vendor ? normalizeVendor(raw.vendor) : undefined;
+  const route = pinnedVendor
+    ? { vendor: pinnedVendor, model: resolveVendorModelAlias(pinnedVendor, model, deps), efforts: [] }
+    : resolveModelRouteDetailed(model, deps);
   const vendor = route.vendor;
   model = route.model;
   validateModelValue(model);

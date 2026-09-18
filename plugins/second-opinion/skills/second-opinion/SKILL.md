@@ -14,7 +14,7 @@ description: >
 
 # second-opinion — 외부 AI 어댑터
 
-**버전 0.9.17** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). SuperGrok 구독 CLI vendor `grok`. (정본 버전은 `plugin.json`.)
+**버전 0.9.18** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). SuperGrok 구독 CLI vendor `grok`. (정본 버전은 `plugin.json`.)
 
 이 스킬은 **아무것도 차단하지 않는다** — 중개(relay)만 한다. 디스패처는 커맨드 정합성을 위한 도구일 뿐이다. "Claude가 디스패처를 반드시 거치게" 강제하는 것은 **부르는 쪽(caller)의 책임**이다 → [references/enforcement.md](references/enforcement.md).
 
@@ -38,7 +38,8 @@ Claude Code 안에서 **다른 벤더의 AI**를 일상어로 부려 쓴다. Cod
 ## 실행 모드 — 호출자가 명시할 때만
 
 dispatcher는 실행 목적을 추측하지 않는다. `--mode`를 생략하면 기존 `default` 호출이며,
-plan/review 권한을 자동 적용하지 않는다.
+plan/review 권한을 자동 적용하지 않는다. **`--mode`가 받는 값은 `plan`과 `review` 둘뿐이다** —
+`--mode default`는 생략과 같은 뜻으로 읽히지 않고 거절된다. 전권 호출은 플래그를 빼는 것이다.
 
 | 호출 | 의미 | provider translation |
 |---|---|---|
@@ -234,14 +235,23 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/provider-probe.mjs" --targets-json providers.j
 카탈로그는 현재 `CODEX_HOME`에서 매번 다시 읽어 다른 환경의 cache가 섞이지 않게 한다.
 fresh cache에서 모델을 못 찾으면 한 번 즉시 갱신하고, 갱신 실패 시 last-known-good를
 사용하되 degraded cache는 5분 뒤 다시 확인한다. 정상 데이터가
-없는 공급자가 있거나 0개/동순위 복수 후보면 실행 전에 fail-closed한다. `--vendor`를
-명시하면 카탈로그를 읽지 않고 항상 그 값이 우선한다.
+없는 공급자가 있거나 0개/동순위 복수 후보면 실행 전에 fail-closed한다.
+
+`--vendor`를 명시하면 그 값이 항상 우선하며, 벤더는 절대 바뀌지 않는다. 다만 모델
+이름은 그 **한 벤더의 카탈로그로만** 해석한다 — `--vendor agy --model "opus 4.6"`은
+agy가 게시하는 slug로 바뀌어 전달된다. 이 경로는 **이미 있는 것만 읽는다**: 공급자
+프로세스를 띄우지 않고 갱신도 하지 않으므로, 캐시가 없거나 낡았거나 후보가 유일하지
+않으면 **호출자가 쓴 문자열을 그대로** 벤더에 넘긴다. 벤더의 loud reject를 숨기지
+않고, 맞게 쓴 이름을 다른 모델로 바꿔 부르지도 않는다. 영수증은 호출자가 준 이름
+(`modelRequested`)과 실제 쓴 이름(`model`)을 계속 따로 남긴다.
 
 대소문자와 공백·점·하이픈은 같은 이름으로 본다. 정확한 카탈로그 항목이 family/version
 추론보다 우선한다. 따라서 `opus`는 Claude 최신 alias, `opus 4.8`은 Claude Code,
 `opus 4.6`·`sonnet 4.6`은 정확한 항목을 가진 AGY로 간다. Claude Code의 4.6을 원하면
-`--vendor`를 생략하고 `Claude Code opus 4.6`이라고 쓰거나, `--vendor claude`와 정규
-모델 ID를 함께 명시한다. `terra`·`gpt 5.5`·
+`--vendor`를 생략하고 `Claude Code opus 4.6`이라고 쓰거나, `--vendor claude --model
+claude-opus-4-6`으로 정규 ID를 박는다. `--vendor claude`가 박혀 있으면 AGY로 샐 일이
+없으므로 `opus 4.6`이라고만 써도 카탈로그가 캐시돼 있는 한 같은 곳으로 간다.
+`terra`·`gpt 5.5`·
 `5.6 sol`은 Codex 정규 slug로 바뀐다. `opus terra`처럼 모델 둘을 한 값에 쓰면 추측하지
 않고 unknown으로 거부한다.
 

@@ -23,7 +23,7 @@ import {
   hostIsolationRecord,
   resolveExecutable,
 } from "./vendor-policy.mjs";
-import { executeCli, parseCli, resolveCodexModelAlias, resolveModelRoute, resolveVendorForModel, run, splitModelEffort, usageText } from "./dispatch.mjs";
+import { executeCli, parseCli, resolveCodexModelAlias, resolveModelRoute, resolveVendorForModel, resolveVendorModelAlias, run, splitModelEffort, usageText } from "./dispatch.mjs";
 import { HTTP_PROVIDERS, createSubscriptionAdapter, dispatchGeneration, executeGenerationCli } from "./generation-dispatch.mjs";
 
 const scriptsDirectory = dirname(fileURLToPath(import.meta.url));
@@ -655,15 +655,20 @@ test("skill resolves the catalog path directly before declaring it missing", () 
   assert.match(skill, /검색 결과가 비었다는 이유만으로 설치 누락이나 카탈로그 오류라고 단정하지 않는다/);
 });
 
-test("0.9.17 public help and documentation describe cache-first ranked routing", () => {
+test("0.9.18 public help and documentation describe cache-first ranked routing", () => {
   const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
   const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
   const publicReadmeUrls = [new URL("../../../README.md", import.meta.url), new URL("../../../README.ko.md", import.meta.url)];
   const publicReadmes = publicReadmeUrls.filter((url) => existsSync(url)).map((url) => readFileSync(url, "utf8"));
-  assert.equal(plugin.version, "0.9.17");
+  assert.equal(plugin.version, "0.9.18");
   assert.ok(publicReadmes.length === 0 || publicReadmes.length === 2, "public snapshot must carry both README files");
+  // Derived from plugin.json rather than written out again: the literal was a
+  // third place a release had to edit, and a bump that missed it failed here
+  // naming the OLD version, which reads as "the docs are stale" rather than
+  // "this assertion is".
+  const version = new RegExp(plugin.version.replace(/\./g, "\\."));
   for (const text of [skill, ...publicReadmes]) {
-    assert.match(text, /0\.9\.17/);
+    assert.match(text, version);
     assert.match(text, /model-catalog-v1\.json/);
     assert.match(text, /opus 4\.6/);
   }
@@ -705,6 +710,18 @@ mkdirSync(dirname(input1), { recursive: true });
 mkdirSync(dirname(input3), { recursive: true });
 writeFileSync(brief, "brief with spaces and quotes: \"complete\"\n");
 for (const input of [input1, input2, input3]) writeFileSync(input, "image");
+
+// A pinned --vendor resolves --model through whatever catalog is already on disk,
+// so a test that asserts an exact model string has to say which catalog it means
+// or it starts reporting on whoever runs it: this machine has a real Codex cache
+// and a real unified cache, and `Gemini 3.5 Flash (High)` normalizes onto the slug
+// in one of them. These deps name two paths that do not exist, which is the
+// documented "leave --model alone" case, so an argv fixture keeps testing argv
+// assembly. Tests that mean to exercise resolution pass their own catalog instead.
+const CATALOG_FREE = Object.freeze({
+  env: Object.freeze({ CODEX_HOME: join(root, "absent-codex-home") }),
+  cachePath: join(root, "absent-model-catalog.json"),
+});
 
 const LINK_SKIP_CODES = new Set(["EPERM", "EACCES", "ENOSYS", "ENOTSUP", "EOPNOTSUPP"]);
 function createDirectoryLink(t, target, link) {
@@ -1215,6 +1232,216 @@ test("Codex model aliases resolve through exact or unique cache matches and othe
   assert.equal(resolveCodexModelAlias("luna", { CODEX_HOME: join(root, "missing-model-cache") }), "luna");
 });
 
+const PINNED_CATALOGS = Object.freeze({
+  codex: ["gpt-5.6-luna", "gpt-5.6-sol"],
+  agy: ["gemini-3.8-flash-high", "claude-opus-4-6-thinking"],
+  claude: [
+    { value: "opus", resolvedModel: "claude-opus-5", displayName: "Opus 5" },
+    { value: "claude-fable-5[1m]", resolvedModel: "claude-fable-5", displayName: "Fable 5" },
+  ],
+  grok: ["grok-4.6"],
+});
+
+// Before this, only codex resolved behind an explicit --vendor; every other vendor
+// received the caller's raw string, so a name the vendor does not publish passed
+// --dry-run intact and only failed once the call was actually paid for.
+test("a pinned --vendor resolves its model through that one vendor's catalog", () => {
+  const deps = { modelCatalogs: PINNED_CATALOGS };
+  assert.equal(resolveVendorModelAlias("codex", "luna", deps), "gpt-5.6-luna");
+  assert.equal(resolveVendorModelAlias("codex", "5.6 SOL", deps), "gpt-5.6-sol");
+  // The display label agy's picker shows and the slug `agy models` prints normalize
+  // onto the same key, so the label reaches agy as the slug agy publishes.
+  assert.equal(resolveVendorModelAlias("agy", "Gemini 3.8 Flash (High)", deps), "gemini-3.8-flash-high");
+  assert.equal(resolveVendorModelAlias("agy", "opus 4.6", deps), "claude-opus-4-6-thinking");
+  assert.equal(resolveVendorModelAlias("claude", "fable", deps), "claude-fable-5");
+  assert.equal(resolveVendorModelAlias("claude", "opus 5", deps), "claude-opus-5");
+  assert.equal(resolveVendorModelAlias("grok", "GROK 4.6", deps), "grok-4.6");
+  // A bare provider-advertised alias stays the alias: pinning it to today's
+  // canonical would silence the "latest" the caller asked for.
+  assert.equal(resolveVendorModelAlias("claude", "opus", deps), "opus");
+
+  // The pin decides which catalog is consulted, so a name another vendor owns is
+  // not borrowed across the boundary.
+  assert.equal(resolveVendorModelAlias("agy", "luna", deps), "luna");
+  assert.equal(resolveVendorModelAlias("claude", "gemini-3.8-flash-high", deps), "gemini-3.8-flash-high");
+  assert.equal(resolveVendorModelAlias("agy", "Claude Code opus 4.6", deps), "Claude Code opus 4.6");
+  assert.equal(resolveVendorModelAlias("claude", "Claude Code opus 4.6", deps), "claude-opus-4-6");
+
+  // Anything short of exactly one winning model hands back what the caller wrote.
+  assert.equal(resolveVendorModelAlias("codex", "unknown-model", deps), "unknown-model");
+  assert.equal(resolveVendorModelAlias("codex", "luna", { modelCatalogs: { codex: ["gpt-5.6-luna", "vendor-preview-luna"] } }), "luna");
+  assert.equal(resolveVendorModelAlias("claude", "fable", { modelCatalogs: {} }), "fable");
+  assert.equal(resolveVendorModelAlias("claude", "fable", CATALOG_FREE), "fable");
+  assert.equal(resolveVendorModelAlias("codex", "luna", CATALOG_FREE), "luna");
+  assert.equal(resolveVendorModelAlias("claude", undefined, deps), undefined);
+  // The alias spelling --vendor accepts is not the key the catalog is filed under,
+  // and only one normalization call joins them. Without this row, dropping it makes
+  // every antigravity catalog lookup return nothing and the feature half-dies green.
+  assert.equal(
+    parseCli(["--vendor", "antigravity", "--operation", "text", "--brief", brief, "--model", "opus 4.6"], root, deps).model,
+    "claude-opus-4-6-thinking",
+  );
+});
+
+// The two directions of boundary matching are the same rank and read alike, and
+// the first version of this feature took both. On the real catalogs that meant
+// `claude-sonnet-4` came back as `claude-sonnet-4-6` — a caller pinning an older
+// model silently got a newer one, with the receipt naming the substitute.
+test("a pinned vendor accepts a dropped namespace but never a trailing version or effort", () => {
+  // Codex publishes provider-namespaced slugs; the caller writing the bare model
+  // name means the same model, so it resolves.
+  const namespaced = { modelCatalogs: { codex: ["anthropic/claude-opus-4-6", "gpt-5.6-luna"] } };
+  assert.equal(resolveVendorModelAlias("codex", "claude-opus-4-6", namespaced), "anthropic/claude-opus-4-6");
+  assert.equal(resolveVendorModelAlias("codex", "opus-4-6", namespaced), "anthropic/claude-opus-4-6");
+
+  // AGY publishes every model with a trailing effort, and a version-bumped sibling
+  // of a model the caller named exactly. Neither extra tail is the caller's model.
+  const trailing = { modelCatalogs: { agy: ["claude-sonnet-4-6", "gpt-oss-120b-medium"] } };
+  assert.equal(resolveVendorModelAlias("agy", "claude-sonnet-4", trailing), "claude-sonnet-4");
+  assert.equal(resolveVendorModelAlias("agy", "gpt-oss-120b", trailing), "gpt-oss-120b");
+  // Exactly the published name still resolves to itself, so the guard rejects the
+  // substitution rather than the whole vendor.
+  assert.equal(resolveVendorModelAlias("agy", "gpt-oss-120b-medium", trailing), "gpt-oss-120b-medium");
+
+  // What this costs, recorded so a later round sees the price and not just the win.
+  // A dated snapshot is arguably the same model, and its undated spelling no longer
+  // expands. Measured against the real Codex catalog, 59 of 107 truncated inputs
+  // lose resolution this way; all but a handful are prefixes nobody types
+  // (`nvidia-google`, `openrouter-z`). The vendor rejects them loudly, which is the
+  // documented failure, and the same rule is what stops `claude-sonnet-4` from
+  // silently becoming `claude-sonnet-4-6`. Do not buy these back with a
+  // "trailing tokens that look like a date" exception: that list has no end.
+  const dated = { modelCatalogs: { codex: ["anthropic/claude-opus-4-5-20251101"] } };
+  assert.equal(resolveVendorModelAlias("codex", "anthropic/claude-opus-4-5", dated), "anthropic/claude-opus-4-5");
+  assert.equal(
+    resolveVendorModelAlias("codex", "anthropic/claude-opus-4-5-20251101", dated),
+    "anthropic/claude-opus-4-5-20251101",
+  );
+  assert.equal(resolveVendorModelAlias("codex", "claude-opus-4-5-20251101", dated), "anthropic/claude-opus-4-5-20251101");
+
+  // The reachable harm: agy exits 1 when a suffixed model is paired with --effort,
+  // so a rename here turns a call that reached the vendor into a dispatcher-made
+  // failure. The caller's spelling has to survive to the argv.
+  const parsed = parseCli(
+    ["--vendor", "agy", "--operation", "text", "--brief", brief, "--model", "gpt-oss-120b", "--effort", "high"],
+    root,
+    trailing,
+  );
+  assert.equal(parsed.model, "gpt-oss-120b");
+  assert.ok(buildVendorArgv({ ...parsed, cwd: root, timeout: 3600 }).includes("gpt-oss-120b"));
+
+  // The variant is dropped before the winners are picked, not after, and that is
+  // visible here: these two used to tie at the same rank and cancel each other out
+  // as ambiguous. Now the surviving match is the one that names the caller's own
+  // model under its provider namespace, which is the answer they wanted.
+  const mixed = { modelCatalogs: { codex: ["anthropic/claude-opus-4-6", "claude-opus-4-6-thinking"] } };
+  assert.equal(resolveVendorModelAlias("codex", "claude-opus-4-6", mixed), "anthropic/claude-opus-4-6");
+
+  // Automatic routing keeps both directions: there the caller has delegated the
+  // name outright, and this round does not change what it accepts.
+  assert.deepEqual(
+    resolveModelRoute("gpt-oss-120b", { modelCatalogs: { codex: ["gpt-5.6-luna"], agy: ["gpt-oss-120b-medium"], claude: ["opus"] } }),
+    { vendor: "agy", model: "gpt-oss-120b-medium" },
+  );
+});
+
+test("a pinned vendor's resolved model is revalidated before it can reach argv", () => {
+  // `--model` rejects a leading dash and control characters, and the catalog is not
+  // a trusted source for either. The automatic route has this row; the pinned route
+  // reaches the same check only because resolution happens before it.
+  assert.throws(
+    () => parseCli(
+      ["--vendor", "codex", "--operation", "text", "--brief", brief, "--model", "safe-name"],
+      root,
+      { modelCatalogs: { codex: [{ canonical: "-unsafe", aliases: ["safe-name"], efforts: [] }] } },
+    ),
+    /--model must be non-empty/,
+  );
+});
+
+test("a pinned vendor reads the catalog as it stands: no provider process, no refresh, its own effort set", () => {
+  const home = modelCache(["gpt-5.6-luna"]);
+  const cachePath = join(makeTempDir("second-opinion-pinned-cache-"), "catalog.json");
+  const staleText = JSON.stringify({
+    schemaVersion: 1,
+    checkedAt: 1_000_000_000_000,
+    degraded: false,
+    vendors: {
+      codex: { available: true, models: [{ canonical: "gpt-5.6-luna", aliases: ["luna"], efforts: ["high"] }] },
+      agy: { available: true, models: [{ canonical: "gemini-3.8-flash-high", aliases: ["gemini-3.8-flash-high"], efforts: [] }] },
+      claude: { available: true, models: [{ canonical: "claude-opus-5", aliases: ["opus", "Opus 5"], efforts: ["high"], family: "opus", latestAlias: "opus" }] },
+      grok: { available: true, models: [{ canonical: "grok-4.6", aliases: ["grok-4.6"], efforts: [] }] },
+    },
+  });
+  writeFileSync(cachePath, staleText);
+  let providerCalls = 0;
+  const deps = {
+    env: { CODEX_HOME: home },
+    cachePath,
+    // A day past the 24h TTL: the automatic route would refresh here, and a
+    // refresh on the pinned path would charge every dispatch for provider startup.
+    now: () => 1_000_000_000_000 + (25 * 60 * 60 * 1000),
+    spawnSync: () => { providerCalls += 1; return { status: 1, stdout: "", stderr: "" }; },
+  };
+  const claude = (...extra) => ["--vendor", "claude", "--operation", "text", "--brief", brief,
+    "--out", join(root, "pinned.out"), "--err", join(root, "pinned.err"), ...extra];
+
+  const parsed = parseCli(claude("--model", "Opus 5", "--effort", "high"), root, deps);
+  assert.equal(parsed.model, "claude-opus-5");
+  assert.equal(parsed.modelRequested, "Opus 5", "the caller's own name stays on the receipt beside the executed one");
+  assert.equal(providerCalls, 0, "a pinned vendor starts no provider process");
+  assert.equal(readFileSync(cachePath, "utf8"), staleText, "a stale cache is read as it stands and never rewritten");
+
+  // The catalog resolves the name only. Binding the matched record's advertised
+  // efforts would let a cache decide what a pinned vendor accepts, and this row
+  // advertises "high" alone while claude takes low through max.
+  assert.equal(parseCli(claude("--model", "Opus 5", "--effort", "max"), root, deps).effort, "max");
+  assert.equal(providerCalls, 0);
+});
+
+test("a pinned vendor's dry-run and receipt report the resolved model and keep the requested one beside it", async () => {
+  const sinks = makeTempDir("second-opinion-pinned-receipt-");
+  const raw = join(sinks, "raw.jsonl");
+  const stdout = memoryWriter();
+  const stderr = memoryWriter();
+  const status = await executeCli(
+    ["--vendor", "agy", "--operation", "text", "--brief", brief, "--cwd", root, "--model", "opus 4.6", "--effort", "medium", "--dry-run"],
+    {
+      cwd: root,
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+      env: { SECOND_OPINION_RECEIPT: raw, SECOND_OPINION_PORTABLE_RECEIPT: join(sinks, "portable.jsonl") },
+      modelCatalogs: PINNED_CATALOGS,
+    },
+  );
+  assert.equal(status, 0, stderr.value());
+  const value = JSON.parse(stdout.value());
+  assert.equal(value.modelRequested, "opus 4.6");
+  assert.equal(value.model, "claude-opus-4-6-thinking");
+  assert.ok(value.argv.includes("claude-opus-4-6-thinking"), "the vendor is handed the slug it publishes");
+  assert.equal(value.argv.includes("opus 4.6"), false);
+
+  // The dry-run JSON and the receipt row are different surfaces written by
+  // different functions. The receipt is the one that survives the call, so what
+  // the caller asked for has to be recoverable from it and not only from stdout.
+  const row = JSON.parse(readFileSync(raw, "utf8").trim().split("\n").at(-1));
+  assert.equal(row.modelRequested, "opus 4.6");
+  assert.equal(row.model, "claude-opus-4-6-thinking");
+
+  // Same call, nothing cached: the name the caller wrote is what the vendor gets,
+  // so a missing catalog never renames a call.
+  const bare = memoryWriter();
+  const bareStatus = await executeCli(
+    ["--vendor", "agy", "--operation", "text", "--brief", brief, "--cwd", root, "--model", "opus 4.6", "--effort", "medium", "--dry-run"],
+    { cwd: root, stdout: bare.stream, stderr: memoryWriter().stream, ...CATALOG_FREE },
+  );
+  assert.equal(bareStatus, 0);
+  assert.equal(JSON.parse(bare.value()).model, "opus 4.6");
+
+  assert.match(usageText(), /With --vendor, --model is still resolved against that one vendor's catalog/);
+  assert.match(usageText(), /a pinned vendor never refreshes/);
+});
+
 test("omitting --vendor ranks exact catalog names over inferred families and canonicalizes the executable model", () => {
   const catalogs = {
     codex: ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.5"],
@@ -1429,6 +1656,7 @@ test("Codex CLI dry-run separates requested shorthand from the normalized execut
   const explicit = parseCli(
     ["--vendor", "codex", "--operation", "text", "--brief", brief, "--model", "luna@high", "--effort", "xhigh"],
     root,
+    CATALOG_FREE,
   );
   assert.equal(explicit.modelRequested, "luna@high");
   assert.equal(explicit.model, "luna@high");
@@ -1444,7 +1672,7 @@ test("seven CLI dry-runs match literal fixtures and use bare executable names", 
     for (const input of fixture.inputs) args.push("--input", input);
     const stdout = memoryWriter();
     const stderr = memoryWriter();
-    const status = await executeCli(args, { cwd: root, stdout: stdout.stream, stderr: stderr.stream });
+    const status = await executeCli(args, { cwd: root, stdout: stdout.stream, stderr: stderr.stream, ...CATALOG_FREE });
     assert.equal(status, 0, stderr.value());
     const value = JSON.parse(stdout.value());
     assert.equal(value.executable, fixture.vendor);
@@ -1469,7 +1697,7 @@ test("explicit mode CLI dry-runs expose requested and effective modes", async ()
     if (fixture.vendor === "claude" || fixture.vendor === "grok") args.push("--out", join(root, `${fixture.vendor}-${fixture.mode}.out`), "--err", join(root, `${fixture.vendor}-${fixture.mode}.err`));
     const stdout = memoryWriter();
     const stderr = memoryWriter();
-    const status = await executeCli(args, { cwd: root, stdout: stdout.stream, stderr: stderr.stream });
+    const status = await executeCli(args, { cwd: root, stdout: stdout.stream, stderr: stderr.stream, ...CATALOG_FREE });
     assert.equal(status, 0, stderr.value());
     const value = JSON.parse(stdout.value());
     assert.equal(value.requestedMode, fixture.mode);
@@ -1549,7 +1777,7 @@ test("agy carries reasoning effort as its own flag", () => {
   // agy 1.1.26 split effort out of the model name. Forwarding the flag is what
   // lets a caller use the canonical spelling at all; dropping it silently sent
   // every AGY call at the account default effort.
-  const parsed = parseCli(["--vendor", "agy", "--operation", "text", "--brief", brief, "--model", "gemini-3.8-flash", "--effort", "medium"], root);
+  const parsed = parseCli(["--vendor", "agy", "--operation", "text", "--brief", brief, "--model", "gemini-3.8-flash", "--effort", "medium"], root, CATALOG_FREE);
   assert.equal(parsed.effort, "medium");
   const argv = buildVendorArgv({ ...parsed, cwd: root, timeout: 3600 });
   const at = argv.indexOf("--effort");
@@ -1557,13 +1785,13 @@ test("agy carries reasoning effort as its own flag", () => {
   assert.equal(argv[at + 1], "medium");
   // The dispatcher does not rewrite the older suffix spelling into the new one:
   // agy rejects the combination loudly, and rewriting would hide what it received.
-  const legacy = parseCli(["--vendor", "agy", "--operation", "text", "--brief", brief, "--model", "gemini-3.8-flash-low"], root);
+  const legacy = parseCli(["--vendor", "agy", "--operation", "text", "--brief", brief, "--model", "gemini-3.8-flash-low"], root, CATALOG_FREE);
   assert.equal(buildVendorArgv({ ...legacy, cwd: root, timeout: 3600 }).includes("--effort"), false);
   // The contract lives here: a suffix spelling paired with --effort must reach agy
   // exactly as the caller wrote it, so agy's exit 1 conflict stays a conflict.
   // Rewriting it into the canonical pair would turn that refusal into a silent run
   // and erase which spelling the vendor actually received.
-  const conflicting = parseCli(["--vendor", "agy", "--operation", "text", "--brief", brief, "--model", "gemini-3.8-flash-low", "--effort", "high"], root);
+  const conflicting = parseCli(["--vendor", "agy", "--operation", "text", "--brief", brief, "--model", "gemini-3.8-flash-low", "--effort", "high"], root, CATALOG_FREE);
   const conflictArgv = buildVendorArgv({ ...conflicting, cwd: root, timeout: 3600 });
   assert.ok(conflictArgv.includes("gemini-3.8-flash-low"), "the suffix spelling survives untouched");
   const conflictAt = conflictArgv.indexOf("--effort");
@@ -3395,13 +3623,16 @@ test("--expect-total records the declared section count without judging it", asy
   }
 });
 
-test("the token-file form and the operation default are taught where callers read", () => {
+test("the token-file form and the operation and mode defaults are taught where callers read", () => {
   // Same guard as --expect-total above, for the same reason: a flag that only the
   // help mentions is a flag the caller never learns exists. The rules pinned here
-  // are the two a caller cannot derive from the flag name — that the two token
-  // sources are exclusive, and that omitting --operation is text rather than a
-  // guess at the operation.
-  for (const pattern of [/--expect-output-file/, /Omit --operation/]) assert.match(usageText(), pattern);
+  // are the ones a caller cannot derive from the flag name — that the two token
+  // sources are exclusive, that omitting --operation is text rather than a
+  // guess at the operation, and that --mode is omitted rather than set to a
+  // "default" value. The last one is here because the help taught --operation's
+  // omission beside --brief and left its sibling silent, and a caller who read
+  // that line reached for --mode default and got a validation error.
+  for (const pattern of [/--expect-output-file/, /Omit --operation/, /Omit --mode/]) assert.match(usageText(), pattern);
   for (const url of [
     new URL("../../../README.md", import.meta.url),
     new URL("../../../README.ko.md", import.meta.url),
@@ -3416,6 +3647,7 @@ test("the token-file form and the operation default are taught where callers rea
   const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
   assert.match(skill, /`--operation`은 생략하면 `text`/, "SKILL.md states the operation default");
   assert.match(skill, /`--input`을 주면 추론하지 않고 거절/, "SKILL.md states that omission is not read as an image call");
+  assert.match(skill, /`--mode default`는 생략과 같은 뜻으로 읽히지 않고 거절된다/, "SKILL.md states that --mode default is rejected, not an alias for omission");
 });
 
 test("portable output checks share the twelve-item boundary and bound token text", async () => {
