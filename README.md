@@ -2,11 +2,11 @@
 
 **English** | [한국어](./README.ko.md)
 
-![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.18-informational)
+![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.19-informational)
 
 **Use other AI vendors from inside Claude Code — in plain language.**
 Second opinions, task offloading, and vendor capabilities like image generation.
-Subscription vendors: Codex, Antigravity, Claude, and Grok (SuperGrok OAuth).
+Subscription vendors: Codex, Antigravity, Claude, Grok (SuperGrok OAuth), and Devin.
 
 > "Have Codex review this auth logic."
 > "Ask Gemini to poke holes in this plan."
@@ -120,6 +120,7 @@ CLI launches are not worth that diagnostic cost.
 | AGY's default model moves without any local change | it lives on the Antigravity account, not in a config file; measured moving from `gemini-3.7-flash` to `gemini-3.8-flash-high` with nothing edited locally, so pin `--model` on any call whose result must be reproducible |
 | Grok review examples that omit reasoning effort silently use the vendor default | the standard review example explicitly uses `--effort medium` for cost/quality balance; dispatch forwards it unchanged and the receipt retains `effortRequested` |
 | A review must inspect the exact current diff, or run the suite, to judge | Claude plan/review includes Bash/PowerShell for `git diff` and history; `--no-host-shell` removes it. Grok/AGY explicit modes still have no git shell, so linked-worktree reviews must put the changed-file list and full unified diff in the brief and state any suite result the caller measured |
+| Devin can import the caller's agent/editor skills and MCP configuration | every Devin call receives a bundled config with all eight `read_config_from` sources disabled; default is unrestricted, while plan/review add a PreToolUse hook that blocks write/edit/exec tools and returns the reason to the child so execution continues |
 
 - **Execution receipts** — after every vendor call the skill states what was
   actually observed: the vendor and model requested, the real backend if known,
@@ -132,6 +133,8 @@ CLI launches are not worth that diagnostic cost.
   effort, exit code, duration, and whether the process actually spawned. Codex
   calls also carry measured token usage read from Codex's own session log
   (input, cached input, output, reasoning, total, context window, quota used).
+  Devin calls carry the exported conversation's session ID and step-total prompt,
+  completion, and cached token counts. These are totals across steps, not one prompt's size.
   Optional `--expect-output <ASCII token, max 1024 chars>` may be repeated up to twelve times.
   `--expect-output-file <path>` supplies the same tokens from a file instead — one per UTF-8
   line (optional BOM, LF or CRLF, line edges trimmed, blank lines ignored, at least one token
@@ -199,8 +202,9 @@ CLI launches are not worth that diagnostic cost.
   both are blocked by default for codex and claude, so a reviewer sees the brief
   instead of the caller's progress state. `--host-hooks`/`--host-docs` re-allow
   one path, `--no-host-hooks`/`--no-host-docs` block it in a call with no `--mode` too,
-  and every call records `hostIsolation` in both receipts — an invoked row has
-  the flags and environment variables actually handed the child, a valid dry-run
+  and every call records `hostIsolation` in both receipts — a raw invoked row has
+  the exact flags and environment variables handed to the child, while portable rows replace
+  dispatcher-owned config paths with stable bundled labels; a valid dry-run
   has its planned vector, and every other pre-spawn failure has empty arrays.
   What the child then enforced is not recorded:
   passing a flag and the flag taking effect are different things, and this round
@@ -273,9 +277,10 @@ CLI launches are not worth that diagnostic cost.
   non-TTY contexts on Windows (fixed upstream).
 - **Grok CLI** — Windows PowerShell: `irm https://x.ai/cli/install.ps1 | iex`,
   then `grok login` (SuperGrok OAuth). Text only; image operations are rejected.
+- **Devin CLI** — install and sign in with Devin OAuth. Text only; call it explicitly
+  with `--vendor devin`. Windows fallback: `%LOCALAPPDATA%\devin\cli\bin\devin.exe`.
 
-Having only one of the two is fine — that vendor works, the other is skipped.
-Grok is optional the same way.
+Any CLI vendor is optional; installed and authenticated vendors work independently.
 
 ### API providers (generation path only) — optional
 
@@ -368,6 +373,9 @@ Antigravity, then show me where they disagree.
 ```
 Have Grok review this too.
 ```
+```
+Have Devin review this with swe-2-max.
+```
 
 For Madi's usual review pass, state the target, required evidence, and no-edit
 rule together:
@@ -392,7 +400,7 @@ Triggers are natural language, not keywords — any language Claude understands 
 ## Data boundary — read this
 
 **Everything placed in the brief is sent, verbatim, to an external vendor
-(OpenAI / Google / xAI).** The skill is instructed to keep secrets, credentials, and raw
+(OpenAI / Google / xAI / Cognition).** The skill is instructed to keep secrets, credentials, and raw
 repo dumps out of the brief, but the final responsibility is yours. On sensitive
 codebases, check what's being excerpted before it goes out.
 

@@ -9,6 +9,8 @@ import { PassThrough, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import {
   AGY_NATIVE_READONLY_PROFILE,
+  DEVIN_ISOLATION_CONFIG,
+  DEVIN_READONLY_CONFIG,
   GROK_HARNESS_ISOLATION_ENV,
   PolicyError,
   applyGrokHarnessIsolationEnv,
@@ -655,12 +657,12 @@ test("skill resolves the catalog path directly before declaring it missing", () 
   assert.match(skill, /검색 결과가 비었다는 이유만으로 설치 누락이나 카탈로그 오류라고 단정하지 않는다/);
 });
 
-test("0.9.18 public help and documentation describe cache-first ranked routing", () => {
+test("0.9.19 public help and documentation describe cache-first ranked routing", () => {
   const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
   const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
   const publicReadmeUrls = [new URL("../../../README.md", import.meta.url), new URL("../../../README.ko.md", import.meta.url)];
   const publicReadmes = publicReadmeUrls.filter((url) => existsSync(url)).map((url) => readFileSync(url, "utf8"));
-  assert.equal(plugin.version, "0.9.18");
+  assert.equal(plugin.version, "0.9.19");
   assert.ok(publicReadmes.length === 0 || publicReadmes.length === 2, "public snapshot must carry both README files");
   // Derived from plugin.json rather than written out again: the literal was a
   // third place a release had to edit, and a bump that missed it failed here
@@ -770,6 +772,9 @@ const FIXTURES = [
     argv: ["-p", "--model", "opus", "--effort", "high", "--output-format", "json", "--no-session-persistence", "--safe-mode", "--disable-slash-commands", "--dangerously-skip-permissions", "--tools=default"] },
   { vendor: "grok", operation: "text", model: "grok-4.6", effort: "high", inputs: [], isGitRepo: false, cwd: root, brief,
     argv: ["--prompt-file", resolve(brief), "--output-format", "json", "-m", "grok-4.6", "--effort", "high", "--cwd", root, "--permission-mode", "bypassPermissions"] },
+  { vendor: "devin", operation: "text", model: "swe-2-max", inputs: [], isGitRepo: false, cwd: root, brief,
+    devinTranscript: join(root, "devin-transcript.json"),
+    argv: ["--prompt-file", resolve(brief), "--model", "swe-2-max", "--export", join(root, "devin-transcript.json"), "--config", DEVIN_ISOLATION_CONFIG, "--permission-mode", "dangerous", "--respect-workspace-trust", "false", "-p"] },
 ];
 const CLAUDE_FIXTURE = FIXTURES.find((fixture) => fixture.vendor === "claude");
 
@@ -830,6 +835,20 @@ const MODE_FIXTURES = [
     inputProfile: "none",
     argv: ["--prompt-file", resolve(brief), "--output-format", "json", "-m", "grok-4.6", "--cwd", root, "--permission-mode", "plan", "--tools", "read_file,grep,list_dir", "--no-subagents"],
   },
+  {
+    vendor: "devin", operation: "text", mode: "plan", model: "swe-2-max",
+    inputs: [], cwd: root, brief, devinTranscript: join(root, "devin-plan-transcript.json"),
+    effectiveMode: "plan",
+    inputProfile: "none",
+    argv: ["--prompt-file", resolve(brief), "--model", "swe-2-max", "--export", join(root, "devin-plan-transcript.json"), "--config", DEVIN_READONLY_CONFIG, "--permission-mode", "dangerous", "--respect-workspace-trust", "false", "-p"],
+  },
+  {
+    vendor: "devin", operation: "text", mode: "review", model: "swe-2-max",
+    inputs: [], cwd: root, brief, devinTranscript: join(root, "devin-review-transcript.json"),
+    effectiveMode: "review",
+    inputProfile: "none",
+    argv: ["--prompt-file", resolve(brief), "--model", "swe-2-max", "--export", join(root, "devin-review-transcript.json"), "--config", DEVIN_READONLY_CONFIG, "--permission-mode", "dangerous", "--respect-workspace-trust", "false", "-p"],
+  },
 ];
 
 function grokResult(text = "pong") {
@@ -842,6 +861,258 @@ function grokResult(text = "pong") {
 }
 
 const GROK_FIXTURE = FIXTURES.find((fixture) => fixture.vendor === "grok");
+const DEVIN_FIXTURE = FIXTURES.find((fixture) => fixture.vendor === "devin");
+
+function devinTranscript(model = "swe-2-max") {
+  return JSON.stringify({
+    schema_version: "1.0.0",
+    session_id: "fixture-session",
+    agent: { model_name: model },
+    steps: [
+      { step_id: 1, metrics: { prompt_tokens: 5, completion_tokens: 1, cached_tokens: 2 } },
+      { step_id: 2, metrics: { prompt_tokens: 6, completion_tokens: 2, cached_tokens: 2 } },
+    ],
+    final_metrics: {
+      total_prompt_tokens: 11,
+      total_completion_tokens: 3,
+      total_cached_tokens: 4,
+      total_steps: 2,
+    },
+  });
+}
+
+test("devin uses prompt-file only, maps permissions by mode, and records transcript usage", async () => {
+  const out = join(root, "devin.out");
+  const err = join(root, "devin.err");
+  const raw = join(root, "devin.raw.jsonl");
+  const portable = join(root, "devin.portable.jsonl");
+  let stdin = "";
+  const spawnFake = (_executable, argv) => fakeChild((child) => {
+    child.stdin.on("data", (chunk) => { stdin += chunk; });
+    child.stdin.on("end", () => {
+      const exportIndex = argv.indexOf("--export");
+      writeFileSync(argv[exportIndex + 1], devinTranscript(), "utf8");
+      child.stdout.end("DEVIN_DONE\n");
+      child.stderr.end();
+      queueMicrotask(() => child.emit("close", 0, null));
+    });
+    child.stdin.resume();
+  });
+  const code = await run({ ...DEVIN_FIXTURE, out, err, timeout: 2, dryRun: false }, {
+    spawn: spawnFake,
+    stderr: memoryWriter().stream,
+    env: { SECOND_OPINION_RECEIPT: raw, SECOND_OPINION_PORTABLE_RECEIPT: portable },
+  });
+  assert.equal(code, 0);
+  assert.equal(stdin, "");
+  assert.equal(readFileSync(out, "utf8"), "DEVIN_DONE\n");
+  const rawRow = receiptLines(raw)[0];
+  const portableRow = receiptLines(portable)[0];
+  assert.equal(rawRow.vendorUsageStatus, "ok");
+  const transcriptFixture = JSON.parse(devinTranscript());
+  assert.equal(rawRow.vendorUsage.inputTokens, transcriptFixture.steps.reduce((sum, step) => sum + step.metrics.prompt_tokens, 0));
+  assert.equal(rawRow.vendorUsage.outputTokens, transcriptFixture.steps.reduce((sum, step) => sum + step.metrics.completion_tokens, 0));
+  assert.deepEqual(rawRow.vendorUsage, {
+    source: "devin-transcript-json",
+    actualModels: ["swe-2-max"],
+    sessionId: "fixture-session",
+    inputTokens: 11,
+    cachedInputTokens: 4,
+    outputTokens: 3,
+    totalTokens: 14,
+  });
+  assert.equal(portableRow.vendorUsageStatus, "ok");
+  assert.deepEqual(portableRow.vendorUsage, {
+      source: "devin-transcript-json",
+      actualModels: ["swe-2-max"],
+      sessionId: "fixture-session",
+      inputTokens: 11,
+      cachedInputTokens: 4,
+      cacheCreationInputTokens: null,
+      cacheReadInputTokens: null,
+      outputTokens: 3,
+      reasoningOutputTokens: null,
+      totalTokens: 14,
+      totalCostUsd: null,
+      contextWindow: null,
+      quotaUsedPercent: null,
+  });
+  assert.deepEqual(rawRow.hostIsolation.argv, ["--config", DEVIN_ISOLATION_CONFIG, "--permission-mode", "dangerous"]);
+  assert.deepEqual(portableRow.hostIsolation.argv, ["--config", "bundled:devin-isolated-config.json", "--permission-mode", "dangerous"]);
+  assert.equal(JSON.stringify(portableRow).includes(DEVIN_ISOLATION_CONFIG), false);
+  const readonlyPortable = join(root, "devin-readonly.portable.jsonl");
+  assert.equal(await run({
+    ...DEVIN_FIXTURE,
+    mode: "review",
+    devinTranscript: join(root, "devin-readonly-transcript.json"),
+    dryRun: true,
+  }, {
+    stdout: memoryWriter().stream,
+    stderr: memoryWriter().stream,
+    env: { SECOND_OPINION_PORTABLE_RECEIPT: readonlyPortable },
+  }), 0);
+  assert.deepEqual(receiptLines(readonlyPortable)[0].hostIsolation.argv, [
+    "--config", "bundled:devin-readonly-config.json", "--permission-mode", "dangerous",
+  ]);
+  const defaultConfig = JSON.parse(readFileSync(DEVIN_ISOLATION_CONFIG, "utf8"));
+  const readonlyConfig = JSON.parse(readFileSync(DEVIN_READONLY_CONFIG, "utf8"));
+  assert.deepEqual(defaultConfig.read_config_from, {
+    agents_standard: false, cursor: false, windsurf: false, claude: false,
+    copilot: false, opencode: false, vscode: false, zed: false,
+  });
+  assert.deepEqual(readonlyConfig.read_config_from, defaultConfig.read_config_from);
+  assert.equal(Object.hasOwn(defaultConfig, "hooks"), false, "default remains full access");
+  assert.equal(Object.hasOwn(defaultConfig, "devin"), false, "bundled config carries no machine-specific Devin identity");
+  assert.equal(Object.hasOwn(readonlyConfig, "devin"), false, "read-only config carries no machine-specific Devin identity");
+  assert.equal(defaultConfig.shell.setup_complete, true, "first call uses an initialized config location");
+  assert.equal(readonlyConfig.shell.setup_complete, true, "read-only first call uses an initialized config location");
+  const hook = readonlyConfig.hooks.PreToolUse[0];
+  assert.equal(hook.matcher, "^(write|edit|apply_patch|notebook_edit|exec|write_to_process)$");
+  const script = hook.hooks[0].command.match(/^node -e "(.*)"$/)?.[1];
+  assert.ok(script, "read-only hook is an executable Node command");
+  const hookResult = spawnSync(process.execPath, ["-e", script], { encoding: "utf8", shell: false, windowsHide: true });
+  assert.equal(hookResult.status, 0, hookResult.stderr);
+  assert.deepEqual(JSON.parse(hookResult.stdout), {
+    decision: "block",
+    reason: "second-opinion read-only mode blocks writes and command execution",
+  });
+});
+
+test("unreadable Devin transcript records an explicit absence status without inventing token fields", async () => {
+  const out = join(root, "devin-unreadable.out");
+  const raw = join(root, "devin-unreadable.raw.jsonl");
+  const spawnFake = () => fakeChild((child) => {
+    child.stdin.on("end", () => {
+      child.stdout.end("DEVIN_UNREADABLE_DONE\n");
+      child.stderr.end();
+      queueMicrotask(() => child.emit("close", 0, null));
+    });
+    child.stdin.resume();
+  });
+  const code = await run({ ...DEVIN_FIXTURE, devinTranscript: join(root, "missing-devin-transcript.json"), out, timeout: 2, dryRun: false }, {
+    spawn: spawnFake,
+    stderr: memoryWriter().stream,
+    env: { SECOND_OPINION_RECEIPT: raw },
+  });
+  assert.equal(code, 0);
+  const row = receiptLines(raw)[0];
+  assert.equal(row.vendorUsage, null);
+  assert.equal(row.vendorUsageStatus, "read-failed");
+  assert.equal(JSON.stringify(row).includes("inputTokens"), false);
+  assert.equal(JSON.stringify(row).includes("outputTokens"), false);
+});
+
+// Config-hook unit check only: this does not invoke Devin or observe tool
+// availability, PreToolUse dispatch, or the child's continuation after denial.
+function exerciseDevinHook(config, tool) {
+  const entry = config.hooks?.PreToolUse?.find((candidate) => new RegExp(candidate.matcher).test(tool));
+  if (!entry) return { tool, blocked: false, reason: null };
+  const script = entry.hooks?.[0]?.command?.match(/^node -e "(.*)"$/)?.[1];
+  if (!script) return { tool, blocked: false, reason: null };
+  const result = spawnSync(process.execPath, ["-e", script], { encoding: "utf8", shell: false, windowsHide: true });
+  if (result.status !== 0) return { tool, blocked: false, reason: null };
+  const observation = JSON.parse(result.stdout);
+  return {
+    tool,
+    blocked: observation.decision === "block",
+    reason: observation.reason,
+  };
+}
+
+function assertDevinHookDecision(row) {
+  assert.equal(row.blocked, true, `${row.tool} hook must return a block decision`);
+  assert.match(row.reason, /read-only mode blocks writes and command execution/);
+}
+
+test("Devin config-hook unit: each configured name returns a block reason; removing its matcher fails the check", () => {
+  const readonlyConfig = JSON.parse(readFileSync(DEVIN_READONLY_CONFIG, "utf8"));
+  // apply_patch is a defensive matcher, not an exposed tool in Devin 3000.10.31.
+  // Mode-to-config mapping is tested separately; both modes share this hook.
+  const tools = ["write", "edit", "apply_patch", "notebook_edit", "exec", "write_to_process"];
+  for (const tool of tools) {
+    assertDevinHookDecision(exerciseDevinHook(readonlyConfig, tool));
+    const mutated = JSON.parse(JSON.stringify(readonlyConfig));
+    mutated.hooks.PreToolUse[0].matcher = `^(${tools.filter((candidate) => candidate !== tool).join("|")})$`;
+    assert.throws(() => assertDevinHookDecision(exerciseDevinHook(mutated, tool)), `${tool} matcher removal must fail the hook check`);
+  }
+  for (const tool of ["read", "glob", "grep"]) {
+    assert.equal(exerciseDevinHook(readonlyConfig, tool).blocked, false, `${tool} must remain available`);
+  }
+});
+
+test("the 0.9.19 plugin bundle carries every Devin runtime and adapter asset", () => {
+  const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
+  const marketplace = JSON.parse(readFileSync(new URL("../../../.claude-plugin/marketplace.json", import.meta.url), "utf8"));
+  assert.equal(plugin.version, "0.9.19");
+  assert.match(plugin.description, /Devin/);
+  assert.match(marketplace.plugins.find(({ name }) => name === "second-opinion")?.description ?? "", /Grok, Devin/);
+  for (const asset of [
+    new URL("./devin-isolated-config.json", import.meta.url),
+    new URL("./devin-readonly-config.json", import.meta.url),
+    new URL("../skills/second-opinion/references/adapter-devin.md", import.meta.url),
+  ]) assert.equal(existsSync(asset), true, fileURLToPath(asset));
+});
+
+test("Devin docs distinguish unexposed apply_patch from verified runtime blocking", () => {
+  for (const path of ["../skills/second-opinion/SKILL.md", "../skills/second-opinion/references/adapter-devin.md"]) {
+    const doc = readFileSync(new URL(path, import.meta.url), "utf8");
+    assert.match(doc, /`apply_patch`[^\n]*[\s\S]{0,100}3000\.10\.31[\s\S]{0,80}미노출/);
+    assert.match(doc, /실제[^\n]*차단 성공으로 세지 않는다/);
+  }
+  const adapter = readFileSync(new URL("../skills/second-opinion/references/adapter-devin.md", import.meta.url), "utf8");
+  assert.match(adapter, /단위 테스트[\s\S]{0,160}대신 증명하지 않는다/);
+});
+
+test("Devin help, comments, and public docs distinguish raw config paths from portable labels", () => {
+  assert.match(usageText(), /Raw rows keep the exact invocation vector; portable[\s\S]{0,100}stable bundled labels/);
+  for (const path of [
+    "../skills/second-opinion/SKILL.md",
+    "../../../README.md",
+    "../../../README.ko.md",
+    "../../../CHANGELOG.md",
+  ]) assert.match(readFileSync(new URL(path, import.meta.url), "utf8"), /bundled label/i, path);
+  const adapter = readFileSync(new URL("../skills/second-opinion/references/adapter-devin.md", import.meta.url), "utf8");
+  assert.match(adapter, /raw `hostIsolation\.argv`[\s\S]{0,240}`bundled:devin-isolated-config\.json`[\s\S]{0,80}`bundled:devin-readonly-config\.json`/);
+  const dispatchSource = readFileSync(new URL("./dispatch.mjs", import.meta.url), "utf8");
+  const portableSource = readFileSync(new URL("./portable-receipt.mjs", import.meta.url), "utf8");
+  for (const source of [dispatchSource, portableSource]) assert.match(source, /stable bundled\s+(?:labels|label)/);
+});
+
+test("devin rejects image operations and effort before spawn", () => {
+  assert.throws(
+    () => buildVendorArgv({ ...DEVIN_FIXTURE, operation: "image-generate" }),
+    (error) => error instanceof PolicyError && error.classification === "mode_unsupported",
+  );
+  assert.throws(
+    () => parseCli(["--vendor", "devin", "--brief", brief, "--model", "swe-2-max", "--effort", "high"], root, CATALOG_FREE),
+    /--effort is supported only/,
+  );
+});
+
+test("devin cleanup never adopts a caller-supplied directory", async () => {
+  const protectedRoot = makeTempDir("second-opinion-devin-protected-");
+  const sentinel = join(protectedRoot, "keep.txt");
+  writeFileSync(sentinel, "keep", "utf8");
+  const callerStdout = memoryWriter();
+  const code = await run({
+    ...DEVIN_FIXTURE,
+    devinTempRoot: protectedRoot,
+    devinTranscript: join(protectedRoot, "caller-transcript.json"),
+    dryRun: true,
+  }, { stdout: callerStdout.stream, stderr: memoryWriter().stream });
+  assert.equal(code, 0);
+  assert.equal(readFileSync(sentinel, "utf8"), "keep");
+  assert.equal(JSON.parse(callerStdout.value()).argv.includes(join(protectedRoot, "caller-transcript.json")), true);
+
+  const ownedStdout = memoryWriter();
+  assert.equal(await run({ ...DEVIN_FIXTURE, devinTranscript: undefined, dryRun: true }, {
+    stdout: ownedStdout.stream,
+    stderr: memoryWriter().stream,
+  }), 0);
+  const ownedArgv = JSON.parse(ownedStdout.value()).argv;
+  const ownedTranscript = ownedArgv[ownedArgv.indexOf("--export") + 1];
+  assert.equal(existsSync(dirname(ownedTranscript)), false, "dispatcher-owned Devin temp root is cleaned up");
+});
 
 test("grok rejects image operations", () => {
   assert.throws(
@@ -1663,7 +1934,14 @@ test("Codex CLI dry-run separates requested shorthand from the normalized execut
   assert.equal(explicit.effort, "xhigh");
 });
 
-test("seven CLI dry-runs match literal fixtures and use bare executable names", async () => {
+function normalizeDevinTranscriptPath(argv, path) {
+  if (!path) return argv;
+  const normalized = [...argv];
+  normalized[normalized.indexOf("--export") + 1] = path;
+  return normalized;
+}
+
+test("eight CLI dry-runs match literal fixtures and use bare executable names", async () => {
   for (const fixture of FIXTURES) {
     const args = ["--vendor", fixture.vendor, "--operation", fixture.operation, "--brief", brief, "--cwd", fixture.cwd, "--model", fixture.model, "--dry-run"];
     if (fixture.effort) args.push("--effort", fixture.effort);
@@ -1677,7 +1955,7 @@ test("seven CLI dry-runs match literal fixtures and use bare executable names", 
     const value = JSON.parse(stdout.value());
     assert.equal(value.executable, fixture.vendor);
     assert.equal(value.inputProfile, "none");
-    assert.deepEqual(value.argv, fixture.argv);
+    assert.deepEqual(normalizeDevinTranscriptPath(value.argv, fixture.devinTranscript), fixture.argv);
   }
 });
 
@@ -1703,7 +1981,7 @@ test("explicit mode CLI dry-runs expose requested and effective modes", async ()
     assert.equal(value.requestedMode, fixture.mode);
     assert.equal(value.effectiveMode, fixture.effectiveMode);
     assert.equal(value.inputProfile, fixture.inputProfile);
-    assert.deepEqual(value.argv, fixture.argv);
+    assert.deepEqual(normalizeDevinTranscriptPath(value.argv, fixture.devinTranscript), fixture.argv);
   }
 });
 
@@ -1712,7 +1990,7 @@ test("explicit mode CLI dry-runs expose requested and effective modes", async ()
 // got a bare "unknown argument", and went reading SINGLE_OPTIONS to find --cwd.
 test("help is served without arguments, on --help, and inside the unknown-argument error", async () => {
   const listed = [
-    "codex", "agy", "claude", "grok", "antigravity", "--cwd", "--brief", "--dry-run",
+    "codex", "agy", "claude", "grok", "devin", "antigravity", "--cwd", "--brief", "--dry-run",
     "installed_plugins.json", "available-skills catalog", "Do not flatten", "not proof of absence",
   ];
 
@@ -2589,6 +2867,11 @@ test("resolved Windows executable is absolute and cmd-only discovery is classifi
   mkdirSync(cmdBin);
   writeFileSync(join(cmdBin, "agy.cmd"), "fake");
   assert.throws(() => resolveExecutable("agy", { platform: "win32", env: {}, pathValue: cmdBin }), (error) => error instanceof PolicyError && error.classification === "channel_mixing");
+  const localAppData = join(root, "local-app-data");
+  const devin = join(localAppData, "devin", "cli", "bin", "devin.exe");
+  mkdirSync(dirname(devin), { recursive: true });
+  writeFileSync(devin, "fake");
+  assert.equal(resolveExecutable("devin", { platform: "win32", env: { LOCALAPPDATA: localAppData }, pathValue: "" }), devin);
 });
 
 test("vendor stderr file excludes the parent receipt", async () => {
@@ -4085,7 +4368,7 @@ test("every vendor invocation carries its receipt isolation as one contiguous ar
     assert.equal(matches, 1, `${options.vendor}/${options.mode ?? "default"}`);
     seen.add(options.vendor);
   }
-  assert.deepEqual(seen, new Set(["codex", "agy", "claude", "grok"]));
+  assert.deepEqual(seen, new Set(["codex", "agy", "claude", "grok", "devin"]));
 });
 
 test("codex review blocks both host paths and each flag moves exactly one axis", () => {

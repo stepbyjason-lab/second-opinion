@@ -20,7 +20,7 @@ import {
   loadProviderEnvironment,
 } from "./generation-dispatch.mjs";
 import { executeCli, resolveReceiptSinks, run, writeApiDispatchReceipts } from "./dispatch.mjs";
-import { VENDORS } from "./vendor-policy.mjs";
+import { VENDORS, buildVendorArgv } from "./vendor-policy.mjs";
 import { formatProbeTable, runProviderProbe, validateProbeConfig } from "./provider-probe.mjs";
 
 const roots = [];
@@ -71,6 +71,51 @@ function successfulResult(model = "fixture/model") {
     finishReason: "stop",
   };
 }
+
+test("R033-H18 existing four-vendor argv fixtures remain byte-identical", () => {
+  const root = temporaryRoot("second-opinion-h18-argv-baseline");
+  const brief = join(root, "brief.md");
+  const image = join(root, "image.png");
+  writeFileSync(brief, "fixture", "utf8");
+  writeFileSync(image, "fixture", "utf8");
+  const fixtures = [
+    {
+      options: { vendor: "codex", operation: "text", model: "gpt model \"quoted\"", effort: "high", inputs: [], isGitRepo: false, cwd: root },
+      argv: ["exec", "--skip-git-repo-check", "-m", "gpt model \"quoted\"", "-c", "model_reasoning_effort=\"high\"", "-"],
+    },
+    {
+      options: { vendor: "codex", operation: "image-analyze", model: "gpt model \"quoted\"", effort: "high", inputs: [image], isGitRepo: false, cwd: root },
+      argv: ["exec", "--skip-git-repo-check", "-m", "gpt model \"quoted\"", "-c", "model_reasoning_effort=\"high\"", "-i", image, "-"],
+    },
+    {
+      options: { vendor: "codex", operation: "image-generate", model: "gpt model \"quoted\"", effort: "high", inputs: [], isGitRepo: false, cwd: root },
+      argv: ["exec", "-s", "workspace-write", "--skip-git-repo-check", "-m", "gpt model \"quoted\"", "-c", "model_reasoning_effort=\"high\"", "-"],
+    },
+    {
+      options: { vendor: "agy", operation: "text", model: "Gemini 3.5 Flash (High)", inputs: [], timeout: 1234, cwd: root },
+      argv: ["--dangerously-skip-permissions", "--print-timeout", "1234s", "--model", "Gemini 3.5 Flash (High)", "--add-dir", root],
+    },
+    {
+      options: { vendor: "agy", operation: "image-analyze", model: "Gemini 3.5 Flash (High)", inputs: [image], timeout: 1234, cwd: root },
+      argv: ["--dangerously-skip-permissions", "--print-timeout", "1234s", "--model", "Gemini 3.5 Flash (High)", "--add-dir", root],
+    },
+    {
+      options: { vendor: "agy", operation: "image-generate", model: "Gemini 3.5 Flash (High)", inputs: [], timeout: 1234, cwd: root },
+      argv: ["--dangerously-skip-permissions", "--print-timeout", "1234s", "--model", "Gemini 3.5 Flash (High)", "--add-dir", root],
+    },
+    {
+      options: { vendor: "claude", operation: "text", model: "opus", effort: "high", inputs: [], cwd: root },
+      argv: ["-p", "--model", "opus", "--effort", "high", "--output-format", "json", "--no-session-persistence", "--safe-mode", "--disable-slash-commands", "--dangerously-skip-permissions", "--tools=default"],
+    },
+    {
+      options: { vendor: "grok", operation: "text", model: "grok-4.6", effort: "high", inputs: [], cwd: root, brief },
+      argv: ["--prompt-file", brief, "--output-format", "json", "-m", "grok-4.6", "--effort", "high", "--cwd", root, "--permission-mode", "bypassPermissions"],
+    },
+  ];
+  for (const fixture of fixtures) {
+    assert.equal(JSON.stringify(buildVendorArgv(fixture.options)), JSON.stringify(fixture.argv));
+  }
+});
 
 function jsonResponse(payload, init = {}) {
   return new Response(JSON.stringify(payload), {
@@ -1117,7 +1162,7 @@ test("C-6/C-7/C-8: HTTP raw and portable receipts carry attempts, transport iden
   assert.equal(rawRow.pid, null);
   assert.equal(rawRow.argv, null);
   assert.equal(rawRow.executable, null);
-  assert.deepEqual(VENDORS, ["codex", "agy", "claude", "grok"]);
+  assert.deepEqual(VENDORS, ["codex", "agy", "claude", "grok", "devin"]);
 
   const brief = join(root, "brief.md");
   const cliRaw = join(root, "cli-raw.jsonl");
@@ -1578,6 +1623,7 @@ test("GLOBAL-1/H-5 C-7 subprocess CLI receipts preserve the repository-owned 0.9
     { vendor: "codex", extra: ["--model", "fixture-codex-model", "--effort", "high"], useConfig: true },
     { vendor: "agy", extra: ["--model", "Gemini 3.5 Flash (High)"], useConfig: false },
     { vendor: "claude", extra: ["--model", "opus", "--effort", "high", "--out", join(root, "claude-out.json"), "--err", join(root, "claude-err.txt")], useConfig: false },
+    { vendor: "devin", extra: ["--model", "swe-2-max"], useConfig: false },
   ];
   mkdirSync(dirname(configPath), { recursive: true });
   writeFileSync(brief, "fixture", "utf8");

@@ -1,9 +1,11 @@
 // Portable receipts are assembled only from the closed, typed arguments below.
 // They are not derived by copying or filtering the private receipt. Dispatcher-
-// owned locator fields therefore have no input seam here. Free-form vendor
-// vocabulary can still contain sensitive text and needs review before sharing.
+// owned locator fields therefore have no input seam here. hostIsolation keeps
+// typed posture flags while replacing dispatcher-owned config paths with stable
+// bundled labels. Free-form vendor vocabulary can still contain sensitive text
+// and needs review before sharing.
 import { appendFileSync, closeSync, mkdirSync, openSync, readSync, statSync } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import { AGY_NATIVE_READONLY_PROFILE, DISPATCH_MODES, OPERATIONS, VENDORS } from "./vendor-policy.mjs";
 
 // Shared parser/help/portable boundary prevents divergent acceptance. The token
@@ -17,7 +19,7 @@ export const MAX_EXPECT_TOTAL = 1000;
 const MODES = new Set([...DISPATCH_MODES, "invalid"]);
 const PROFILES = new Set(["none", AGY_NATIVE_READONLY_PROFILE, "invalid"]);
 const TRANSPORTS = new Set(["cli", "api"]);
-const USAGE_SOURCES = new Set(["codex-rollout", "claude-result-json", "grok-result-json", "api-response"]);
+const USAGE_SOURCES = new Set(["codex-rollout", "claude-result-json", "grok-result-json", "devin-transcript-json", "api-response"]);
 const USAGE_STATUSES = new Set([
   "not-invoked", "ok", "unsupported-vendor", "no-err-file", "no-session-id", "read-failed", "not-regular-file", "file-too-large",
   "no-rollout-file", "ambiguous-rollout-file", "no-token-count", "invalid-token-fields", "output-too-large", "empty-output", "invalid-json",
@@ -34,7 +36,7 @@ const FAILURE_CLASSES = new Set([
 const FAILURE_ACTORS = new Set(["dispatcher", "caller", "user", "vendor"]);
 const COMPLETION_STATUSES = new Set(["not-applicable-cli", "applied-unchanged"]);
 const USAGE_KEYS = new Set([
-  "source", "actualModels", "inputTokens", "cachedInputTokens", "cacheCreationInputTokens", "cacheReadInputTokens", "outputTokens",
+  "source", "actualModels", "sessionId", "inputTokens", "cachedInputTokens", "cacheCreationInputTokens", "cacheReadInputTokens", "outputTokens",
   "reasoningOutputTokens", "totalTokens", "totalCostUsd", "contextWindow", "quotaUsedPercent",
 ]);
 
@@ -53,17 +55,30 @@ function expectedTotalValue(value) {
   return value;
 }
 // The invocation vector used to keep caller configuration out or to select the
-// vendor's permission/tool posture. On an invoked CLI row these are the flags
-// and environment variables actually handed to the child. A valid dry-run
-// carries its planned vector. Other pre-spawn failures carry two empty arrays.
-// This records dispatcher inputs, not claims about what the child enforced.
+// vendor's permission/tool posture. Portable rows retain the flags and env but
+// replace dispatcher-owned config paths with stable bundled labels. A valid
+// dry-run carries its planned vector. Other pre-spawn failures carry two empty
+// arrays. This records dispatcher inputs, not claims about child enforcement.
 const MAX_HOST_ISOLATION_ENTRIES = 32;
 const MAX_HOST_ISOLATION_ENTRY_BYTES = 512;
-function hostIsolationValue(value) {
+function hostIsolationValue(value, vendor) {
   if (value === null || value === undefined) return { argv: [], env: [] };
   if (typeof value !== "object" || Array.isArray(value)) invalid();
   for (const key of Object.keys(value)) if (key !== "argv" && key !== "env") invalid();
-  return { argv: hostIsolationList(value.argv), env: hostIsolationList(value.env) };
+  const argv = hostIsolationList(value.argv);
+  if (vendor === "devin") {
+    const labels = new Map([
+      ["devin-isolated-config.json", "bundled:devin-isolated-config.json"],
+      ["devin-readonly-config.json", "bundled:devin-readonly-config.json"],
+    ]);
+    for (let index = 0; index < argv.length; index += 1) {
+      if (argv[index] !== "--config") continue;
+      const label = labels.get(basename(argv[index + 1] ?? ""));
+      if (!label) invalid();
+      argv[index + 1] = label;
+    }
+  }
+  return { argv, env: hostIsolationList(value.env) };
 }
 function hostIsolationList(value) {
   if (!Array.isArray(value) || value.length > MAX_HOST_ISOLATION_ENTRIES) invalid();
@@ -117,6 +132,7 @@ function usageRecord(value) {
   return {
     source: label(value.source, USAGE_SOURCES),
     actualModels: actualModels === null ? null : actualModels.map((model) => string(model)),
+    ...(Object.hasOwn(value, "sessionId") ? { sessionId: string(value.sessionId, { max: 128 }) } : {}),
     inputTokens: finite(value.inputTokens, { nullable: true }),
     cachedInputTokens: finite(value.cachedInputTokens, { nullable: true }),
     cacheCreationInputTokens: finite(value.cacheCreationInputTokens, { nullable: true }),
@@ -252,7 +268,7 @@ export function buildPortableReceipt(
     outputCheckStatus: label(outputCheckStatus, OUTPUT_STATUSES),
     outputChecks: outputChecks(outputChecksValue),
     expectedTotal: expectedTotalValue(expectedTotal),
-    hostIsolation: hostIsolationValue(hostIsolation),
+    hostIsolation: hostIsolationValue(hostIsolation, vendorValue),
     attempts: attemptsValue,
     attemptWaitsMs: waitValues,
     successfulAttempt: successfulAttemptValue,

@@ -1,20 +1,20 @@
 ---
 name: second-opinion
 description: >
-  외부 AI(Codex/GPT, Antigravity/Gemini, Grok)를 일상어로 부려 쓰는 어댑터 — 점검·리뷰·의견,
+  외부 AI(Codex/GPT, Antigravity/Gemini, Grok, Devin)를 일상어로 부려 쓰는 어댑터 — 점검·리뷰·의견,
   작업 오프로드, 이미지 생성 같은 벤더 능력까지. 트리거 — "코덱스로 점검받고 싶어",
   "코덱스한테 물어봐/시켜줘", "이거 코덱스 의견 들어봐", "안티그래비티로 봐줘",
-  "제미나이한테 검토시켜/만들어달라고 해줘", "그록으로 봐줘", "그록한테 시켜줘",
+  "제미나이한테 검토시켜/만들어달라고 해줘", "그록으로 봐줘", "그록한테 시켜줘", "데빈으로 봐줘",
   "다른 AI 시각으로 봐줘", "교차 검증해줘",
   "이건 외부 AI로 처리해줘", "클로드 사용량 아끼게 외부로 돌려줘", "second opinion",
-  "ask codex", "ask gemini/antigravity", "ask grok", "have codex make it". 코드 리뷰·설계 점검·
+  "ask codex", "ask gemini/antigravity", "ask grok", "ask devin", "have codex make it". 코드 리뷰·설계 점검·
   아이디어 검증·글 검토·번역·생성 과업 등 용도 불문. 대상 벤더를 안 정했으면 성격에 맞게
   제안한다.
 ---
 
 # second-opinion — 외부 AI 어댑터
 
-**버전 0.9.18** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). SuperGrok 구독 CLI vendor `grok`. (정본 버전은 `plugin.json`.)
+**버전 0.9.19** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). SuperGrok 구독 CLI `grok`과 Devin CLI `devin`. (정본 버전은 `plugin.json`.)
 
 이 스킬은 **아무것도 차단하지 않는다** — 중개(relay)만 한다. 디스패처는 커맨드 정합성을 위한 도구일 뿐이다. "Claude가 디스패처를 반드시 거치게" 강제하는 것은 **부르는 쪽(caller)의 책임**이다 → [references/enforcement.md](references/enforcement.md).
 
@@ -43,9 +43,9 @@ plan/review 권한을 자동 적용하지 않는다. **`--mode`가 받는 값은
 
 | 호출 | 의미 | provider translation |
 |---|---|---|
-| mode 생략 | 기존 범용 호출 | AGY·Codex는 기존 argv 불변; Claude는 모든 기본 도구 + 비대화형 실행 |
-| `--mode plan` | 같은 실제 project cwd를 전체 탐색하는 제한된 계획 | AGY native plan; Claude는 plan identity를 유지하고 `Read,Glob,Grep` + git 셸; Codex는 지원하지 않아 호출 전 실패 |
-| `--mode review` | 같은 실제 project cwd를 전체 탐색하는 리뷰 | AGY native plan; Claude는 review identity를 유지하고 `Read,Glob,Grep` + git 셸; Codex native `exec review` — **권한 제한 없음(아래 주의)** |
+| mode 생략 | 기존 범용 호출 | AGY·Codex argv 불변; Claude는 모든 기본 도구; Devin은 `dangerous`로 승인 대기 없는 전권 실행 |
+| `--mode plan` | 같은 실제 project cwd를 전체 탐색하는 제한된 계획 | AGY native plan; Claude는 `Read,Glob,Grep` + git 셸; Grok plan; Devin은 PreToolUse로 쓰기·명령 차단; Codex는 호출 전 실패 |
+| `--mode review` | 같은 실제 project cwd를 전체 탐색하는 리뷰 | AGY native plan; Claude review; Grok plan; Devin은 PreToolUse로 쓰기·명령 차단; Codex native `exec review` — **권한 제한 없음(아래 주의)** |
 
 - 이번 mode는 text operation 전용이다.
 - Claude plan/review에는 `Bash,PowerShell`과 `--permission-mode dontAsk`가 있어 `git diff`와
@@ -56,6 +56,10 @@ plan/review 권한을 자동 적용하지 않는다. **`--mode`가 받는 값은
   **변경 파일 목록과 unified diff 전문, 인용할 정본 전문을 brief 본문에 인라인**하고,
   **스위트 결과를 직접 재서 값으로 준다.** 경로만 주면 리뷰어는 그 자리를 안 읽고,
   그 실패는 산출물에 드러나지 않는다 — 「안 봤다」가 아니라 「지적할 것이 없다」로 돌아온다.
+- Devin plan/review는 read-only config의 PreToolUse hook이 write/edit/notebook_edit/exec/
+  write_to_process를 막고 이유를 자식에게 돌려준다. 호출은 `dangerous`로 비대화형을 유지하므로 거절 뒤에도
+  세션이 계속된다. `apply_patch`는 예방적 matcher에만 포함되며 Devin CLI 3000.10.31에서는
+  미노출 도구라 실제 차단 성공으로 세지 않는다. mode 생략은 차단 hook 없는 config와 `dangerous`라 승인을 기다리지 않는다.
 - **제한된 도구 구성은 명시적 plan/review뿐이다.** mode 생략은 좁은 호출이 아니라 범용
   full-access 호출이며, Write·Edit를 빼려면 mode를 명시해야 한다. Claude에는 git 셸이 기본으로
   남으므로 filesystem 읽기 전용이나 sandbox로 계산하지 않는다.
@@ -255,6 +259,9 @@ claude-opus-4-6`으로 정규 ID를 박는다. `--vendor claude`가 박혀 있�
 `5.6 sol`은 Codex 정규 slug로 바뀐다. `opus terra`처럼 모델 둘을 한 값에 쓰면 추측하지
 않고 unknown으로 거부한다.
 
+`devin`은 모델 이름이 다른 벤더와 겹치므로 **자동 라우팅 후보가 아니다.** 반드시
+`--vendor devin`을 명시하며, 호출자가 준 model slug를 그대로 전달한다. `--effort`는 거부한다.
+
 ### Codex
 
 ```bash
@@ -358,9 +365,10 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor claude --operation text
   에서 둘 다 기본 차단이라 리뷰어가 brief를 본다. `--host-hooks`/`--host-docs`가 한 축을 다시
   열고, `--no-host-hooks`/`--no-host-docs`는 `--mode`를 안 준 호출에서도 막는다.
   ⚠ **`--mode default`는 인자가 아니다** — 「default」는 `--mode`를 아예 안 주는 것이다. **codex 홈의
-  `AGENTS.md`는 문서 스위치로 걷히지 않는다** — 영수증의 `hostIsolation`은 **실행 행에는 넘긴
+  `AGENTS.md`는 문서 스위치로 걷히지 않는다** — raw 영수증의 `hostIsolation`은 **실행 행에는 넘긴
   플래그·환경변수, 유효한 dry-run 행에는 계획, 그 밖의 spawn 전 실패 행에는 빈 배열**을 적으므로
   호출자 진술 대신 그 목록으로 판정한다. 자식이 그것을 어떻게 집행했는지까지는 적지 않는다.
+  raw 행은 실제 경로를 보존하고 portable 행은 dispatcher 소유 config 경로를 안정적인 bundled label로 바꾼다.
 - `--host-skills`(claude 전용)는 자식이 스킬·플러그인을 쓰게 한다. 구성을 통째로 닫던
   `--safe-mode`를 대신하므로, 그 경우 훅·MCP·CLAUDE.md는 각자의 스위치로 **모든 mode에서**
   기본 차단된다. 켜지 않으면 지금까지와 똑같이 `--safe-mode`가 그대로 남는다.
@@ -405,6 +413,28 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor grok --operation text \
   임의 `.scratch` 탐색 금지를 적는다. 이 증거가 없으면 호출하지 말고 brief를 다시 조립한다.
 - plan/review spawn은 하네스 호환 env 13개를 `false`로 강제한다: `GROK_CLAUDE_*` 6, `GROK_CURSOR_*` 6, `GROK_CODEX_SESSIONS_ENABLED` 1. Codex의 나머지 칸은 grok에서 inert. 프로젝트 루트 `CLAUDE.md`는 그래도 남을 수 있다 — 상세는 adapter-grok.md. 호환을 켜서 검증하지 않는다. 검증은 꺼진 상태(`grok inspect` off, spawn env false)만.
 → 호출 전 필수: `references/adapter-grok.md`
+
+### Devin CLI
+
+```bash
+node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor devin --operation text \
+  --brief brief.txt --cwd <작업 repo> --model swe-2-max \
+  --out devin-result.txt --err devin-stderr.txt
+```
+
+읽기 전용 계획·리뷰는 `--mode plan|review`를 붙인다. 두 mode는 쓰기·명령 도구를 PreToolUse에서 막는
+같은 read-only config를 쓰고, mode 생략은 차단 hook 없는 config의 전권 자세다. 세 호출 모두 비대화형
+`dangerous`를 써 승인 입력을 기다리지 않는다.
+
+- brief는 `--prompt-file` 경로로만 전달하며 stdin과 argv 본문에는 싣지 않는다.
+- dispatcher는 `read_config_from`의 agent/editor 여덟 축을 모두 끈 bundled config를 `--config`로
+  넘긴다. `devin skills list`에는 Devin 기본 항목만 남고 `devin mcp list`에는 호출자 MCP가 없다.
+  프로젝트/사용자 `AGENTS.md` 같은 Devin 상시 지시 문서는 CLI가 운영체제 경로로 직접 읽어 남는다.
+- 내부 `--export` 대화 기록의 `final_metrics`를 읽어 스텝별 합계 prompt/completion/cache token과
+  session ID를 `vendorUsage`에 남긴다. 읽지 못하면 `vendorUsageStatus`로 구분하고 호출 성공을 꾸미지 않는다.
+- 이미지 operation과 `--effort`는 호출 전에 거부한다. 모델 카탈로그·클라우드 세션·ACP는 이 경로에 없다.
+- Windows PATH에서 못 찾으면 `%LOCALAPPDATA%\devin\cli\bin\devin.exe`를 찾는다.
+→ 호출 전 필수: `references/adapter-devin.md`
 
 ## 오래 걸리는 호출 (60초+ 예상: 큰 brief, 병렬 다건)
 
@@ -466,10 +496,13 @@ ffmpeg로 프레임을 추출한 뒤 그 프레임들을 `-i`로 전달한다(�
    `not-requested`·`not-evaluated` 중 하나를 남기고, raw·portable 양쪽의 항상 존재하는
    `outputChecks`에는 준 순서대로 원문 token과 `matched`·`missing` 상태를 남긴다. token을
    요청하지 않으면 `outputChecks`는 빈 배열이 아니라 `null`이다.
+   Devin 호출은 export transcript의 스텝별 합계 prompt/completion/cache token과 session ID를
+   `vendorUsage`에 남긴다.
 7. **portable 영수증** — raw 영수증은 재현용 locator를 보존하므로 저장소 밖에 둔다.
    `SECOND_OPINION_PORTABLE_RECEIPT`는 raw와 독립적으로 opt-in하는 누적 JSONL sink다. 닫힌
    typed emitter가 raw를 필터링하지 않고 조립해 **디스패처가 소유한 locator 필드**를 구조적으로
-   배제한다. 자유 형식 vendor 문자열에는 민감한 텍스트가 남을 수 있으므로 공개 공유 전 내용을
+   배제한다. `hostIsolation`의 dispatcher 소유 config 경로도 portable 행에서는 안정적인 bundled label이다.
+   자유 형식 vendor 문자열에는 민감한 텍스트가 남을 수 있으므로 공개 공유 전 내용을
    검토해야 한다.
    완료된 dispatch는 설정된 각 sink에 append를 한 번씩 독립 시도한다. portable I/O 실패는
    경로 없는 고정 경고만 남기는 fail-open이며 다른 sink나 dispatch exit를 바꾸지 않는다.

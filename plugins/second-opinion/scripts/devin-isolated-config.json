@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "read_config_from": {
+    "agents_standard": false,
+    "cursor": false,
+    "windsurf": false,
+    "claude": false,
+    "copilot": false,
+    "opencode": false,
+    "vscode": false,
+    "zed": false
+  },
+  "shell": {
+    "setup_complete": true
+  },
+  "theme_mode": "dark"
+}

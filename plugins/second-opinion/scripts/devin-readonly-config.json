@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^(write|edit|apply_patch|notebook_edit|exec|write_to_process)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"process.stdout.write(JSON.stringify({decision:'block',reason:'second-opinion read-only mode blocks writes and command execution'}))\""
+          }
+        ]
+      }
+    ]
+  },
+  "read_config_from": {
+    "agents_standard": false,
+    "cursor": false,
+    "windsurf": false,
+    "claude": false,
+    "copilot": false,
+    "opencode": false,
+    "vscode": false,
+    "zed": false
+  },
+  "shell": {
+    "setup_complete": true
+  },
+  "theme_mode": "dark"
+}

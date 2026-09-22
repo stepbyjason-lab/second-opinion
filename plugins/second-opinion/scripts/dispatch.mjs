@@ -21,13 +21,15 @@
 //                   Only if the host provides no catalog or manifest should a
 //                   caller discover the current version in that host's own cache.
 //
-//   CALLING IT (brief is a file; its contents go to the vendor over stdin.
+//   CALLING IT (brief is a file; Codex/AGY/Claude receive its contents on stdin,
+//   while Grok/Devin receive the file path.
 //   --operation is omitted below because omitting it means text; the two image
 //   operations are the ones that have to be named.)
 //     node <dispatch> --vendor codex  --brief b.txt --cwd <dir> --out o.txt --err e.txt
 //     node <dispatch> --vendor agy    --brief b.txt --cwd <dir> --model gemini-3.8-flash --effort medium --out o.txt --err e.txt
 //     node <dispatch> --vendor claude --brief b.txt --cwd <dir> --model sonnet --effort low --out o.txt --err e.txt
 //     node <dispatch> --vendor grok   --brief b.txt --cwd <dir> --model grok-4.6 --effort medium --out o.txt --err e.txt
+//     node <dispatch> --vendor devin  --brief b.txt --cwd <dir> --model swe-2-max --out o.txt --err e.txt
 //
 //   RECEIPTS — SECOND_OPINION_RECEIPT remains private and keeps its raw v1
 //   locators. SECOND_OPINION_PORTABLE_RECEIPT is an independent, optional JSONL
@@ -44,8 +46,8 @@
 //   reports them precisely when a call is wrong, and prose copies of those rules
 //   drift from the checks that enforce them.
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, closeSync, createWriteStream, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { appendFileSync, closeSync, createWriteStream, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { TextDecoder } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -62,6 +64,7 @@ const MODEL_CATALOG_FAILURE_TTL_MS = 5 * 60 * 1000;
 const MODEL_CATALOG_FILENAME = "model-catalog-v1.json";
 const RECEIPT_CONFIG_FILENAME = "config.json";
 const MAX_RECEIPT_CONFIG_BYTES = 1024 * 1024;
+const MODEL_CATALOG_VENDORS = Object.freeze(VENDORS.filter((vendor) => vendor !== "devin"));
 const SINGLE_OPTIONS = new Set(["--vendor", "--operation", "--brief", "--cwd", "--model", "--effort", "--mode", "--timeout", "--out", "--err", "--lens-id", "--expect-output-file", "--expect-total", "--dry-run", "--host-hooks", "--no-host-hooks", "--host-docs", "--no-host-docs", "--host-mcp", "--no-host-mcp", "--host-skills", "--host-shell", "--no-host-shell"]);
 // Flags that stand alone instead of taking a value. They still live in
 // SINGLE_OPTIONS so the unknown-argument and duplicate checks cover them.
@@ -152,7 +155,7 @@ export function usageText() {
     "  Linked-worktree Grok/AGY review: their explicit modes have no git shell. Put",
     "    the exact diff and changed-file list in the brief; never ask them to discover .git.",
     "",
-    "  --brief is a FILE; Codex/AGY/Claude receive it on stdin, Grok via --prompt-file.",
+    "  --brief is a FILE; Codex/AGY/Claude receive it on stdin, Grok/Devin via --prompt-file.",
     "  Omit --operation for a text call; image-analyze and image-generate must be explicit.",
     "  Omission is never read as an image call: an omitted operation with --input is rejected, not inferred.",
     // The sibling above taught its own omission and this one did not, so a caller who
@@ -186,6 +189,8 @@ export function usageText() {
     "  from what is already there: a pinned vendor never refreshes, and anything short of",
     "  exactly one model forwards --model unchanged instead of renaming your call. A catalog",
     "  name that is yours plus a trailing version or effort is a different model, never a match.",
+    "  Devin is explicit-vendor only: it is excluded from model-catalog discovery and automatic routing,",
+    "  and its model slug is forwarded unchanged. Devin rejects --effort and both image operations.",
     "  Model separators/case and effort labels (light/very-high/maximum) are normalized.",
     "  --cwd is the vendor's workspace; omitted, it is this process's directory.",
     "  --brief/--input/--expect-output-file/--out/--err resolve from THIS process's directory, not --cwd.",
@@ -223,8 +228,12 @@ export function usageText() {
     "  needs the shell gone uses --no-host-shell, which removes it rather than narrowing it. A claude child also",
     "  gets none of the caller's MCP servers; --host-mcp (claude only, and only alongside --host-skills) puts them",
     "  back and --no-host-mcp blocks them in a call with no --mode too. codex has no per-call equivalent.",
-    "  Both receipts record hostIsolation {argv, env}. On an invoked row it is the exact invocation",
-    "  vector handed to the child; a valid dry-run records the vector it would hand over; every other",
+    "  Devin always receives the bundled config that disables imported agent/editor catalogs. Its default call",
+    "  uses permission-mode dangerous so headless work never waits for approval. Plan/review add a PreToolUse hook",
+    "  that blocks write/edit/exec tools and returns the reason to the child. Always-on instructions remain.",
+    "  Both receipts record hostIsolation {argv, env}. Raw rows keep the exact invocation vector; portable",
+    "  rows replace dispatcher-owned config paths with stable bundled labels. A valid dry-run records the",
+    "  planned vector; every other",
     "  pre-spawn failure records empty arrays. AGY/Grok permission and tool controls, and Grok's harness",
     "  isolation variables, are included. The field does not claim that the child enforced those inputs.",
     "",
@@ -240,6 +249,7 @@ export function usageText() {
     "  costs something: codex's native review workflow returns its own report shape,",
     "  so a brief that specifies the findings format loses to it. Give codex no --mode",
     "  when the brief owns the output, and pass --no-host-hooks/--no-host-docs directly.",
+    "  Devin plan/review is separately narrowed by the bundled PreToolUse hook described above.",
     "",
     "LOCATING THIS FILE — never hardcode a version directory:",
     "  Claude Code : \"$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs\", or installPath from",
@@ -299,6 +309,7 @@ export function splitModelEffort(model, effort) {
 //     different model than the one that was asked for.
 export function resolveVendorModelAlias(vendor, model, deps = {}) {
   if (!model) return model;
+  if (vendor === "devin") return model;
   try {
     const matches = rankedCatalogMatches(model, vendor, availableVendorCatalog(vendor, deps))
       .filter((match) => match.boundary !== "variant");
@@ -489,8 +500,8 @@ function readCatalogCache(deps = {}) {
   try {
     const payload = JSON.parse(readFileSync(modelCatalogCachePath(deps), "utf8"));
     if (payload?.schemaVersion !== MODEL_CATALOG_SCHEMA || !Number.isFinite(payload.checkedAt)) return null;
-    const catalogs = Object.fromEntries(VENDORS.map((vendor) => [vendor, normalizeCatalog(vendor, payload.vendors?.[vendor])]));
-    const invalid = VENDORS.some((vendor) => payload.vendors?.[vendor]?.available === true && catalogs[vendor].available !== true);
+    const catalogs = Object.fromEntries(MODEL_CATALOG_VENDORS.map((vendor) => [vendor, normalizeCatalog(vendor, payload.vendors?.[vendor])]));
+    const invalid = MODEL_CATALOG_VENDORS.some((vendor) => payload.vendors?.[vendor]?.available === true && catalogs[vendor].available !== true);
     return { checkedAt: payload.checkedAt, degraded: payload.degraded === true, invalid, catalogs };
   } catch { return null; }
 }
@@ -498,7 +509,7 @@ function readCatalogCache(deps = {}) {
 function writeCatalogCache(catalogs, now, degraded, deps = {}) {
   const path = modelCatalogCachePath(deps);
   const temp = `${path}.${process.pid}.tmp`;
-  const vendors = Object.fromEntries(VENDORS.map((vendor) => [vendor, {
+  const vendors = Object.fromEntries(MODEL_CATALOG_VENDORS.map((vendor) => [vendor, {
     available: catalogs[vendor]?.available === true,
     models: catalogs[vendor]?.models ?? [],
   }]));
@@ -514,7 +525,7 @@ function writeCatalogCache(catalogs, now, degraded, deps = {}) {
 function refreshModelCatalogs(stale, deps = {}) {
   const live = liveModelCatalogs(deps);
   let degraded = false;
-  const catalogs = Object.fromEntries(VENDORS.map((vendor) => {
+  const catalogs = Object.fromEntries(MODEL_CATALOG_VENDORS.map((vendor) => {
     if (live[vendor]?.available) return [vendor, live[vendor]];
     degraded = true;
     // Codex's source is already a local cache and may vary with CODEX_HOME.
@@ -535,7 +546,7 @@ function currentCodexCatalog(deps = {}) {
 
 function discoverModelCatalogs(deps = {}, forceRefresh = false) {
   if (deps.modelCatalogs) {
-    return { catalogs: Object.fromEntries(VENDORS.map((vendor) => [vendor, normalizeCatalog(vendor, deps.modelCatalogs[vendor])])), refreshable: false, refreshed: false };
+    return { catalogs: Object.fromEntries(MODEL_CATALOG_VENDORS.map((vendor) => [vendor, normalizeCatalog(vendor, deps.modelCatalogs[vendor])])), refreshable: false, refreshed: false };
   }
   const now = deps.now?.() ?? Date.now();
   const cached = readCatalogCache(deps);
@@ -604,12 +615,12 @@ function modelNameMatches(requested, available) {
 }
 
 function matchModelRoute(model, catalogs) {
-  const requiredVendors = VENDORS.filter((vendor) => vendor !== "grok");
+  const requiredVendors = MODEL_CATALOG_VENDORS.filter((vendor) => vendor !== "grok");
   const unavailable = requiredVendors.filter((vendor) => catalogs[vendor]?.available !== true);
   if (unavailable.length > 0) {
     throw new CliError(`model catalog unavailable for automatic vendor routing: ${unavailable.join(", ")} (pass --vendor explicitly)`);
   }
-  const routingVendors = VENDORS.filter((vendor) => catalogs[vendor]?.available === true);
+  const routingVendors = MODEL_CATALOG_VENDORS.filter((vendor) => catalogs[vendor]?.available === true);
   const matches = winningMatches(routingVendors.flatMap((vendor) => rankedCatalogMatches(model, vendor, catalogs[vendor].models)));
   const vendors = [...new Set(matches.map((match) => match.vendor))];
   if (vendors.length === 1) {
@@ -1117,6 +1128,36 @@ function inspectGrokOutput(options, capturedOutput) {
     },
   };
 }
+function inspectDevinTranscript(options) {
+  if (!options.devinTranscript) return { usage: null, status: "read-failed" };
+  const transcript = readBoundedRegularFile(options.devinTranscript);
+  if (transcript.status) return { usage: null, status: transcript.status };
+  let payload;
+  try { payload = JSON.parse(transcript.data); }
+  catch { return { usage: null, status: "invalid-json" }; }
+  const sessionId = typeof payload?.session_id === "string" ? payload.session_id.trim() : "";
+  if (!sessionId) return { usage: null, status: "no-session-id" };
+  const metrics = payload?.final_metrics;
+  const inputTokens = metrics?.total_prompt_tokens;
+  const outputTokens = metrics?.total_completion_tokens;
+  const cachedInputTokens = metrics?.total_cached_tokens;
+  if (![inputTokens, outputTokens, cachedInputTokens].every((value) => Number.isFinite(value) && value >= 0)) {
+    return { usage: null, status: "invalid-token-fields" };
+  }
+  const model = typeof payload?.agent?.model_name === "string" ? payload.agent.model_name.trim() : "";
+  return {
+    status: "ok",
+    usage: {
+      source: "devin-transcript-json",
+      actualModels: model ? [model] : null,
+      sessionId,
+      inputTokens,
+      cachedInputTokens,
+      outputTokens,
+      totalTokens: inputTokens + outputTokens,
+    },
+  };
+}
 function waitForRollout() { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50); }
 function collectVendorUsage(options, invoked, env, observation) {
   if (!invoked) return { usage: null, status: "not-invoked" };
@@ -1128,6 +1169,7 @@ function collectVendorUsage(options, invoked, env, observation) {
     const inspected = observation ?? inspectGrokOutput(options, null);
     return { usage: inspected.usage, status: inspected.status };
   }
+  if (options.vendor === "devin") return inspectDevinTranscript(options);
   if (options.vendor !== "codex") return { usage: null, status: "unsupported-vendor" };
   if (!options.err) return { usage: null, status: "no-err-file" };
   let result = { usage: null, status: "no-session-id", retry: true };
@@ -1323,9 +1365,10 @@ function warnPortableReceiptFailure(stderr) {
 }
 
 function writeDispatchReceipts(stderr, options, exit, startedAt, invoked, outputCheckStatus, env, vendorObservation, writers, internalReceipt, sinks) {
-  // Spawned rows record the vector actually handed to the child. A valid dry-run
-  // records its plan. Every other pre-spawn failure records nothing, even when
-  // argv assembly itself had succeeded.
+  // Raw spawned rows record the vector actually handed to the child. The closed
+  // portable emitter replaces dispatcher-owned config paths with stable bundled
+  // labels. A valid dry-run records the corresponding plan; every other pre-spawn
+  // failure records nothing, even when argv assembly itself had succeeded.
   const hostIsolation = options.hostIsolation && (invoked || options.dryRun)
     ? options.hostIsolation
     : { argv: [], env: [] };
@@ -1519,6 +1562,18 @@ function defaultForceKill(child) {
   }
 }
 
+const OWNED_DEVIN_TEMP_ROOT = Symbol("ownedDevinTempRoot");
+function prepareVendorRun(options) {
+  if (options.vendor !== "devin" || options.devinTranscript) return options;
+  const devinTempRoot = mkdtempSync(join(tmpdir(), "second-opinion-devin-"));
+  return { ...options, devinTempRoot, devinTranscript: join(devinTempRoot, "conversation.json"), [OWNED_DEVIN_TEMP_ROOT]: true };
+}
+
+function cleanupVendorRun(options) {
+  if (!options[OWNED_DEVIN_TEMP_ROOT] || !options.devinTempRoot) return;
+  try { rmSync(options.devinTempRoot, { recursive: true, force: true }); } catch { /* best effort */ }
+}
+
 export async function run(options, deps = { spawn }) {
   const env = deps.env ?? process.env;
   const resolvedReceiptSinks = deps.receiptSinks ?? resolveReceiptSinks(env, deps.receiptConfigPath);
@@ -1612,12 +1667,16 @@ export async function run(options, deps = { spawn }) {
   }
   const isGitRepo = options.isGitRepo ?? isGitRepository(options.cwd);
   let invocation;
-  try { invocation = buildVendorInvocation({ ...options, isGitRepo }); }
+  try {
+    options = prepareVendorRun(options);
+    invocation = buildVendorInvocation({ ...options, isGitRepo });
+  }
   catch (error) {
     const code = error instanceof PolicyError ? 2 : 3;
     const detail = error.message ?? "vendor mode resolution failed";
     parentStderr.write(`dispatch validation error: ${detail}\n`);
     writeDispatchReceipts(parentStderr, options, code, startedAt, false, outputCheckStatus, env, undefined, receiptWriters, internalReceipt, resolvedReceiptSinks);
+    cleanupVendorRun(options);
     return code;
   }
   const { argv, hostIsolation } = invocation;
@@ -1633,6 +1692,7 @@ export async function run(options, deps = { spawn }) {
   if (options.dryRun) {
     parentStdout.write(`${JSON.stringify({ vendor: options.vendor, operation: options.operation, requestedMode: options.mode, effectiveMode: effectiveVendorMode(options), inputProfile: effectiveInputProfile(options), modelRequested: options.receiptModelRequested, model: options.receiptModel, executable: options.receiptExecutable, argv: options.receiptArgv, stdinMode: "brief-file", cwd: options.cwd })}\n`);
     writeDispatchReceipts(parentStderr, options, 0, startedAt, false, outputCheckStatus, env, undefined, receiptWriters, internalReceipt, resolvedReceiptSinks);
+    cleanupVendorRun(options);
     return 0;
   }
   let brief;
@@ -1640,6 +1700,7 @@ export async function run(options, deps = { spawn }) {
   catch (error) {
     parentStderr.write(`dispatch internal error: unable to read brief (${error.code ?? "read_failed"})\n`);
     writeDispatchReceipts(parentStderr, options, 3, startedAt, false, outputCheckStatus, env, undefined, receiptWriters, internalReceipt, resolvedReceiptSinks);
+    cleanupVendorRun(options);
     return 3;
   }
   options = { ...options, promptBytes: brief.byteLength };
@@ -1649,6 +1710,7 @@ export async function run(options, deps = { spawn }) {
     const code = error instanceof PolicyError ? 2 : 3;
     parentStderr.write(`${error.message ?? "dispatch executable resolution failed"}\n`);
     writeDispatchReceipts(parentStderr, options, code, startedAt, false, outputCheckStatus, env, undefined, receiptWriters, internalReceipt, resolvedReceiptSinks);
+    cleanupVendorRun(options);
     return code;
   }
   options = { ...options, receiptExecutable: redactEvidenceValue(executable, env) };
@@ -1662,6 +1724,7 @@ export async function run(options, deps = { spawn }) {
     stderrStream?.destroy();
     parentStderr.write(`dispatch internal error: unable to open output file (${error.code ?? "open_failed"})\n`);
     writeDispatchReceipts(parentStderr, options, 3, startedAt, false, outputCheckStatus, env, undefined, receiptWriters, internalReceipt, resolvedReceiptSinks);
+    cleanupVendorRun(options);
     return 3;
   }
   return await new Promise((resolveRun) => {
@@ -1696,6 +1759,7 @@ export async function run(options, deps = { spawn }) {
         });
       }
       writeDispatchReceipts(parentStderr, options, code === 124 ? "timeout" : code, startedAt, invoked, outputCheckStatus, env, vendorObservation, receiptWriters, internalReceipt, resolvedReceiptSinks);
+      cleanupVendorRun(options);
       resolveRun(code);
     };
     try {
@@ -1838,9 +1902,9 @@ export async function run(options, deps = { spawn }) {
       child.stderr.pipe(stderrStream);
     }
     try {
-      // Grok already has the brief as --prompt-file. Writing it to stdin too
+      // Grok/Devin already have the brief as --prompt-file. Writing it to stdin too
       // duplicates the prompt or can stall waiting on stdin.
-      if (options.vendor === "grok") child.stdin.end();
+      if (options.vendor === "grok" || options.vendor === "devin") child.stdin.end();
       else child.stdin.end(brief);
     } catch (error) { streamError(error); }
   });
@@ -1887,7 +1951,9 @@ export async function executeCli(argv, deps = {}) {
     stderr.write(`dispatch validation error: ${error.message}\n`);
     return 2;
   }
-  const runDeps = deps.spawn ? { spawn: deps.spawn, stdout: deps.stdout, stderr, env: deps.env, onStdoutChunk: deps.onStdoutChunk } : { spawn, stdout: deps.stdout, stderr, env: deps.env, onStdoutChunk: deps.onStdoutChunk };
+  const runDeps = deps.spawn
+    ? { spawn: deps.spawn, stdout: deps.stdout, stderr, env: deps.env, onStdoutChunk: deps.onStdoutChunk }
+    : { spawn, stdout: deps.stdout, stderr, env: deps.env, onStdoutChunk: deps.onStdoutChunk };
   return await run(options, runDeps);
 }
 

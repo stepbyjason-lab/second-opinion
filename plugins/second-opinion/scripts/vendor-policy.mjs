@@ -1,10 +1,13 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-export const VENDORS = Object.freeze(["codex", "agy", "claude", "grok"]);
+export const VENDORS = Object.freeze(["codex", "agy", "claude", "grok", "devin"]);
 export const OPERATIONS = Object.freeze(["text", "image-analyze", "image-generate"]);
 export const DISPATCH_MODES = Object.freeze(["default", "plan", "review"]);
 export const AGY_NATIVE_READONLY_PROFILE = "agy-native-readonly/v1";
+export const DEVIN_ISOLATION_CONFIG = fileURLToPath(new URL("./devin-isolated-config.json", import.meta.url));
+export const DEVIN_READONLY_CONFIG = fileURLToPath(new URL("./devin-readonly-config.json", import.meta.url));
 
 // Grok reads foreign harness config by default (`[compat.*]` cells, env > toml).
 // Forced cells: Claude 6 + Cursor 6 + Codex sessions (1). Codex skills/rules/
@@ -96,6 +99,9 @@ export function effectiveVendorMode(options) {
   if (vendor === "grok" && options.operation !== "text") {
     throw new PolicyError("mode_unsupported", "mode_unsupported: grok supports text only");
   }
+  if (vendor === "devin" && options.operation !== "text") {
+    throw new PolicyError("mode_unsupported", "mode_unsupported: devin supports text only");
+  }
   if (mode === "default") return "default";
   if (options.operation !== "text") throw new PolicyError("mode_unsupported", `mode_unsupported: ${mode} requires text operation`);
   if (vendor === "codex") {
@@ -103,6 +109,7 @@ export function effectiveVendorMode(options) {
     return "review";
   }
   if (vendor === "claude") return mode;
+  if (vendor === "devin") return mode;
   if (vendor === "grok") {
     if (options.operation !== "text") throw new PolicyError("mode_unsupported", "mode_unsupported: grok supports text only");
     return mode;
@@ -127,6 +134,7 @@ export function executableName(vendor) {
   if (normalized === "agy") return "agy";
   if (normalized === "claude") return "claude";
   if (normalized === "grok") return "grok";
+  if (normalized === "devin") return "devin";
   return "codex";
 }
 function regularFile(path) { try { return statSync(path).isFile(); } catch { return false; } }
@@ -172,12 +180,17 @@ export function resolveExecutable(vendor, options = {}) {
       if (regularFile(fallback)) return fallback;
     }
   }
+  if (normalized === "devin" && platform === "win32" && env.LOCALAPPDATA) {
+    const fallback = resolve(env.LOCALAPPDATA, "devin", "cli", "bin", "devin.exe");
+    if (regularFile(fallback)) return fallback;
+  }
   if (foundChannelMixing) {
     const installer = {
       codex: "official Codex install.ps1",
       agy: "official Antigravity install.ps1/sh",
       claude: "official Claude native installer",
       grok: "official Grok install.ps1 (irm https://x.ai/cli/install.ps1 | iex)",
+      devin: "official Devin installer",
     }[normalized];
     throw new PolicyError("channel_mixing", `channel_mixing: only .cmd/.bat was found for ${name}; reinstall with the ${installer}`);
   }
@@ -225,6 +238,10 @@ export function hostIsolationPlan(options) {
   }
   if (vendor === "agy") {
     argv.push(...(isReadOnlyMode(options) ? ["--mode", "plan"] : ["--dangerously-skip-permissions"]));
+    return { argv, env };
+  }
+  if (vendor === "devin") {
+    argv.push("--config", isReadOnlyMode(options) ? DEVIN_READONLY_CONFIG : DEVIN_ISOLATION_CONFIG, "--permission-mode", "dangerous");
     return { argv, env };
   }
   if (vendor === "codex") {
@@ -393,6 +410,21 @@ export function buildVendorInvocation(options) {
     // native `plan` as a floor: --tools names that all miss fail-open, and
     // bypassPermissions would then approve writes. Measured grok 1.0.5.
     return assemble(before);
+  }
+  if (vendor === "devin") {
+    if (operation !== "text") {
+      throw new PolicyError("mode_unsupported", "mode_unsupported: devin supports text only");
+    }
+    if (!options.brief) {
+      throw new PolicyError("invalid_mode", "invalid_mode: devin requires a brief file path");
+    }
+    if (!options.devinTranscript) {
+      throw new PolicyError("invalid_mode", "invalid_mode: devin requires an internal transcript path");
+    }
+    const before = ["--prompt-file", resolve(options.brief)];
+    if (model) before.push("--model", model);
+    before.push("--export", options.devinTranscript);
+    return assemble(before, ["--respect-workspace-trust", "false", "-p"]);
   }
   if (vendor === "claude") {
     return assemble([

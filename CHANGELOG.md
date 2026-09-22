@@ -4,6 +4,25 @@
 > add `Planned release version: <plugin.json version>` under `## Unreleased`.
 > Replace it with the matching release heading when releasing.
 
+## 0.9.19 — 2026-09-22
+
+- Devin CLI를 다섯 번째 구독 vendor로 추가했다. `--vendor devin`은 text 단발 실행만 받으며 brief를
+  `--prompt-file` 경로로 전달하고, 호출자가 준 model slug를 그대로 쓴다. image operation과
+  `--effort`는 spawn 전에 거부하며 자동 모델 라우팅 후보에는 들어가지 않는다.
+- mode 생략은 `--permission-mode dangerous`로 승인 대기 없는 전권 실행, plan/review는 같은 비대화형
+  자세에 쓰기·명령 도구를 막는 PreToolUse hook을 더해 거절 이유를 자식이 관측하고 계속하게 한다. 여덟 `read_config_from` source를 끈 bundled config로
+  호출자 스킬·MCP를 격리하되 Devin 상시 지시 문서는 남는 한계를 공시한다.
+- 내부 export transcript에서 session ID와 스텝별 합계 prompt/completion/cache token을 읽어 기존
+  raw·portable `vendorUsage`에 싣는다. Windows PATH 실패 시
+  `%LOCALAPPDATA%\devin\cli\bin\devin.exe`도 찾는다.
+- 기존 codex·agy·claude·grok argv fixture와 자동 라우팅 카탈로그 집합은 그대로 보존했다.
+- 차단 테스트는 matcher·hook 응답의 단위 검증으로 한정하고 합성 완료 토큰을 제거했다.
+  실호출에서 차단된 다섯 도구와 Devin CLI 3000.10.31에 미노출된 `apply_patch`를 문서에서 구분한다.
+- portable `hostIsolation.argv`의 Devin config 절대경로를 안정적인 bundled label로 바꿔 dispatcher 소유
+  locator를 제거한다. raw 영수증은 재현을 위해 실제 경로를 계속 보존한다.
+- dispatcher가 직접 만든 Devin 임시 디렉터리만 정리하도록 소유권을 표시해, `run()` 호출자가 넘긴
+  transcript 디렉터리를 삭제하지 않는다. mode 표의 Grok plan 누락도 바로잡았다.
+
 ## 0.9.18 — 2026-09-19
 
 - `--vendor`를 박은 호출도 **그 한 벤더의 카탈로그로** 모델 이름을 해석한다. 지금까지는 codex만

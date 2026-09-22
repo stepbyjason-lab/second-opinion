@@ -2,12 +2,12 @@
 
 [English](./README.md) | **한국어**
 
-Claude Code 안에서 **다른 벤더의 AI**(Codex/GPT, Antigravity/Gemini, Grok)를 일상어로 부려 쓰는
+Claude Code 안에서 **다른 벤더의 AI**(Codex/GPT, Antigravity/Gemini, Grok, Devin)를 일상어로 부려 쓰는
 어댑터 스킬 — 점검·리뷰·의견부터 작업 오프로드, 이미지 생성까지.
 
-**버전 0.9.18**
+**버전 0.9.19**
 
-> "이 설계 코덱스로 점검받고 싶어" / "안티그래비티한테 물어봐" / "그록으로 봐줘" / "교차 검증해줘"
+> "이 설계 코덱스로 점검받고 싶어" / "안티그래비티한테 물어봐" / "그록으로 봐줘" / "데빈으로 봐줘" / "교차 검증해줘"
 > "코덱스한테 로고 시안 이미지 만들어달라고 해줘" / "클로드 사용량 아끼게 이 번역은 제미나이로"
 > — 이렇게 말하면 발동한다. 슬래시 커맨드를 외울 필요가 없다.
 
@@ -94,6 +94,7 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
 | 로컬을 안 건드렸는데 AGY 기본 모델이 바뀜 | 기본값이 설정 파일이 아니라 Antigravity 계정 쪽에 있다. 실측 — 아무것도 안 고쳤는데 `gemini-3.7-flash`에서 `gemini-3.8-flash-high`로 옮겨갔다. **재현이 필요한 호출은 `--model`을 박을 것** |
 | Grok 리뷰 예시가 reasoning effort를 빼면 벤더 기본값으로 조용히 실행됨 | 표준 리뷰 예시는 가성비 기준 `--effort medium`을 명시. dispatch가 그대로 전달하고 영수증의 `effortRequested`에 요청값을 남김 |
 | 리뷰어에게 exact current diff 확인이나 스위트 실행을 시킴 | Claude plan/review에는 `git diff`와 이력 조회용 Bash/PowerShell이 있고 `--no-host-shell`로 제거할 수 있다. Grok·AGY explicit mode에는 git shell이 없으므로 linked-worktree 리뷰는 **변경 파일 목록과 unified diff 전문**을 brief에 넣고, 스위트 결과는 **호출자가 직접 재서 값으로** 준다 |
+| Devin이 호출자 agent/editor 스킬과 MCP 설정을 가져옴 | 모든 Devin 호출에 `read_config_from` 여덟 축을 끈 bundled config를 전달. default는 전권, plan/review는 쓰기·명령 도구를 막는 PreToolUse hook을 더해 거절 이유를 자식이 관측한 뒤 계속 실행 |
 
 - **실행 영수증** — 벤더를 부른 뒤 관측한 것을 한 줄로 남긴다: 요청한 벤더·모델,
   알 수 있으면 실제 응답 backend, exit/timeout 상태, 거부된 대체가 있었으면 그 사실.
@@ -105,6 +106,8 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
   `model`·effort·exit·소요시간, 그리고
   **프로세스가 실제로 떴는지** 여부. Codex 호출은 Codex 자신의 세션 로그에서 읽은
   실측 토큰(입력·캐시된 입력·출력·추론·총계·컨텍스트창·쿼터 소진율)도 함께 남는다.
+  Devin 호출은 export 대화 기록에서 session ID와 스텝별 합계 prompt/completion/cache token을
+  `vendorUsage`에 남긴다. 단일 프롬프트 크기가 아니라 전체 step 합계다.
   선택적 `--expect-output <ASCII token, 최대 1024자>`은 최대 12회 반복할 수 있다.
   `--expect-output-file <경로>`는 **같은 token을 파일에서 읽는다** — UTF-8 한 줄에 하나(BOM 허용,
   LF·CRLF 둘 다, 줄 앞뒤 공백은 벗기고 빈 줄은 무시하며 token이 하나도 없으면 거절). 생성기가 낸
@@ -128,7 +131,8 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
   raw 영수증은 재현을 위해 `cwd`·`outPath`·`errPath`·`pid`를 그대로 보존하므로 반드시
   저장소 밖에 둔다. `SECOND_OPINION_PORTABLE_RECEIPT`는 raw와 독립적으로 설정하는 누적
   portable JSONL sink다. 닫힌 typed emitter가 raw를 필터링하지 않고 조립하므로
-  **디스패처가 소유한 locator 필드**가 구조적으로 배제된다. 다만 자유 형식 vendor 문자열에는
+  **디스패처가 소유한 locator 필드**가 구조적으로 배제된다. `hostIsolation`의 dispatcher 소유
+  config 경로도 portable 행에서는 안정적인 bundled label로 기록한다. 다만 자유 형식 vendor 문자열에는
   민감한 텍스트가 남을 수 있으므로 공개 공유 전 내용을 검토해야 한다.
 
   sink 해석은 환경변수 > `~/.second-opinion/config.json`의 `receipt`·`portableReceipt` >
@@ -162,8 +166,9 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
   프롬프트에 붙이는 지시 문서(`AGENTS.md`·`CLAUDE.md`) 경로다. codex·claude는
   `--mode plan|review`에서 **둘 다 기본 차단**이라 리뷰어가 호출자의 진행 상태 대신 brief를
   본다. `--host-hooks`/`--host-docs`로 한 축만 다시 열고 `--no-host-hooks`/`--no-host-docs`로
-  `--mode`를 안 준 호출에서도 막으며, 모든 호출이 `hostIsolation`을 두 영수증에 남긴다 — **실행 행은
-  자식에게 실제로 넘긴 플래그·환경변수**, 유효한 dry-run 행은 **넘길 계획**, 그 밖의 spawn 전
+  `--mode`를 안 준 호출에서도 막으며, 모든 호출이 `hostIsolation`을 두 영수증에 남긴다 — **raw 실행 행은
+  자식에게 실제로 넘긴 플래그·환경변수**, portable 행은 dispatcher 소유 config 경로를 안정적인
+  bundled label로 바꾸며, 유효한 dry-run 행은 **넘길 계획**, 그 밖의 spawn 전
   실패 행은 **빈 배열**로 적는다. 자식이 그것을 어떻게 집행했는지는 적지 않는다. **codex
   홈에 놓인 `AGENTS.md`는 문서 스위치로 걷히지 않는다.** `--host-skills`(claude 전용)는
   자식이 스킬·플러그인을 쓰게 하며, 구성을 통째로 닫던 스위치 하나를 대신하므로 훅·MCP·
@@ -218,7 +223,9 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
   **v1.0.15 이상 필수** — 그 이전 버전은 Windows 비-TTY에서 출력이 조용히 유실된다(수정된 버그)
 - **Grok CLI** — Windows PowerShell: `irm https://x.ai/cli/install.ps1 | iex` 후
   `grok login` (SuperGrok OAuth). 텍스트만. 이미지 과업은 거부한다.
-- 둘 중 하나만 있어도 그 벤더는 동작한다. Grok도 같은 식으로 선택이다.
+- **Devin CLI** — Devin OAuth 로그인 후 `--vendor devin`으로 명시 호출한다. 텍스트만이며 Windows
+  fallback은 `%LOCALAPPDATA%\devin\cli\bin\devin.exe`다.
+- 각 CLI 벤더는 선택 설치이며, 설치·인증된 벤더만 독립적으로 동작한다.
 
 ### API provider (생성 경로 전용) — 선택
 
@@ -319,10 +326,13 @@ unified diff 전문을 넣는다. 이 explicit review mode에는 `git diff`가 �
 ```
 이 부분 그록으로도 봐줘
 ```
+```
+이 부분 swe-2-max 데빈으로 리뷰해줘
+```
 
 ## 데이터 경계 (중요)
 
-**brief에 담은 내용은 통째로 외부 벤더(OpenAI/Google/xAI)에 전송된다.**
+**brief에 담은 내용은 통째로 외부 벤더(OpenAI/Google/xAI/Cognition)에 전송된다.**
 스킬은 시크릿·자격증명·원시 repo 덤프를 brief에 넣지 않도록 지시받지만,
 최종 책임은 사용자에게 있다. 민감한 코드베이스에서는 발췌 범위를 직접 확인하라.
 
