@@ -14,7 +14,7 @@ description: >
 
 # second-opinion — 외부 AI 어댑터
 
-**버전 0.9.19** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). SuperGrok 구독 CLI `grok`과 Devin CLI `devin`. (정본 버전은 `plugin.json`.)
+**버전 0.9.20** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). SuperGrok 구독 CLI `grok`과 Devin CLI `devin`. (정본 버전은 `plugin.json`.)
 
 이 스킬은 **아무것도 차단하지 않는다** — 중개(relay)만 한다. 디스패처는 커맨드 정합성을 위한 도구일 뿐이다. "Claude가 디스패처를 반드시 거치게" 강제하는 것은 **부르는 쪽(caller)의 책임**이다 → [references/enforcement.md](references/enforcement.md).
 
@@ -433,6 +433,9 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor devin --operation text 
 - 내부 `--export` 대화 기록의 `final_metrics`를 읽어 스텝별 합계 prompt/completion/cache token과
   session ID를 `vendorUsage`에 남긴다. 읽지 못하면 `vendorUsageStatus`로 구분하고 호출 성공을 꾸미지 않는다.
 - 이미지 operation과 `--effort`는 호출 전에 거부한다. 모델 카탈로그·클라우드 세션·ACP는 이 경로에 없다.
+- **모델 — effort는 슬러그 끝으로 고른다.** SWE-2: `swe-2-high` · `swe-2-medium` · `swe-2-max`
+  (Free, 262K). 별칭 `swe`는 `SWE-2 High`로 돈다(2026-09-24 실측). 실제로 돈 모델은 영수증
+  `vendorUsage.actualModels`에 남고, 목록 변경은 `devin models list`로 확인한다. 표는 adapter-devin.md 「모델」 절.
 - Windows PATH에서 못 찾으면 `%LOCALAPPDATA%\devin\cli\bin\devin.exe`를 찾는다.
 → 호출 전 필수: `references/adapter-devin.md`
 

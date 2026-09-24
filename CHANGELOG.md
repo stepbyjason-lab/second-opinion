@@ -4,6 +4,15 @@
 > add `Planned release version: <plugin.json version>` under `## Unreleased`.
 > Replace it with the matching release heading when releasing.
 
+## 0.9.20 — 2026-09-24
+
+- Devin 모델 정보를 `--help`·`SKILL.md`·`references/adapter-devin.md`·README 2종에 같은 내용으로 실었다.
+  effort 인자가 없는 Devin에서 호출자가 고를 SWE-2 슬러그(`swe-2-high`·`swe-2-medium`·`swe-2-max`)와
+  별칭 `swe`(실호출에서 `SWE-2 High`로 실행), 실제 모델은 영수증 `vendorUsage.actualModels`로, 목록 변경은
+  `devin models list`로 확인한다는 것이다. 0.9.19 문서에는 예시 `swe-2-max` 한 줄뿐이라 다른 effort를 고를
+  방법이 없었다. 다섯 표면이 같은 표를 싣는지 시험 하나로 지킨다.
+- 동작 변경 없음. 버전 표기만 0.9.20으로 올렸다.
+
 ## 0.9.19 — 2026-09-22
 
 - Devin CLI를 다섯 번째 구독 vendor로 추가했다. `--vendor devin`은 text 단발 실행만 받으며 brief를

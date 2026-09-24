@@ -657,12 +657,12 @@ test("skill resolves the catalog path directly before declaring it missing", () 
   assert.match(skill, /검색 결과가 비었다는 이유만으로 설치 누락이나 카탈로그 오류라고 단정하지 않는다/);
 });
 
-test("0.9.19 public help and documentation describe cache-first ranked routing", () => {
+test("0.9.20 public help and documentation describe cache-first ranked routing", () => {
   const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
   const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
   const publicReadmeUrls = [new URL("../../../README.md", import.meta.url), new URL("../../../README.ko.md", import.meta.url)];
   const publicReadmes = publicReadmeUrls.filter((url) => existsSync(url)).map((url) => readFileSync(url, "utf8"));
-  assert.equal(plugin.version, "0.9.19");
+  assert.equal(plugin.version, "0.9.20");
   assert.ok(publicReadmes.length === 0 || publicReadmes.length === 2, "public snapshot must carry both README files");
   // Derived from plugin.json rather than written out again: the literal was a
   // third place a release had to edit, and a bump that missed it failed here
@@ -1040,10 +1040,10 @@ test("Devin config-hook unit: each configured name returns a block reason; remov
   }
 });
 
-test("the 0.9.19 plugin bundle carries every Devin runtime and adapter asset", () => {
+test("the 0.9.20 plugin bundle carries every Devin runtime and adapter asset", () => {
   const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
   const marketplace = JSON.parse(readFileSync(new URL("../../../.claude-plugin/marketplace.json", import.meta.url), "utf8"));
-  assert.equal(plugin.version, "0.9.19");
+  assert.equal(plugin.version, "0.9.20");
   assert.match(plugin.description, /Devin/);
   assert.match(marketplace.plugins.find(({ name }) => name === "second-opinion")?.description ?? "", /Grok, Devin/);
   for (const asset of [
@@ -1051,6 +1051,25 @@ test("the 0.9.19 plugin bundle carries every Devin runtime and adapter asset", (
     new URL("./devin-readonly-config.json", import.meta.url),
     new URL("../skills/second-opinion/references/adapter-devin.md", import.meta.url),
   ]) assert.equal(existsSync(asset), true, fileURLToPath(asset));
+});
+
+// Devin takes no --effort, so the slug list IS the usage. 0.9.19 shipped only a
+// swe-2-max example and madi callers could not pick another effort; --help is
+// the routing canon they read, so every surface must carry the same table.
+test("help and every public doc list the SWE-2 slugs and the swe alias", () => {
+  const surfaces = {
+    help: usageText(),
+    skill: readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8"),
+    adapter: readFileSync(new URL("../skills/second-opinion/references/adapter-devin.md", import.meta.url), "utf8"),
+  };
+  for (const url of [new URL("../../../README.md", import.meta.url), new URL("../../../README.ko.md", import.meta.url)]) {
+    if (existsSync(url)) surfaces[fileURLToPath(url)] = readFileSync(url, "utf8");
+  }
+  for (const [name, text] of Object.entries(surfaces)) {
+    for (const slug of ["swe-2-high", "swe-2-medium", "swe-2-max"]) assert.match(text, new RegExp(slug), `${name} lacks ${slug}`);
+    assert.match(text, /SWE-2 High/, `${name} lacks what the swe alias runs as`);
+    assert.match(text, /devin models list/, `${name} lacks how to refresh the list`);
+  }
 });
 
 test("Devin docs distinguish unexposed apply_patch from verified runtime blocking", () => {

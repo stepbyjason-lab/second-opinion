@@ -15,6 +15,23 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor devin --operation text 
 `--vendor devin`은 필수다. Devin 모델 이름은 다른 벤더와 겹칠 수 있어 자동 모델 카탈로그·라우팅에
 들어가지 않는다. model slug는 호출자가 준 문자열 그대로 전달하며 `--effort`는 받지 않는다.
 
+## 모델 — SWE-2
+
+Devin에는 effort 인자가 없다. **effort는 슬러그 끝으로 고른다** — `--effort`를 주면 spawn 전에 거부된다.
+이 채널에서 쓰는 모델은 SWE-2 하나다(`devin models list`, 2026-09-24 실측).
+
+| `--model` | effort | 비고 |
+|---|---|---|
+| `swe-2-high` | high | Free · 262K context |
+| `swe-2-medium` | medium | Free · 262K context |
+| `swe-2-max` | max | Free · 262K context |
+| `swe` | high | 별칭. 실호출 영수증 `vendorUsage.actualModels`가 `SWE-2 High`였다(2026-09-24) |
+
+- 무엇이 실제로 돌았는지는 영수증 `vendorUsage.actualModels`(transcript의 `agent.model_name`)로 확인한다.
+  영수증 `model`은 호출자가 준 문자열 그대로다.
+- 목록이 바뀌었는지는 `devin models list`로 확인한다. 거기 나오는 모델 UID·계열 슬러그·별칭은
+  `--model`에 그대로 줄 수 있다.
+
 ## 입력·실행 자세
 
 - dispatcher는 brief 본문을 argv나 stdin에 넣지 않고 `--prompt-file <절대경로>`로만 넘긴다.

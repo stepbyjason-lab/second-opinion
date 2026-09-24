@@ -5,7 +5,7 @@
 Claude Code 안에서 **다른 벤더의 AI**(Codex/GPT, Antigravity/Gemini, Grok, Devin)를 일상어로 부려 쓰는
 어댑터 스킬 — 점검·리뷰·의견부터 작업 오프로드, 이미지 생성까지.
 
-**버전 0.9.19**
+**버전 0.9.20**
 
 > "이 설계 코덱스로 점검받고 싶어" / "안티그래비티한테 물어봐" / "그록으로 봐줘" / "데빈으로 봐줘" / "교차 검증해줘"
 > "코덱스한테 로고 시안 이미지 만들어달라고 해줘" / "클로드 사용량 아끼게 이 번역은 제미나이로"
@@ -224,7 +224,9 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
 - **Grok CLI** — Windows PowerShell: `irm https://x.ai/cli/install.ps1 | iex` 후
   `grok login` (SuperGrok OAuth). 텍스트만. 이미지 과업은 거부한다.
 - **Devin CLI** — Devin OAuth 로그인 후 `--vendor devin`으로 명시 호출한다. 텍스트만이며 Windows
-  fallback은 `%LOCALAPPDATA%\devin\cli\bin\devin.exe`다.
+  fallback은 `%LOCALAPPDATA%\devin\cli\bin\devin.exe`다. Devin에는 `--effort`가 없어 effort를 슬러그로
+  고른다 — SWE-2는 `swe-2-high`·`swe-2-medium`·`swe-2-max`(Free, 262K)이고 별칭 `swe`는 SWE-2 High로
+  돈다. 실제로 돈 모델은 영수증 `vendorUsage.actualModels`, 현재 목록은 `devin models list`로 확인한다.
 - 각 CLI 벤더는 선택 설치이며, 설치·인증된 벤더만 독립적으로 동작한다.
 
 ### API provider (생성 경로 전용) — 선택

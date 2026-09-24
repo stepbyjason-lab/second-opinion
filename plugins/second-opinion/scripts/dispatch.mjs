@@ -191,6 +191,9 @@ export function usageText() {
     "  name that is yours plus a trailing version or effort is a different model, never a match.",
     "  Devin is explicit-vendor only: it is excluded from model-catalog discovery and automatic routing,",
     "  and its model slug is forwarded unchanged. Devin rejects --effort and both image operations.",
+    "  Devin has no effort argument: the effort is the slug suffix. SWE-2 slugs: swe-2-high, swe-2-medium,",
+    "  swe-2-max (Free, 262K); the alias swe runs as SWE-2 High. The model that actually ran is in the",
+    "  receipt's vendorUsage.actualModels. Refresh the list with `devin models list`.",
     "  Model separators/case and effort labels (light/very-high/maximum) are normalized.",
     "  --cwd is the vendor's workspace; omitted, it is this process's directory.",
     "  --brief/--input/--expect-output-file/--out/--err resolve from THIS process's directory, not --cwd.",
@@ -309,6 +312,8 @@ export function splitModelEffort(model, effort) {
 //     different model than the one that was asked for.
 export function resolveVendorModelAlias(vendor, model, deps = {}) {
   if (!model) return model;
+  // Devin is never resolved: its effort lives in the slug (swe-2-high|medium|max)
+  // and the slug table is in --help and references/adapter-devin.md.
   if (vendor === "devin") return model;
   try {
     const matches = rankedCatalogMatches(model, vendor, availableVendorCatalog(vendor, deps))

@@ -2,7 +2,7 @@
 
 **English** | [한국어](./README.ko.md)
 
-![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.19-informational)
+![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.20-informational)
 
 **Use other AI vendors from inside Claude Code — in plain language.**
 Second opinions, task offloading, and vendor capabilities like image generation.
@@ -279,6 +279,9 @@ CLI launches are not worth that diagnostic cost.
   then `grok login` (SuperGrok OAuth). Text only; image operations are rejected.
 - **Devin CLI** — install and sign in with Devin OAuth. Text only; call it explicitly
   with `--vendor devin`. Windows fallback: `%LOCALAPPDATA%\devin\cli\bin\devin.exe`.
+  Devin has no `--effort`; pick the effort in the slug — SWE-2 is `swe-2-high`, `swe-2-medium`,
+  or `swe-2-max` (Free, 262K), and the alias `swe` runs as SWE-2 High. The receipt's
+  `vendorUsage.actualModels` shows the model that ran; `devin models list` shows the current list.
 
 Any CLI vendor is optional; installed and authenticated vendors work independently.
 
