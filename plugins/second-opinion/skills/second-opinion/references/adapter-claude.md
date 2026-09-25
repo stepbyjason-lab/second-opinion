@@ -34,7 +34,10 @@ PowerShell도 동일한 `node ... dispatch.mjs` argv를 사용한다. brief 내�
 - `--vendor`를 생략한 자동 라우팅은 Claude initialize control response의 모델 메타데이터를
   사용한다. 이 요청은 추론을 실행하지 않으며, dispatcher는 응답 중 모델 필드만 24시간
   cache에 저장하고 계정·조직 정보는 버린다. `--help` 문구를 모델 카탈로그로 해석하지 않는다.
-- `opus`는 최신 alias 그대로 전달한다. 현재 metadata에서 발견한 family를 바탕으로
+- `opus`·`sonnet`·`fable`·`haiku`처럼 버전 없는 이름은 initialize metadata가 광고한 slug 중
+  그 계열의 최신 버전으로 바꿔 전달한다(`opus` → `claude-opus-5-5`, `haiku` →
+  `claude-haiku-4-5-20251001`). 영수증 `model`에 실제 버전이, `modelRequested`에 준 이름이
+  남는다. 현재 metadata에서 발견한 family를 바탕으로
   `opus 5`·`opus 4.8` 같은 versioned 이름을 정규 ID로 만들며 고정 family 목록은 없다.
   AGY에도 정확한 `opus 4.6`·`sonnet 4.6` 항목이 있으므로 bare 입력은 AGY가 우선한다.
   Claude Code를 원하면 `--vendor`를 생략한 `Claude Code opus 4.6`, 또는

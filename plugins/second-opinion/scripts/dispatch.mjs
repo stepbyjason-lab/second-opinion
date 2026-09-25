@@ -60,8 +60,18 @@ const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 const MODEL_SHORTHAND_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max", "ultra"]);
 const MODEL_CATALOG_SCHEMA = 1;
 const MODEL_CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
-const MODEL_CATALOG_FAILURE_TTL_MS = 5 * 60 * 1000;
+// A background refresh runs three listings under a 20s timeout each, so a lock
+// this old belongs to a refresh that died without releasing it.
+const MODEL_CATALOG_LOCK_STALE_MS = 10 * 60 * 1000;
+const MODEL_CATALOG_TAKEOVER_STALE_MS = 60 * 1000;
 const MODEL_CATALOG_FILENAME = "model-catalog-v1.json";
+// argv[0] of the detached child that refreshes the catalog. It is not a caller
+// flag: help lists none of it, and the parser never sees it.
+const MODEL_CATALOG_REFRESH_ARG = "--internal-refresh-model-catalog";
+// Tails that name how a model runs, not which model it is. A catalog name that
+// ends in one of these is the same version as the name without it.
+const MODEL_EFFORT_TAILS = Object.freeze(["none", "low", "medium", "high", "xhigh", "max", "ultra"]);
+const MODEL_VARIANT_TAILS = new Set([...MODEL_EFFORT_TAILS, "fast", "priority"]);
 const RECEIPT_CONFIG_FILENAME = "config.json";
 const MAX_RECEIPT_CONFIG_BYTES = 1024 * 1024;
 const MODEL_CATALOG_VENDORS = Object.freeze(VENDORS.filter((vendor) => vendor !== "devin"));
@@ -152,6 +162,8 @@ export function usageText() {
     "  AGY reasoning effort is its own axis since agy 1.1.26: pass --model gemini-3.8-flash --effort",
     "    low|medium|high. The older -high suffix still resolves alone, but combining it with --effort",
     "    exits 1 rather than picking a winner, and a bare model name without --effort is rejected too.",
+    "    --model gemini becomes the newest Gemini slug without the effort tail, so it takes --effort",
+    "    the same way; the dispatcher never fills one in.",
     "  Linked-worktree Grok/AGY review: their explicit modes have no git shell. Put",
     "    the exact diff and changed-file list in the brief; never ask them to discover .git.",
     "",
@@ -183,13 +195,31 @@ export function usageText() {
     "  Run provider-probe.mjs explicitly for a one-shot status/duration/failure-class table.",
     "  Without --vendor, --model is matched against a cache-first provider catalog.",
     "  Catalog metadata is cached for 24h at ~/.second-opinion/model-catalog-v1.json.",
-    "  A fresh-cache miss refreshes once; refresh failure uses last-known-good data.",
-    "  Degraded fallback retries after 5m; the active Codex local cache is re-read.",
-    "  With --vendor, --model is still resolved against that one vendor's catalog, but only",
-    "  from what is already there: a pinned vendor never refreshes, and anything short of",
-    "  exactly one model forwards --model unchanged instead of renaming your call. A catalog",
-    "  name that is yours plus a trailing version or effort is a different model, never a match.",
-    "  Devin is explicit-vendor only: it is excluded from model-catalog discovery and automatic routing,",
+    "  A call (any but --vendor devin) that finds that cache over 24h old, or finds its last refresh",
+    "  failed for claude, agy or grok, starts one background refresh and goes on with the catalog it has;",
+    "  a vendor CLI that is not installed is not a failure to retry, and Codex is never retried this way",
+    "  because every call re-reads its local cache.",
+    "  the refreshed catalog is used from the next call. A second call never starts a second refresh",
+    "  while one is running. A vendor whose listing fails or comes back empty keeps its last good",
+    "  list. Only a missing cache is refreshed inside the call, and only by a call that reads it:",
+    "  automatic routing and --vendor claude|agy|grok with --model. Codex re-reads its own local",
+    "  cache every call. --request-json is outside both: no newest-model mapping and no refresh.",
+    "  With --vendor, --model is still resolved against that one vendor's catalog. With or without",
+    "  --vendor, a bare family name (sol, luna, terra, astra, opus, sonnet, fable, haiku, gemini, grok)",
+    "  becomes that family's newest model, judged by the version number in each catalog name — never",
+    "  by catalog order or description. A date is not a version: eight digits anywhere, or four digits",
+    "  of month and day at the end of a name (-0813). A bare name that is already exactly one catalog",
+    "  model's own name keeps that model and is not compared with other lines. A name that already",
+    "  carries a version is never moved to another version, and a catalog name that is yours plus a",
+    "  trailing version or effort is a different model, never a match. With --vendor, a bare name",
+    "  that has no candidate, and any other name short of exactly one model, is forwarded unchanged.",
+    "  Nothing is ever resolved or routed to an opencodex entry. Codex's model cache also lists",
+    "  opencodex's proxy routes (a provider-namespaced slug such as anthropic/claude-opus-5-5 or",
+    "  xai/grok-4.7, described as \"Routed via opencodex\"); they are not Codex models and are left",
+    "  out, pinned or not, bare or versioned. A name only they answered is forwarded as written with",
+    "  --vendor codex (claude-opus-4-6 stays claude-opus-4-6, pro stays pro) and is not a Codex",
+    "  candidate for automatic routing.",
+    "  Devin is explicit-vendor only: it is excluded from model-catalog discovery, refresh, and automatic routing,",
     "  and its model slug is forwarded unchanged. Devin rejects --effort and both image operations.",
     "  Devin has no effort argument: the effort is the slug suffix. SWE-2 slugs: swe-2-high, swe-2-medium,",
     "  swe-2-max (Free, 262K); the alias swe runs as SWE-2 High. The model that actually ran is in the",
@@ -294,50 +324,148 @@ export function splitModelEffort(model, effort) {
 
 // A call that pins --vendor still gets its model name resolved through that
 // vendor's catalog, so `--vendor agy --model "opus 4.6"` reaches agy as the slug
-// agy publishes instead of a string it will reject at the far end. Two rules keep
-// the resolution from ever making a call worse than the caller wrote it:
+// agy publishes instead of a string it will reject at the far end.
 //
-//   * it never goes looking. Discovering a catalog means spawning provider CLIs,
-//     and the pinned-vendor path is precisely the one that does not pay that cost
-//     — so this reads only what is already on disk and never triggers a refresh.
-//     A missing, stale, or unavailable catalog therefore yields no models, which
-//     lands on the second rule rather than on an error.
-//   * anything short of exactly one winning model returns the caller's own string.
-//     Forwarding a name the vendor rejects costs one clear vendor error; renaming
-//     a model the caller got right sends the call somewhere nobody asked for, and
-//     the receipt would name the substitute as if it had been requested. So a
-//     "variant" boundary match — the catalog name is the caller's name plus
-//     trailing version or effort tokens — is dropped before the winners are
-//     picked, not merely outranked: it is the one match kind that answers a
-//     different model than the one that was asked for.
+// A bare family name (`sol`, `opus`, `gemini`) is the one case that is renamed on
+// purpose: the vendors reject it outright (codex "not supported", agy "not
+// recognized", grok "unknown model id"), so forwarding it can only fail, and the
+// caller who wrote no version asked for the newest one. latestBareModel picks it.
+//
+// Every other name keeps the rule that resolution never makes a call worse than
+// the caller wrote it: anything short of exactly one winning model returns the
+// caller's own string. Forwarding a name the vendor rejects costs one clear vendor
+// error; renaming a model the caller got right sends the call somewhere nobody
+// asked for, and the receipt would name the substitute as if it had been
+// requested. So a "variant" boundary match — the catalog name is the caller's name
+// plus trailing version or effort tokens — is dropped before the winners are
+// picked, not merely outranked: it is the one match kind that answers a different
+// model than the one that was asked for.
 export function resolveVendorModelAlias(vendor, model, deps = {}) {
-  if (!model) return model;
   // Devin is never resolved: its effort lives in the slug (swe-2-high|medium|max)
-  // and the slug table is in --help and references/adapter-devin.md.
+  // and the slug table is in --help and references/adapter-devin.md. It never
+  // reaches the catalog either, so a Devin call cannot start a refresh.
   if (vendor === "devin") return model;
   try {
-    const matches = rankedCatalogMatches(model, vendor, availableVendorCatalog(vendor, deps))
-      .filter((match) => match.boundary !== "variant");
-    const resolved = [...new Set(winningMatches(matches).map((match) => match.model))];
-    return resolved.length === 1 ? resolved[0] : model;
+    // Every other pinned call keeps the catalog on the daily schedule, --model or
+    // not; only a call with a name to resolve reads it.
+    const catalog = availableVendorCatalog(vendor, deps, Boolean(model));
+    if (!model) return model;
+    const latest = latestBareModel(vendor, model, catalog);
+    if (latest) return latest.model ?? model;
+    return uniqueCatalogModel(vendor, model, catalog);
   } catch {
     return model;
   }
 }
 
+function uniqueCatalogModel(vendor, model, catalog) {
+  const matches = rankedCatalogMatches(model, vendor, catalog)
+    .filter((match) => match.boundary !== "variant");
+  const resolved = [...new Set(winningMatches(matches).map((match) => match.model))];
+  return resolved.length === 1 ? resolved[0] : model;
+}
+
 // Codex's catalog is a file under the active CODEX_HOME, so it is read live for
 // that home — the unified cache deliberately never reuses a Codex row written
-// under a different one. Every other vendor is read from the unified cache
-// exactly as it stands, because refreshing it is a process spawn.
-function availableVendorCatalog(vendor, deps = {}) {
+// under a different one. Neither a codex call nor a call without --model reads a
+// unified row, so neither waits for a missing cache; both still keep it current
+// in the background, like every other call.
+function availableVendorCatalog(vendor, deps = {}, readsCatalog = true) {
   if (deps.modelCatalogs) return normalizeCatalog(vendor, deps.modelCatalogs[vendor]).models;
+  const unified = unifiedCatalogForCall(deps, readsCatalog && vendor !== "codex");
+  if (!readsCatalog) return [];
   if (vendor === "codex") return codexModelCatalog(deps.env ?? process.env);
-  const cached = readCatalogCache(deps)?.catalogs?.[vendor];
+  const cached = unified?.catalogs?.[vendor];
   return cached?.available === true ? cached.models : [];
 }
 
+// Catalogs carry no release order: a Codex row has no date or rank field, and the
+// retired gpt-5.6-sol still describes itself as "Latest frontier agentic coding
+// model." So the version is read from the name. Every vendor spells it
+// differently — gpt-6-sol, claude-opus-5-5, claude-haiku-4-5-20251001,
+// gemini-3.8-flash-high, grok-4.7-build-fast — and the split below covers all of
+// them: numeric tokens are the version, an eight-digit token is a release date and
+// not a version, trailing effort or speed words are how the model runs rather than
+// which model it is, and whatever is left names the line. A provider namespace
+// (`anthropic/`) is not part of the line. A four-digit month and day at the end
+// (deepseek-v4-pro-0813) is a release date as well: read as version 813, it
+// outranked every real version on another line that shared a word with it.
+function modelLineage(canonical) {
+  const tokens = normalizeModelKey(String(canonical).replace(/^.*\//, "")).split(" ").filter(Boolean);
+  const tail = [];
+  while (tokens.length > 1 && MODEL_VARIANT_TAILS.has(tokens.at(-1))) tail.unshift(tokens.pop());
+  if (tokens.length > 1 && /^(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])$/.test(tokens.at(-1))) tokens.pop();
+  const line = [];
+  const version = [];
+  for (const token of tokens) {
+    if (/^\d{8}$/.test(token)) continue;
+    if (/^\d+$/.test(token)) version.push(Number(token));
+    else line.push(token);
+  }
+  return { line, version, tail };
+}
+
+function compareVersions(left, right) {
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const difference = (left[index] ?? 0) - (right[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+// agy 1.1.26 takes effort as its own --effort and exits 1 when a slug that
+// already ends in one is paired with it, while agy only publishes effort-suffixed
+// slugs. The bare name therefore resolves to the slug without that tail, and the
+// caller's --effort — or its absence, which agy rejects on its own — rides beside it.
+function withoutEffortTail(canonical) {
+  return canonical.replace(new RegExp(`(?:[-_. ]+(?:${MODEL_EFFORT_TAILS.join("|")}))+$`, "i"), "");
+}
+
+// Returns null when the name is not a bare family name, when it is already exactly
+// one catalog model's own name, or when no catalog name carries it, so the ordinary
+// resolution below decides. Otherwise returns the newest model, or
+// { model: undefined } when two different lines tie at the newest version and no
+// single answer exists.
+function latestBareModel(vendor, requested, catalog) {
+  const hint = requestedRouteHint(requested);
+  if ((hint.vendor && hint.vendor !== vendor) || !/^[a-z]+$/.test(hint.model)) return null;
+  // The version comparison is for a name that several versions answer to
+  // (gpt-5.6-sol and gpt-6-sol both answer to `sol`); it must not move a name that
+  // already is one model's own name onto another line that happens to carry a
+  // higher number.
+  const exact = new Set(rankedCatalogMatches(requested, vendor, catalog).filter((match) => match.rank === 100).map((match) => match.model));
+  if (exact.size === 1) return null;
+  const candidates = catalog
+    .map((record) => ({ record, ...modelLineage(record.canonical) }))
+    .filter((candidate) => candidate.line.includes(hint.model));
+  if (candidates.length === 0) return null;
+  const newest = candidates.reduce((best, candidate) => compareVersions(candidate.version, best) > 0 ? candidate.version : best, candidates[0].version);
+  const current = candidates.filter((candidate) => compareVersions(candidate.version, newest) === 0);
+  // grok-4.7 and grok-4.7-build-fast are the same version on two lines; the line
+  // with nothing added to the family name is the family's own model.
+  const shortest = Math.min(...current.map((candidate) => candidate.line.length));
+  const lines = current.filter((candidate) => candidate.line.length === shortest);
+  if (new Set(lines.map((candidate) => candidate.line.join(" "))).size !== 1) return { model: undefined };
+  const plain = lines.filter((candidate) => candidate.tail.length === 0);
+  const chosen = vendor === "agy" || plain.length === 0 ? lines : plain;
+  const names = [...new Set(chosen.map((candidate) => vendor === "agy" ? withoutEffortTail(candidate.record.canonical) : candidate.record.canonical))];
+  if (names.length !== 1) return { model: undefined };
+  return { model: names[0], efforts: uniqueStrings(chosen.flatMap((candidate) => candidate.record.efforts ?? [])).map(normalizeEffort) };
+}
+
+// run() resolves a codex model once more because the --request-json subscription
+// path reaches it without parseCli. That path is outside the latest-name mapping
+// and the daily refresh, so this is the older resolution against the local Codex
+// cache as it stands; on the CLI path the name is already a catalog slug and
+// resolves to itself. Both read the same Codex catalog, which never holds an
+// opencodex entry, so neither path can turn a name forwarded as written into one.
 export function resolveCodexModelAlias(model, env = process.env) {
-  return resolveVendorModelAlias("codex", model, { env });
+  if (!model) return model;
+  try {
+    return uniqueCatalogModel("codex", model, codexModelCatalog(env));
+  } catch {
+    return model;
+  }
 }
 
 function codexModelCatalog(env = process.env) {
@@ -365,7 +493,23 @@ function uniqueStrings(values) {
   return [...new Set(values.map(stripModelDecoration).filter(Boolean))];
 }
 
+// opencodex, a proxy that fronts other providers through Codex, writes its routes
+// into Codex's own model cache — 31 of its 38 entries on 2026-09-24, each a
+// provider-namespaced slug (`anthropic/claude-opus-5-5`, `xai/grok-4.7`) described
+// as "Routed via opencodex → <provider>". None of them is a Codex model and no call
+// is routed through that proxy, so they never enter the Codex catalog: no name,
+// pinned or routed, bare or versioned, resolves to one, and a name only they
+// answered is forwarded as the caller wrote it. Codex's own slugs carry no
+// namespace, so the slug decides on its own wherever a row has no description — a
+// row read back from the unified cache, a string fixture.
+function isOpencodexEntry(value) {
+  const slug = typeof value === "string" ? value : value?.slug ?? value?.canonical;
+  if (typeof slug === "string" && slug.includes("/")) return true;
+  return typeof value?.description === "string" && /^\s*Routed via opencodex\b/i.test(value.description);
+}
+
 function catalogRecord(vendor, value) {
+  if (vendor === "codex" && isOpencodexEntry(value)) return null;
   if (typeof value === "string") value = vendor === "claude" ? { value, resolvedModel: value } : { slug: value };
   if (!value || typeof value !== "object") return null;
   if (value.canonical && Array.isArray(value.aliases)) {
@@ -456,7 +600,9 @@ function commandModelCatalog(command, args, parse, deps, input) {
       killSignal: "SIGKILL",
       maxBuffer: 8 * 1024 * 1024,
     });
+    if (result.error?.code === "ENOENT") return { available: false, models: [], absent: true };
     if (result.status !== 0 || result.error || result.signal) return { available: false, models: [] };
+    // A listing that ran and named nothing is a failed listing, not an empty catalog.
     const models = parse(`${result.stdout ?? ""}\n${result.stderr ?? ""}`);
     return { available: models.length > 0, models };
   } catch { return { available: false, models: [] }; }
@@ -469,7 +615,7 @@ function liveModelCatalogs(deps = {}) {
     const models = codexModelCatalog(env);
     codex = { available: models.length > 0, models };
   } catch { /* unavailable vendor catalog */ }
-  const agy = commandModelCatalog("agy", ["models"], (output) => output.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^[a-z0-9][a-z0-9._-]*$/i.test(line)).map((slug) => catalogRecord("agy", { slug })), deps);
+  const agy = commandModelCatalog("agy", ["models"], agyModelCatalog, deps);
   // Claude's supportedModels metadata is returned by the initialize control
   // request. Cache only the model rows: the full response also carries account
   // metadata that must never be persisted by second-opinion. This exact
@@ -477,12 +623,27 @@ function liveModelCatalogs(deps = {}) {
   // 2.1.220; adding -p would switch away from the control session being queried.
   const request = `${JSON.stringify({ request_id: "second-opinion-catalog", type: "control_request", request: { subtype: "initialize" } })}\n`;
   const claude = commandModelCatalog("claude", ["--output-format", "stream-json", "--verbose", "--input-format", "stream-json", "--tools", "", "--no-session-persistence", "--safe-mode", "--disable-slash-commands"], claudeModelCatalog, deps, request);
-  let grok = { available: false, models: [] };
+  let grok = { available: false, models: [], absent: true };
   try {
     const grokExe = resolveExecutable("grok", { env, platform: process.platform });
     grok = commandModelCatalog(grokExe, ["models"], grokModelCatalog, deps);
-  } catch { /* unavailable vendor catalog */ }
+  } catch { /* grok is not installed */ }
   return { codex, agy, claude, grok };
+}
+
+// `agy models` prints a `Fetching available models...` line and then one
+// `<slug><TAB><label>` row per model. Older builds printed the slug alone on its
+// line. Reading only whole-line slugs parsed today's output as zero models, so
+// every refresh failed and agy kept a list from months earlier.
+function agyModelCatalog(output) {
+  const models = [];
+  for (const line of String(output).split(/\r?\n/)) {
+    const slug = line.includes("\t") ? line.split("\t")[0].trim() : line.trim();
+    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(slug)) continue;
+    const record = catalogRecord("agy", { slug });
+    if (record) models.push(record);
+  }
+  return models;
 }
 
 function grokModelCatalog(output) {
@@ -527,19 +688,128 @@ function writeCatalogCache(catalogs, now, degraded, deps = {}) {
   }
 }
 
-function refreshModelCatalogs(stale, deps = {}) {
+// A vendor whose listing fails or comes back empty keeps the last list that
+// succeeded, and the cache is marked degraded so the next call tries again instead
+// of trusting it for a day. Two failures are not retried that way: Codex, whose
+// unified row is never read back because every call reads its local cache, and a
+// vendor CLI that is not installed, which no retry would fix before the next day.
+function refreshModelCatalogs(deps = {}) {
+  const lastGood = readCatalogCache(deps)?.catalogs;
   const live = liveModelCatalogs(deps);
   let degraded = false;
   const catalogs = Object.fromEntries(MODEL_CATALOG_VENDORS.map((vendor) => {
     if (live[vendor]?.available) return [vendor, live[vendor]];
-    degraded = true;
+    if (vendor !== "codex" && live[vendor]?.absent !== true) degraded = true;
     // Codex's source is already a local cache and may vary with CODEX_HOME.
     // Never reuse a unified-cache Codex row when the active local source failed.
-    if (vendor !== "codex" && stale?.[vendor]?.available) return [vendor, stale[vendor]];
+    if (vendor !== "codex" && lastGood?.[vendor]?.available) return [vendor, lastGood[vendor]];
     return [vendor, { available: false, models: [] }];
   }));
-  writeCatalogCache(catalogs, deps.now?.() ?? Date.now(), degraded, deps);
-  return catalogs;
+  const checkedAt = deps.now?.() ?? Date.now();
+  writeCatalogCache(catalogs, checkedAt, degraded, deps);
+  return { checkedAt, degraded, invalid: false, catalogs };
+}
+
+// The one freshness rule for every CLI dispatch except Devin's. The age is this
+// dispatcher's own last refresh of the unified cache, never a vendor's timestamp
+// (Codex's cache records fetched_at as 2000-01-01). A cache that is a day old, or
+// whose last refresh failed for a vendor, is still used for this call while one
+// detached refresh replaces it for the next. Only a missing cache is refreshed in
+// the call, and only when the call reads it (`waitIfMissing`): a codex call reads
+// its own local cache and a call without --model reads nothing, so neither waits.
+function unifiedCatalogForCall(deps = {}, waitIfMissing = true) {
+  const cached = readCatalogCache(deps);
+  if (!cached) {
+    if (waitIfMissing) return refreshModelCatalogs(deps);
+    launchCatalogRefresh(deps);
+    return null;
+  }
+  const age = (deps.now?.() ?? Date.now()) - cached.checkedAt;
+  if (cached.degraded || cached.invalid || !(age >= 0 && age < MODEL_CATALOG_TTL_MS)) launchCatalogRefresh(deps);
+  return cached;
+}
+
+function modelCatalogLockPath(deps = {}) {
+  return `${modelCatalogCachePath(deps)}.lock`;
+}
+
+// Parallel dispatch is routine, so the refresh is claimed before it is started by
+// creating the lock directory, which exactly one caller can do: of any number of
+// calls that find the cache out of date at once, or while a refresh is still
+// running, one starts it. A lock left by a refresh that died is taken over once it
+// is older than any refresh can run.
+function launchCatalogRefresh(deps = {}) {
+  const lockPath = modelCatalogLockPath(deps);
+  if (!claimCatalogRefresh(lockPath)) return false;
+  try {
+    (deps.launchCatalogRefresh ?? spawnCatalogRefresh)({ cachePath: modelCatalogCachePath(deps), lockPath, env: deps.env ?? process.env });
+    return true;
+  } catch {
+    // Left in place, the lock would read as "a refresh is running" for ten minutes.
+    releaseCatalogRefresh(lockPath);
+    return false;
+  }
+}
+
+function claimCatalogRefresh(lockPath) {
+  try { mkdirSync(dirname(lockPath), { recursive: true }); } catch { return false; }
+  try {
+    mkdirSync(lockPath);
+    return true;
+  } catch (error) {
+    if (error?.code !== "EEXIST") return false;
+  }
+  // Taking over a dead refresh's lock is itself claimed: only the caller that
+  // creates the takeover directory may remove the lock, and it checks the lock's
+  // age again first, so a lock another caller has just re-created is never removed.
+  // A takeover lasts milliseconds; one left behind by a crash is cleared after a minute.
+  if (!pathOlderThan(lockPath, MODEL_CATALOG_LOCK_STALE_MS)) return false;
+  const takeover = `${lockPath}.takeover`;
+  if (pathOlderThan(takeover, MODEL_CATALOG_TAKEOVER_STALE_MS)) releaseCatalogRefresh(takeover);
+  try { mkdirSync(takeover); } catch { return false; }
+  try {
+    if (!pathOlderThan(lockPath, MODEL_CATALOG_LOCK_STALE_MS)) return false;
+    rmSync(lockPath, { recursive: true, force: true });
+    mkdirSync(lockPath);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    releaseCatalogRefresh(takeover);
+  }
+}
+
+function pathOlderThan(path, ageMs) {
+  try { return Date.now() - statSync(path).mtimeMs >= ageMs; } catch { return false; }
+}
+
+function releaseCatalogRefresh(lockPath) {
+  try { rmSync(lockPath, { recursive: true, force: true }); } catch { /* a stale lock expires on its own */ }
+}
+
+// Detached with no stdio, so the vendor call that triggered it never waits on it,
+// and the refresh outlives a dispatch that finishes first. It runs in the cache's
+// own folder, which claiming the lock has just created, and the listings it starts
+// inherit that: on Windows a folder that is a live process's cwd cannot be
+// deleted, and a caller that removes its temporary workspace right after the
+// dispatch returns would otherwise fail for as long as the refresh runs.
+function spawnCatalogRefresh({ cachePath, lockPath, env }) {
+  const child = spawn(process.execPath, [fileURLToPath(import.meta.url), MODEL_CATALOG_REFRESH_ARG, cachePath], {
+    cwd: dirname(cachePath),
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+    shell: false,
+    env,
+  });
+  child.once("error", () => releaseCatalogRefresh(lockPath));
+  child.unref();
+}
+
+function refreshModelCatalogsInBackground(cachePath, deps = {}) {
+  const refreshDeps = { env: deps.env, spawnSync: deps.spawnSync, now: deps.now, cachePath };
+  try { refreshModelCatalogs(refreshDeps); }
+  finally { releaseCatalogRefresh(modelCatalogLockPath(refreshDeps)); }
 }
 
 function currentCodexCatalog(deps = {}) {
@@ -549,18 +819,11 @@ function currentCodexCatalog(deps = {}) {
   } catch { return { available: false, models: [] }; }
 }
 
-function discoverModelCatalogs(deps = {}, forceRefresh = false) {
+function discoverModelCatalogs(deps = {}) {
   if (deps.modelCatalogs) {
-    return { catalogs: Object.fromEntries(MODEL_CATALOG_VENDORS.map((vendor) => [vendor, normalizeCatalog(vendor, deps.modelCatalogs[vendor])])), refreshable: false, refreshed: false };
+    return Object.fromEntries(MODEL_CATALOG_VENDORS.map((vendor) => [vendor, normalizeCatalog(vendor, deps.modelCatalogs[vendor])]));
   }
-  const now = deps.now?.() ?? Date.now();
-  const cached = readCatalogCache(deps);
-  const cacheTtl = cached?.degraded ? MODEL_CATALOG_FAILURE_TTL_MS : MODEL_CATALOG_TTL_MS;
-  const age = cached ? now - cached.checkedAt : null;
-  if (!forceRefresh && cached && !cached.invalid && age >= 0 && age < cacheTtl) {
-    return { catalogs: { ...cached.catalogs, codex: currentCodexCatalog(deps) }, refreshable: true, refreshed: false };
-  }
-  return { catalogs: refreshModelCatalogs(cached?.catalogs, deps), refreshable: true, refreshed: true };
+  return { ...unifiedCatalogForCall(deps, true).catalogs, codex: currentCodexCatalog(deps) };
 }
 
 function requestedRouteHint(model) {
@@ -580,8 +843,7 @@ function rankedCatalogMatches(requested, vendor, catalog) {
   for (const record of catalog) {
     const aliases = record.aliases.map(normalizeModelKey);
     if (aliases.includes(key)) {
-      const preserveLatestAlias = vendor === "claude" && record.latestAlias === key;
-      matches.push({ vendor, model: preserveLatestAlias ? key : record.canonical, rank: 100, record });
+      matches.push({ vendor, model: record.canonical, rank: 100, record });
       continue;
     }
     if (vendor === "claude" && record.family && new RegExp(`^${record.family} \\d+(?: \\d+)*(?: [a-z0-9]+)*$`).test(key)) {
@@ -591,7 +853,8 @@ function rankedCatalogMatches(requested, vendor, catalog) {
     // Both of these are the same rank, but they are not the same kind of guess,
     // and a caller who pinned --vendor needs them told apart. "namespace": the
     // catalog name carries leading tokens the caller left off, so `claude-opus-4-6`
-    // and `anthropic/claude-opus-4-6` are the same model. "variant": the catalog
+    // and `anthropic/claude-opus-4-6` would be the same model (that example was an
+    // opencodex entry, which the Codex catalog no longer holds). "variant": the catalog
     // name carries TRAILING tokens the caller did not write, and those tokens are
     // what distinguishes one model from another — `claude-sonnet-4` would become
     // `claude-sonnet-4-6` and `gpt-oss-120b` would become `gpt-oss-120b-medium`.
@@ -629,6 +892,11 @@ function matchModelRoute(model, catalogs) {
   const matches = winningMatches(routingVendors.flatMap((vendor) => rankedCatalogMatches(model, vendor, catalogs[vendor].models)));
   const vendors = [...new Set(matches.map((match) => match.vendor))];
   if (vendors.length === 1) {
+    // The ranking above decides which vendor owns the name; for a bare family name
+    // the model is then that vendor's newest, the same answer --vendor gets. Without
+    // this, `sol` matched gpt-5.6-sol and gpt-6-sol and stopped as ambiguous.
+    const latest = latestBareModel(vendors[0], model, catalogs[vendors[0]].models);
+    if (latest?.model) return { vendor: vendors[0], model: latest.model, efforts: latest.efforts };
     const sameVendor = matches.filter((match) => match.vendor === vendors[0]);
     const models = [...new Set(sameVendor.map((match) => match.model))];
     if (models.length === 1) {
@@ -644,12 +912,7 @@ function matchModelRoute(model, catalogs) {
 }
 
 function resolveModelRouteDetailed(model, deps = {}) {
-  let discovery = discoverModelCatalogs(deps);
-  let route = matchModelRoute(model, discovery.catalogs);
-  if (!route && discovery.refreshable && !discovery.refreshed) {
-    discovery = discoverModelCatalogs(deps, true);
-    route = matchModelRoute(model, discovery.catalogs);
-  }
+  const route = matchModelRoute(model, discoverModelCatalogs(deps));
   if (!route) throw new CliError(`unknown model for automatic vendor routing: ${model}`);
   return route;
 }
@@ -1927,6 +2190,13 @@ export async function executeCli(argv, deps = {}) {
       runSubscription: async (options, runDeps) => await run(options, { spawn, ...runDeps }),
     });
   }
+  // The detached child a stale catalog starts. It takes the one cache path it was
+  // given, refreshes that file, and releases the lock the parent claimed for it.
+  if (argv[0] === MODEL_CATALOG_REFRESH_ARG) {
+    if (argv.length !== 2 || !isAbsolute(argv[1])) return 2;
+    refreshModelCatalogsInBackground(argv[1], deps);
+    return 0;
+  }
   let options;
   const stderr = deps.stderr ?? process.stderr;
   // Help is answered before parsing so it works with no other arguments, and it
@@ -1950,6 +2220,7 @@ export async function executeCli(argv, deps = {}) {
       modelCatalogs: deps.modelCatalogs,
       cachePath: deps.cachePath,
       now: deps.now,
+      launchCatalogRefresh: deps.launchCatalogRefresh,
     });
   }
   catch (error) {

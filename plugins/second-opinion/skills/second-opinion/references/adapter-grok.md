@@ -114,6 +114,9 @@ Harness Compatibility
 ## 모델
 
 `grok models` 실측: default `grok-4.6`, available `grok-4.6` · `grok-4.5`.
+2026-09-23 실측: `grok-4.7`(default) · `grok-4.7-build-fast` · `grok-4.6` · `grok-4.5`.
+버전 없는 `--model grok`은 grok이 `unknown model id`로 거절하므로, dispatcher가 이 목록에서
+가장 높은 버전의 꼬리 없는 라인(`grok-4.7`, `grok-4.7-build-fast` 아님)으로 바꿔 넘긴다.
 요청 모델과 `modelUsage` 키가 접두로 맞으면 통과한다 (`grok-4.6` ↔ `grok-4.6-build`).
 모르는 모델은 fail-closed. 조용한 강등 없음.
 

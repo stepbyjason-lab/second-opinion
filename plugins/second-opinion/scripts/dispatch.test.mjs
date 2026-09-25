@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { PassThrough, Writable } from "node:stream";
@@ -40,6 +40,26 @@ process.on("exit", () => {
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
   }
 });
+
+// A catalog refreshed just now that names no models: fresh, so no call refreshes
+// it, and empty, so every --model is left as the caller wrote it.
+function emptyModelCatalog(path) {
+  mkdirSync(dirname(path), { recursive: true });
+  const vendors = Object.fromEntries(["codex", "agy", "claude", "grok"].map((vendor) => [vendor, { available: false, models: [] }]));
+  writeFileSync(path, JSON.stringify({ schemaVersion: 1, checkedAt: Date.now(), degraded: false, vendors }));
+  return path;
+}
+
+// Any call that resolves --model keeps ~/.second-opinion/model-catalog-v1.json
+// current, and an old one starts a detached refresh that runs the real vendor
+// listings. Tests that do not pass their own catalog would otherwise refresh the
+// real one on whoever runs them, so this process's home is a temporary one whose
+// catalog is fresh and empty. Tests about the refresh pass their own cache path.
+const realHome = homedir();
+const isolatedHome = makeTempDir("second-opinion-home-");
+emptyModelCatalog(join(isolatedHome, ".second-opinion", "model-catalog-v1.json"));
+process.env.HOME = isolatedHome;
+process.env.USERPROFILE = isolatedHome;
 
 test("generation retries only the requested provider and reports its exact identity", async () => {
   const calls = [];
@@ -657,12 +677,12 @@ test("skill resolves the catalog path directly before declaring it missing", () 
   assert.match(skill, /검색 결과가 비었다는 이유만으로 설치 누락이나 카탈로그 오류라고 단정하지 않는다/);
 });
 
-test("0.9.20 public help and documentation describe cache-first ranked routing", () => {
+test("0.9.21 public help and documentation describe cache-first ranked routing", () => {
   const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
   const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
   const publicReadmeUrls = [new URL("../../../README.md", import.meta.url), new URL("../../../README.ko.md", import.meta.url)];
   const publicReadmes = publicReadmeUrls.filter((url) => existsSync(url)).map((url) => readFileSync(url, "utf8"));
-  assert.equal(plugin.version, "0.9.20");
+  assert.equal(plugin.version, "0.9.21");
   assert.ok(publicReadmes.length === 0 || publicReadmes.length === 2, "public snapshot must carry both README files");
   // Derived from plugin.json rather than written out again: the literal was a
   // third place a release had to edit, and a bump that missed it failed here
@@ -713,16 +733,18 @@ mkdirSync(dirname(input3), { recursive: true });
 writeFileSync(brief, "brief with spaces and quotes: \"complete\"\n");
 for (const input of [input1, input2, input3]) writeFileSync(input, "image");
 
-// A pinned --vendor resolves --model through whatever catalog is already on disk,
-// so a test that asserts an exact model string has to say which catalog it means
-// or it starts reporting on whoever runs it: this machine has a real Codex cache
-// and a real unified cache, and `Gemini 3.5 Flash (High)` normalizes onto the slug
-// in one of them. These deps name two paths that do not exist, which is the
-// documented "leave --model alone" case, so an argv fixture keeps testing argv
-// assembly. Tests that mean to exercise resolution pass their own catalog instead.
+// A pinned --vendor resolves --model through the catalog on disk, so a test that
+// asserts an exact model string has to say which catalog it means or it starts
+// reporting on whoever runs it: this machine has a real Codex cache and a real
+// unified cache, and `Gemini 3.5 Flash (High)` normalizes onto the slug in one of
+// them. These deps name an absent Codex home and a fresh catalog with no models,
+// which is the documented "leave --model alone" case, so an argv fixture keeps
+// testing argv assembly. A missing catalog would not do: a claude, agy, or grok
+// call refreshes one inside the call. Tests that mean to exercise resolution pass
+// their own catalog instead.
 const CATALOG_FREE = Object.freeze({
   env: Object.freeze({ CODEX_HOME: join(root, "absent-codex-home") }),
-  cachePath: join(root, "absent-model-catalog.json"),
+  cachePath: emptyModelCatalog(join(root, "empty-model-catalog.json")),
 });
 
 const LINK_SKIP_CODES = new Set(["EPERM", "EACCES", "ENOSYS", "ENOTSUP", "EOPNOTSUPP"]);
@@ -1040,10 +1062,10 @@ test("Devin config-hook unit: each configured name returns a block reason; remov
   }
 });
 
-test("the 0.9.20 plugin bundle carries every Devin runtime and adapter asset", () => {
+test("the 0.9.21 plugin bundle carries every Devin runtime and adapter asset", () => {
   const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
   const marketplace = JSON.parse(readFileSync(new URL("../../../.claude-plugin/marketplace.json", import.meta.url), "utf8"));
-  assert.equal(plugin.version, "0.9.20");
+  assert.equal(plugin.version, "0.9.21");
   assert.match(plugin.description, /Devin/);
   assert.match(marketplace.plugins.find(({ name }) => name === "second-opinion")?.description ?? "", /Grok, Devin/);
   for (const asset of [
@@ -1546,9 +1568,9 @@ test("a pinned --vendor resolves its model through that one vendor's catalog", (
   assert.equal(resolveVendorModelAlias("claude", "fable", deps), "claude-fable-5");
   assert.equal(resolveVendorModelAlias("claude", "opus 5", deps), "claude-opus-5");
   assert.equal(resolveVendorModelAlias("grok", "GROK 4.6", deps), "grok-4.6");
-  // A bare provider-advertised alias stays the alias: pinning it to today's
-  // canonical would silence the "latest" the caller asked for.
-  assert.equal(resolveVendorModelAlias("claude", "opus", deps), "opus");
+  // A bare family name becomes the newest slug in the catalog, on claude too, so
+  // the receipt names the version that ran rather than the alias.
+  assert.equal(resolveVendorModelAlias("claude", "opus", deps), "claude-opus-5");
 
   // The pin decides which catalog is consulted, so a name another vendor owns is
   // not borrowed across the boundary.
@@ -1559,7 +1581,7 @@ test("a pinned --vendor resolves its model through that one vendor's catalog", (
 
   // Anything short of exactly one winning model hands back what the caller wrote.
   assert.equal(resolveVendorModelAlias("codex", "unknown-model", deps), "unknown-model");
-  assert.equal(resolveVendorModelAlias("codex", "luna", { modelCatalogs: { codex: ["gpt-5.6-luna", "vendor-preview-luna"] } }), "luna");
+  assert.equal(resolveVendorModelAlias("codex", "luna", { modelCatalogs: { codex: ["gpt-5.6-luna", "vendor-5.6-luna"] } }), "luna");
   assert.equal(resolveVendorModelAlias("claude", "fable", { modelCatalogs: {} }), "fable");
   assert.equal(resolveVendorModelAlias("claude", "fable", CATALOG_FREE), "fable");
   assert.equal(resolveVendorModelAlias("codex", "luna", CATALOG_FREE), "luna");
@@ -1578,11 +1600,12 @@ test("a pinned --vendor resolves its model through that one vendor's catalog", (
 // `claude-sonnet-4` came back as `claude-sonnet-4-6` — a caller pinning an older
 // model silently got a newer one, with the receipt naming the substitute.
 test("a pinned vendor accepts a dropped namespace but never a trailing version or effort", () => {
-  // Codex publishes provider-namespaced slugs; the caller writing the bare model
-  // name means the same model, so it resolves.
+  // Codex's provider-namespaced slugs are opencodex routes, not Codex models (0.9.21):
+  // the name the caller wrote goes through as written instead of being routed there.
+  // 0.9.18 through 0.9.20 resolved both of these to anthropic/claude-opus-4-6.
   const namespaced = { modelCatalogs: { codex: ["anthropic/claude-opus-4-6", "gpt-5.6-luna"] } };
-  assert.equal(resolveVendorModelAlias("codex", "claude-opus-4-6", namespaced), "anthropic/claude-opus-4-6");
-  assert.equal(resolveVendorModelAlias("codex", "opus-4-6", namespaced), "anthropic/claude-opus-4-6");
+  assert.equal(resolveVendorModelAlias("codex", "claude-opus-4-6", namespaced), "claude-opus-4-6");
+  assert.equal(resolveVendorModelAlias("codex", "opus-4-6", namespaced), "opus-4-6");
 
   // AGY publishes every model with a trailing effort, and a version-bumped sibling
   // of a model the caller named exactly. Neither extra tail is the caller's model.
@@ -1603,11 +1626,13 @@ test("a pinned vendor accepts a dropped namespace but never a trailing version o
   // "trailing tokens that look like a date" exception: that list has no end.
   const dated = { modelCatalogs: { codex: ["anthropic/claude-opus-4-5-20251101"] } };
   assert.equal(resolveVendorModelAlias("codex", "anthropic/claude-opus-4-5", dated), "anthropic/claude-opus-4-5");
+  // The same string as before, but now forwarded as written, not matched: the one
+  // catalog entry is an opencodex route.
   assert.equal(
     resolveVendorModelAlias("codex", "anthropic/claude-opus-4-5-20251101", dated),
     "anthropic/claude-opus-4-5-20251101",
   );
-  assert.equal(resolveVendorModelAlias("codex", "claude-opus-4-5-20251101", dated), "anthropic/claude-opus-4-5-20251101");
+  assert.equal(resolveVendorModelAlias("codex", "claude-opus-4-5-20251101", dated), "claude-opus-4-5-20251101");
 
   // The reachable harm: agy exits 1 when a suffixed model is paired with --effort,
   // so a rename here turns a call that reached the vendor into a dispatcher-made
@@ -1620,12 +1645,12 @@ test("a pinned vendor accepts a dropped namespace but never a trailing version o
   assert.equal(parsed.model, "gpt-oss-120b");
   assert.ok(buildVendorArgv({ ...parsed, cwd: root, timeout: 3600 }).includes("gpt-oss-120b"));
 
-  // The variant is dropped before the winners are picked, not after, and that is
-  // visible here: these two used to tie at the same rank and cancel each other out
-  // as ambiguous. Now the surviving match is the one that names the caller's own
-  // model under its provider namespace, which is the answer they wanted.
+  // The variant is dropped before the winners are picked, not after: these two used
+  // to tie at the same rank and cancel each other out as ambiguous. 0.9.18 through
+  // 0.9.20 then answered with the namespaced entry; that entry is an opencodex route,
+  // so nothing survives and the caller's name goes through as written.
   const mixed = { modelCatalogs: { codex: ["anthropic/claude-opus-4-6", "claude-opus-4-6-thinking"] } };
-  assert.equal(resolveVendorModelAlias("codex", "claude-opus-4-6", mixed), "anthropic/claude-opus-4-6");
+  assert.equal(resolveVendorModelAlias("codex", "claude-opus-4-6", mixed), "claude-opus-4-6");
 
   // Automatic routing keeps both directions: there the caller has delegated the
   // name outright, and this round does not change what it accepts.
@@ -1649,7 +1674,7 @@ test("a pinned vendor's resolved model is revalidated before it can reach argv",
   );
 });
 
-test("a pinned vendor reads the catalog as it stands: no provider process, no refresh, its own effort set", () => {
+test("a pinned vendor goes ahead on an old catalog, refreshes it in the background, and keeps its own effort set", () => {
   const home = modelCache(["gpt-5.6-luna"]);
   const cachePath = join(makeTempDir("second-opinion-pinned-cache-"), "catalog.json");
   const staleText = JSON.stringify({
@@ -1665,13 +1690,15 @@ test("a pinned vendor reads the catalog as it stands: no provider process, no re
   });
   writeFileSync(cachePath, staleText);
   let providerCalls = 0;
+  const launches = [];
   const deps = {
     env: { CODEX_HOME: home },
     cachePath,
-    // A day past the 24h TTL: the automatic route would refresh here, and a
-    // refresh on the pinned path would charge every dispatch for provider startup.
+    // A day past the 24h TTL. Refreshing inside the call would charge this
+    // dispatch for three provider startups; the refresh is detached instead.
     now: () => 1_000_000_000_000 + (25 * 60 * 60 * 1000),
     spawnSync: () => { providerCalls += 1; return { status: 1, stdout: "", stderr: "" }; },
+    launchCatalogRefresh: (request) => launches.push(request),
   };
   const claude = (...extra) => ["--vendor", "claude", "--operation", "text", "--brief", brief,
     "--out", join(root, "pinned.out"), "--err", join(root, "pinned.err"), ...extra];
@@ -1679,14 +1706,17 @@ test("a pinned vendor reads the catalog as it stands: no provider process, no re
   const parsed = parseCli(claude("--model", "Opus 5", "--effort", "high"), root, deps);
   assert.equal(parsed.model, "claude-opus-5");
   assert.equal(parsed.modelRequested, "Opus 5", "the caller's own name stays on the receipt beside the executed one");
-  assert.equal(providerCalls, 0, "a pinned vendor starts no provider process");
-  assert.equal(readFileSync(cachePath, "utf8"), staleText, "a stale cache is read as it stands and never rewritten");
+  assert.equal(providerCalls, 0, "the call itself runs no catalog listing");
+  assert.equal(launches.length, 1, "an old catalog starts one background refresh");
+  assert.equal(launches[0].cachePath, cachePath);
+  assert.equal(readFileSync(cachePath, "utf8"), staleText, "the call uses the catalog it found; only the refresh rewrites it");
 
   // The catalog resolves the name only. Binding the matched record's advertised
   // efforts would let a cache decide what a pinned vendor accepts, and this row
   // advertises "high" alone while claude takes low through max.
   assert.equal(parseCli(claude("--model", "Opus 5", "--effort", "max"), root, deps).effort, "max");
   assert.equal(providerCalls, 0);
+  assert.equal(launches.length, 1, "the first refresh still holds the lock, so the second call starts none");
 });
 
 test("a pinned vendor's dry-run and receipt report the resolved model and keep the requested one beside it", async () => {
@@ -1729,7 +1759,7 @@ test("a pinned vendor's dry-run and receipt report the resolved model and keep t
   assert.equal(JSON.parse(bare.value()).model, "opus 4.6");
 
   assert.match(usageText(), /With --vendor, --model is still resolved against that one vendor's catalog/);
-  assert.match(usageText(), /a pinned vendor never refreshes/);
+  assert.doesNotMatch(usageText(), /a pinned vendor never refreshes/);
 });
 
 test("omitting --vendor ranks exact catalog names over inferred families and canonicalizes the executable model", () => {
@@ -1747,7 +1777,7 @@ test("omitting --vendor ranks exact catalog names over inferred families and can
   assert.equal(resolveVendorForModel("fable", { modelCatalogs: catalogs }), "claude");
   assert.deepEqual(resolveModelRoute("fable", { modelCatalogs: catalogs }), { vendor: "claude", model: "claude-fable-5" });
   assert.equal(resolveVendorForModel("gemini-3.6-flash-high", { modelCatalogs: catalogs }), "agy");
-  assert.deepEqual(resolveModelRoute("opus", { modelCatalogs: catalogs }), { vendor: "claude", model: "opus" });
+  assert.deepEqual(resolveModelRoute("opus", { modelCatalogs: catalogs }), { vendor: "claude", model: "claude-opus-5" });
   assert.deepEqual(resolveModelRoute("opus 5", { modelCatalogs: catalogs }), { vendor: "claude", model: "claude-opus-5" });
   assert.deepEqual(resolveModelRoute("opus 4.8", { modelCatalogs: catalogs }), { vendor: "claude", model: "claude-opus-4-8" });
   assert.deepEqual(resolveModelRoute("opus 4.7", { modelCatalogs: catalogs }), { vendor: "claude", model: "claude-opus-4-7" });
@@ -1822,79 +1852,633 @@ test("automatic routing exercises provider metadata parsers and rejects incomple
   );
 });
 
-test("catalog cache avoids provider calls for 24h, refreshes a fresh miss once, and keeps last-known-good data", () => {
-  const home = modelCache(["gpt-5.6-luna"]);
-  const cachePath = join(makeTempDir("second-opinion-cache-policy-"), "catalog.json");
-  const now = 2_000_000_000_000;
-  const seed = {
-    schemaVersion: 1,
-    checkedAt: now,
-    degraded: false,
-    vendors: {
-      codex: { available: true, models: [{ canonical: "gpt-5.6-luna", aliases: ["gpt-5.6-luna", "luna"], efforts: ["high"] }] },
-      agy: { available: true, models: [{ canonical: "gemini-3.6-flash-high", aliases: ["gemini-3.6-flash-high"], efforts: [] }] },
-      claude: { available: true, models: [{ canonical: "claude-opus-5", aliases: ["opus", "Opus 5"], efforts: ["high"], family: "opus", latestAlias: "opus" }] },
-    },
-  };
-  writeFileSync(cachePath, JSON.stringify(seed));
-  let calls = 0;
-  assert.equal(resolveVendorForModel("opus", { env: { CODEX_HOME: home }, cachePath, now: () => now + 1, spawnSync: () => { calls += 1; throw new Error("must not run"); } }), "claude");
-  assert.equal(calls, 0, "a fresh hit makes zero provider process calls");
+// The catalogs as the vendors listed them on 2026-09-23, in the shape each one
+// prints: Codex's local cache (37 slugs), `agy models` (a header, then 14
+// slug<TAB>label rows), `grok models` (4 grok models among proxy entries it also
+// lists), and Claude's initialize response (5 rows).
+const LIVE_CODEX_SLUGS = Object.freeze([
+  "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
+  "anthropic/claude-fable-5-1", "anthropic/claude-haiku-4-5", "anthropic/claude-opus-5", "anthropic/claude-opus-5-5", "anthropic/claude-sonnet-5",
+  "cloudflare-workers-ai/@cf-deepseek-ai-deepseek-v4-flash-0731", "cloudflare-workers-ai/@cf-deepseek-ai-deepseek-v4-pro-0813",
+  "cloudflare-workers-ai/@cf-google-gemma-4-26b-a4b-it", "cloudflare-workers-ai/@cf-qwen-qwen3.8-27b",
+  "cloudflare-workers-ai/@cf-zai-org-glm-5.3", "cloudflare-workers-ai/@cf-zai-org-glm-5.3-flash",
+  "devin/deepseek-v4-1-flash", "devin/swe-2",
+  "google-antigravity/claude-opus-4-6-thinking", "google-antigravity/claude-sonnet-4-6", "google-antigravity/gemini-3.1-flash-image",
+  "google-antigravity/gemini-3.1-pro", "google-antigravity/gemini-3.8-flash", "google-antigravity/gpt-oss-120b-medium",
+  "nvidia/deepseek-ai-deepseek-v4.1-flash", "nvidia/google-gemma-4-31b-it", "nvidia/moonshotai-kimi-k3", "nvidia/z-ai-glm-5.3", "nvidia/z-ai-glm-5.3-flash",
+  "openrouter/google-gemma-4-31b-it:free", "openrouter/qwen-qwen3.8-27b:free", "openrouter/z-ai-glm-5.2:free",
+  "xai/grok-4.6", "xai/grok-4.7", "xai/grok-4.7-build-fast",
+]);
+const LIVE_AGY_ROWS = Object.freeze([
+  ["gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"], ["gemini-3.8-flash-medium", "Gemini 3.8 Flash (Medium)"], ["gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"],
+  ["gemini-3.7-flash-high", "Gemini 3.7 Flash (High)"], ["gemini-3.7-flash-medium", "Gemini 3.7 Flash (Medium)"], ["gemini-3.7-flash-low", "Gemini 3.7 Flash (Low)"],
+  ["gemini-3.6-flash-high", "Gemini 3.6 Flash (High)"], ["gemini-3.6-flash-medium", "Gemini 3.6 Flash (Medium)"], ["gemini-3.6-flash-low", "Gemini 3.6 Flash (Low)"],
+  ["gemini-3.1-pro-high", "Gemini 3.1 Pro (High)"], ["gemini-3.1-pro-low", "Gemini 3.1 Pro (Low)"],
+  ["claude-sonnet-4-6", "Claude Sonnet 4.6 (Thinking)"], ["claude-opus-4-6-thinking", "Claude Opus 4.6 (Thinking)"], ["gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"],
+]);
+const LIVE_AGY_OUTPUT = `Fetching available models...\n${LIVE_AGY_ROWS.map(([slug, label]) => `${slug}\t${label}`).join("\n")}\n`;
+const LIVE_GROK_OUTPUT = [
+  "You are logged in with grok.com.", "", "Default model: grok-4.7", "", "Available models:",
+  "  * grok-4.7 (default)", "  - grok-4.7-build-fast", "  - grok-4.6", "  - grok-4.5",
+  "  - ocx-gpt-6-sol", "  - ocx-anthropic-claude-opus-5-5", "  - ocx-xai-grok-4-7", "",
+].join("\n");
+const LIVE_CLAUDE_MODELS = Object.freeze([
+  { value: "default", resolvedModel: "claude-opus-5-5[1m]", displayName: "Default (recommended)", supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"] },
+  { value: "opus[1m]", resolvedModel: "claude-opus-5-5[1m]", displayName: "Opus (1M context)", supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"] },
+  { value: "claude-fable-5-1[1m]", resolvedModel: "claude-fable-5-1", displayName: "Fable", supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"] },
+  { value: "sonnet", resolvedModel: "claude-sonnet-5", displayName: "Sonnet", supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"] },
+  { value: "haiku", resolvedModel: "claude-haiku-4-5-20251001", displayName: "Haiku" },
+]);
+const MODEL_CATALOG_REFRESH_ARG = "--internal-refresh-model-catalog";
+const DAY_MS = 24 * 60 * 60 * 1000;
 
-  const refresh = (command) => {
-    calls += 1;
-    if (command === "agy") return { status: 0, stdout: "gemini-3.6-flash-high\n", stderr: "" };
-    return { status: 0, stdout: claudeCatalogOutput([{ value: "opus", resolvedModel: "claude-opus-5", displayName: "Opus 5" }, { value: "claude-fable-5[1m]", resolvedModel: "claude-fable-5", displayName: "Fable 5" }]), stderr: "" };
+// A Codex home with the live cache, a PATH holding only a grok placeholder (the
+// dispatcher resolves grok to a file before listing it), and a unified cache path
+// that does not exist yet. Listings go through `listing`, which counts them.
+function liveCatalogFixture() {
+  const bin = makeTempDir("second-opinion-catalog-bin-");
+  writeFileSync(join(bin, process.platform === "win32" ? "grok.exe" : "grok"), "", { mode: 0o755 });
+  const listings = [];
+  const launches = [];
+  const failures = {};
+  const listing = (command) => {
+    const name = /grok/i.test(command) ? "grok" : command;
+    listings.push(name);
+    if (failures[name]) return failures[name];
+    if (name === "agy") return { status: 0, stdout: LIVE_AGY_OUTPUT, stderr: "" };
+    if (name === "claude") return { status: 0, stdout: claudeCatalogOutput(LIVE_CLAUDE_MODELS), stderr: "" };
+    if (name === "grok") return { status: 0, stdout: LIVE_GROK_OUTPUT, stderr: "" };
+    return { status: 1, stdout: "", stderr: `unexpected listing ${command}` };
   };
-  assert.equal(resolveVendorForModel("fable", { env: { CODEX_HOME: home }, cachePath, now: () => now + 2, spawnSync: refresh }), "claude");
-  assert.equal(calls, 2, "a fresh miss performs one AGY and one Claude metadata refresh");
+  const cachePath = join(makeTempDir("second-opinion-live-catalog-"), "model-catalog-v1.json");
+  return {
+    cachePath,
+    listings,
+    launches,
+    failures,
+    deps: (extra = {}) => ({
+      env: { CODEX_HOME: modelCache(LIVE_CODEX_SLUGS), PATH: bin },
+      cachePath,
+      spawnSync: listing,
+      launchCatalogRefresh: (request) => launches.push(request),
+      ...extra,
+    }),
+  };
+}
 
-  const staleTime = now + (25 * 60 * 60 * 1000);
-  const failed = () => { calls += 1; return { status: 1, stdout: "", stderr: "offline" }; };
-  assert.equal(resolveVendorForModel("opus", { env: { CODEX_HOME: home }, cachePath, now: () => staleTime, spawnSync: failed }), "claude");
-  assert.equal(calls, 4, "a stale refresh attempts metadata once per process-backed provider");
-  assert.equal(resolveVendorForModel("opus", { env: { CODEX_HOME: home }, cachePath, now: () => staleTime + (4 * 60 * 1000), spawnSync: failed }), "claude");
-  assert.equal(calls, 4, "a degraded last-known-good cache suppresses retries for five minutes");
-  assert.equal(resolveVendorForModel("opus", { env: { CODEX_HOME: home }, cachePath, now: () => staleTime + (6 * 60 * 1000), spawnSync: failed }), "claude");
-  assert.equal(calls, 6, "a degraded cache retries provider metadata after five minutes");
+function readCatalog(path) { return JSON.parse(readFileSync(path, "utf8")); }
+function modelArgument(argv) {
+  const index = argv.findIndex((value) => value === "-m" || value === "--model");
+  return index < 0 ? undefined : argv[index + 1];
+}
+
+async function dryRun(args, deps) {
+  const stdout = memoryWriter();
+  const stderr = memoryWriter();
+  const status = await executeCli([...args, "--operation", "text", "--brief", brief, "--cwd", root, "--dry-run"], { cwd: root, stdout: stdout.stream, stderr: stderr.stream, ...deps });
+  assert.equal(status, 0, stderr.value());
+  return JSON.parse(stdout.value());
+}
+
+test("bare family names reach each vendor as the newest model in the 2026-09-23 catalogs", async () => {
+  const fixture = liveCatalogFixture();
+  const claudeArgs = (model) => ["--vendor", "claude", "--model", model, "--effort", "high", "--out", join(root, "latest-claude.out"), "--err", join(root, "latest-claude.err")];
+
+  // No unified cache yet: a claude call needs it, so it refreshes inside the call
+  // and the very first call already goes out on the newest model.
+  assert.equal(existsSync(fixture.cachePath), false);
+  const first = await dryRun(claudeArgs("opus"), fixture.deps());
+  assert.equal(modelArgument(first.argv), "claude-opus-5-5");
+  assert.equal(first.modelRequested, "opus");
+  assert.equal(existsSync(fixture.cachePath), true, "the in-call refresh leaves the unified cache behind");
+  assert.deepEqual([...fixture.listings].sort(), ["agy", "claude", "grok"]);
+  assert.equal(fixture.launches.length, 0);
+  const cached = readCatalog(fixture.cachePath);
+  assert.equal(cached.degraded, false);
+  assert.deepEqual(cached.vendors.agy.models.map((model) => model.canonical), LIVE_AGY_ROWS.map(([slug]) => slug), "the live agy output parses to its 14 slugs");
+  assert.deepEqual(cached.vendors.grok.models.map((model) => model.canonical), ["grok-4.7", "grok-4.7-build-fast", "grok-4.6", "grok-4.5"]);
+  assert.equal(cached.vendors.claude.models.length, 5);
+  assert.equal(new Set(LIVE_CODEX_SLUGS).size, 37);
+
+  const expected = [
+    [["--vendor", "codex", "--model", "sol"], "gpt-6-sol"],
+    [["--vendor", "codex", "--model", "luna"], "gpt-6-luna"],
+    [["--vendor", "codex", "--model", "terra"], "gpt-5.6-terra"],
+    [["--vendor", "codex", "--model", "astra"], "gpt-6-astra"],
+    [["--vendor", "codex", "--model", "gpt-5.6-sol"], "gpt-5.6-sol"],
+    [claudeArgs("sonnet"), "claude-sonnet-5"],
+    [claudeArgs("fable"), "claude-fable-5-1"],
+    [claudeArgs("haiku"), "claude-haiku-4-5-20251001"],
+    [["--vendor", "grok", "--model", "grok", "--out", join(root, "latest-grok.out"), "--err", join(root, "latest-grok.err")], "grok-4.7"],
+  ];
+  for (const [args, model] of expected) {
+    const value = await dryRun(args, fixture.deps());
+    assert.equal(modelArgument(value.argv), model, args.join(" "));
+    assert.equal(value.model, model, "the receipt names the version that runs");
+  }
+
+  // agy takes effort beside the slug: the caller's --effort rides along, and a call
+  // without one gets none from the dispatcher (agy rejects it on its own).
+  const withEffort = await dryRun(["--vendor", "agy", "--model", "gemini", "--effort", "low"], fixture.deps());
+  assert.equal(modelArgument(withEffort.argv), "gemini-3.8-flash");
+  assert.equal(withEffort.argv[withEffort.argv.indexOf("--effort") + 1], "low");
+  const withoutEffort = await dryRun(["--vendor", "agy", "--model", "gemini"], fixture.deps());
+  assert.equal(modelArgument(withoutEffort.argv), "gemini-3.8-flash");
+  assert.equal(withoutEffort.argv.includes("--effort"), false);
+
+  const automatic = await dryRun(["--model", "sol"], fixture.deps());
+  assert.equal(automatic.vendor, "codex");
+  assert.equal(modelArgument(automatic.argv), "gpt-6-sol");
+
+  assert.deepEqual([...fixture.listings].sort(), ["agy", "claude", "grok"], "a fresh cache is never listed again");
+  assert.equal(fixture.launches.length, 0, "a fresh cache starts no background refresh");
+});
+
+test("the newest model is read from the version in the name", () => {
+  const pick = (vendor, model, list) => resolveVendorModelAlias(vendor, model, { modelCatalogs: { [vendor]: list } });
+  // Compared as numbers: 3.10 is newer than 3.8.
+  assert.equal(pick("agy", "gemini", ["gemini-3.8-flash", "gemini-3.10-flash"]), "gemini-3.10-flash");
+  // A hyphenated version reads as one: claude-opus-5-5 is 5.5, newer than 5.
+  assert.equal(pick("claude", "opus", ["claude-opus-5", "claude-opus-5-5"]), "claude-opus-5-5");
+  // An eight-digit date is not a version. Read as one, 4.5.20251001 would beat 4.5.1.
+  assert.equal(pick("claude", "haiku", ["claude-haiku-4-5-20251001", "claude-haiku-4-5-1"]), "claude-haiku-4-5-1");
+  assert.equal(pick("claude", "haiku", ["claude-haiku-4-4", "claude-haiku-4-5-20251001"]), "claude-haiku-4-5-20251001");
+  // A four-digit month and day at the end is a date too. Read as one, 0813 was
+  // version 813 and beat 3.1.
+  assert.equal(pick("agy", "gemini", ["gemini-3.1-pro", "gemini-pro-0813"]), "gemini-3.1-pro");
+  // A bare name that is already one model's own name keeps it, even when another
+  // line that merely contains the word carries a higher number.
+  assert.equal(pick("codex", "pro", ["model-3.1-pro", "model-v4-pro-9"]), "model-3.1-pro");
+  // Written with a provider namespace, the same two are opencodex routes and are
+  // never an answer.
+  assert.equal(pick("codex", "pro", ["vendor/model-3.1-pro", "other/model-v4-pro-9"]), "pro");
+  // An effort tail is not a newer model, on agy (which takes effort apart) or anywhere else.
+  assert.equal(pick("agy", "gemini", ["gemini-3.8-flash", "gemini-3.8-flash-high"]), "gemini-3.8-flash");
+  assert.equal(pick("codex", "gemini", ["gemini-3.8-flash-high", "gemini-3.8-flash"]), "gemini-3.8-flash");
+  // A variant line at the same version loses to the family's own line.
+  assert.equal(pick("grok", "grok", ["grok-4.7-build-fast", "grok-4.7", "grok-4.6"]), "grok-4.7");
+  // The same name follows the catalog to its newest version, old versions or not.
+  assert.equal(pick("codex", "sol", ["gpt-5.6-sol"]), "gpt-5.6-sol");
+  assert.equal(pick("codex", "sol", ["gpt-5.6-sol", "gpt-6-sol"]), "gpt-6-sol");
+  // A name that carries a version is never moved to another one.
+  assert.equal(pick("codex", "gpt-5.6-sol", ["gpt-5.6-sol", "gpt-6-sol"]), "gpt-5.6-sol");
+  // No candidate: the caller's name goes through unchanged.
+  assert.equal(pick("codex", "nonesuch", LIVE_CODEX_SLUGS), "nonesuch");
+  assert.equal(pick("claude", "mythos", ["claude-opus-5-5", "claude-sonnet-5"]), "mythos");
+  assert.equal(pick("agy", "gemini", ["claude-sonnet-4-6", "gpt-oss-120b-medium"]), "gemini");
+  // Two different lines tied at the newest version have no single answer.
+  assert.equal(pick("codex", "gpt", ["gpt-6-sol", "gpt-6-luna"]), "gpt");
+});
+
+// Codex's local cache also lists opencodex's proxy routes, two of them ending in a
+// month and day. Read as versions 813 and 731, those tails sent `pro` and `flash` to
+// Cloudflare's DeepSeek, pinned or not. 0.9.20 sent `pro` to
+// google-antigravity/gemini-3.1-pro and the date-tail repair kept it there; every one
+// of those entries is an opencodex route, so now none of them is an answer at all.
+// The date-tail rule itself is held by "the newest model is read from the version
+// in the name".
+test("the 2026-09-23 Codex catalog sends pro and flash to no opencodex route", () => {
+  const catalogs = {
+    codex: LIVE_CODEX_SLUGS,
+    agy: LIVE_AGY_ROWS.map(([slug]) => slug),
+    claude: LIVE_CLAUDE_MODELS,
+    grok: ["grok-4.7", "grok-4.7-build-fast", "grok-4.6", "grok-4.5"],
+  };
+  const pinned = (vendor, model) => resolveVendorModelAlias(vendor, model, { modelCatalogs: { [vendor]: catalogs[vendor] } });
+  const routed = (model) => resolveModelRoute(model, { modelCatalogs: catalogs });
+  // Pinned to codex, a name only opencodex routes answered goes through as written.
+  assert.equal(pinned("codex", "pro"), "pro");
+  assert.equal(pinned("codex", "flash"), "flash");
+  // Routed, no Codex model answers either, and no other vendor's catalog names
+  // them, so there is no vendor to send them to.
+  assert.throws(() => routed("pro"), /unknown model for automatic vendor routing: pro/);
+  assert.throws(() => routed("flash"), /unknown model for automatic vendor routing: flash/);
+
+  // The plan's ten bare names are unchanged by either rule, pinned and routed alike.
+  for (const [vendor, bare, newest] of [
+    ["codex", "sol", "gpt-6-sol"], ["codex", "luna", "gpt-6-luna"], ["codex", "terra", "gpt-5.6-terra"], ["codex", "astra", "gpt-6-astra"],
+    ["claude", "opus", "claude-opus-5-5"], ["claude", "sonnet", "claude-sonnet-5"], ["claude", "fable", "claude-fable-5-1"], ["claude", "haiku", "claude-haiku-4-5-20251001"],
+    ["agy", "gemini", "gemini-3.8-flash"], ["grok", "grok", "grok-4.7"],
+  ]) {
+    assert.equal(pinned(vendor, bare), newest, `--vendor ${vendor} --model ${bare}`);
+    assert.deepEqual(routed(bare), { vendor, model: newest }, `--model ${bare}`);
+  }
+});
+
+// The user's rule (2026-09-24): no call is routed to opencodex. Codex's cache holds
+// its routes beside Codex's own models, so every name any catalog could suggest is
+// tried on every path that reads that cache, and none may come back as a route.
+test("no name, pinned or routed, bare or versioned, resolves to an opencodex entry", async () => {
+  const opencodex = LIVE_CODEX_SLUGS.filter((slug) => slug.includes("/"));
+  assert.equal(opencodex.length, 30);
+  const catalogs = {
+    codex: LIVE_CODEX_SLUGS,
+    agy: LIVE_AGY_ROWS.map(([slug]) => slug),
+    claude: LIVE_CLAUDE_MODELS,
+    grok: ["grok-4.7", "grok-4.7-build-fast", "grok-4.6", "grok-4.5"],
+  };
+  const names = new Set(["claude-opus-4-6", "opus-4-6", "claude-opus-4-5-20251101", "claude-sonnet-5", "gemini-3.1-pro", "grok-4.7", "gpt-oss-120b-medium"]);
+  const words = (value) => String(value).toLowerCase().split(/[^a-z0-9]+/).filter((token) => /^[a-z]{2,}$/.test(token));
+  for (const slug of [...catalogs.codex, ...catalogs.agy, ...catalogs.grok]) words(slug).forEach((word) => names.add(word));
+  for (const row of LIVE_CLAUDE_MODELS) [row.value, row.resolvedModel, row.displayName].forEach((value) => words(value).forEach((word) => names.add(word)));
+  const outcome = (resolve) => { try { const value = resolve(); return typeof value === "object" ? value.model : value; } catch { return undefined; } };
+  let cells = 0;
+  for (const name of names) {
+    for (const vendor of ["codex", "claude", "agy", "grok"]) {
+      const model = outcome(() => resolveVendorModelAlias(vendor, name, { modelCatalogs: { [vendor]: catalogs[vendor] } }));
+      assert.equal(opencodex.includes(model), false, `--vendor ${vendor} --model ${name} -> ${model}`);
+      cells += 1;
+    }
+    const model = outcome(() => resolveModelRoute(name, { modelCatalogs: catalogs }));
+    assert.equal(opencodex.includes(model), false, `--model ${name} -> ${model}`);
+    cells += 1;
+  }
+  assert.ok(cells >= 250, `${cells} cells`);
+
+  // The two opencodex names 0.9.18 through 0.9.20 resolved go through as written.
+  assert.equal(resolveVendorModelAlias("codex", "claude-opus-4-6", { modelCatalogs: { codex: ["anthropic/claude-opus-4-6"] } }), "claude-opus-4-6");
+  assert.equal(resolveVendorModelAlias("codex", "pro", { modelCatalogs: { codex: LIVE_CODEX_SLUGS } }), "pro");
+
+  // The real cache rows carry a description as well as the slug, and either one
+  // marks the entry: a route described as opencodex's is left out even without a
+  // namespace, and Codex's own models, described otherwise, stay.
+  const described = [
+    { slug: "gpt-6-sol", description: "GPT-6 Sol Codex model." },
+    { slug: "anthropic/claude-opus-5-5", description: "Routed via opencodex → anthropic (anthropic)." },
+    { slug: "claude-opus-5-5", description: "Routed via opencodex → anthropic (anthropic)." },
+  ];
+  const home = modelCache(described);
+  assert.equal(resolveCodexModelAlias("claude-opus-5-5", { CODEX_HOME: home }), "claude-opus-5-5");
+  assert.equal(resolveCodexModelAlias("opus", { CODEX_HOME: home }), "opus");
+  assert.equal(resolveCodexModelAlias("sol", { CODEX_HOME: home }), "gpt-6-sol");
+  const fromFile = (name) => resolveVendorModelAlias("codex", name, { env: { CODEX_HOME: home }, cachePath: join(makeTempDir("second-opinion-ocx-cache-"), "catalog.json"), launchCatalogRefresh: () => {} });
+  assert.equal(fromFile("opus"), "opus", "a bare name is not moved onto a described route");
+  assert.equal(fromFile("claude-opus-5-5"), "claude-opus-5-5");
+  assert.equal(fromFile("sol"), "gpt-6-sol");
+
+  // End to end on the live cache file: the dry-run argv is the last place a name
+  // could be renamed, after parseCli and run()'s own Codex re-resolution.
+  const fixture = liveCatalogFixture();
+  for (const [name, expected] of [["claude-opus-4-6", "claude-opus-4-6"], ["pro", "pro"], ["opus", "opus"], ["gemini-3.1-pro", "gemini-3.1-pro"], ["sol", "gpt-6-sol"]]) {
+    const value = await dryRun(["--vendor", "codex", "--model", name], fixture.deps());
+    assert.equal(modelArgument(value.argv), expected, `--vendor codex --model ${name}`);
+    assert.equal(value.model, expected);
+  }
+});
+
+test("a catalog under 24 hours old is used as it is by every call", async () => {
+  const fixture = liveCatalogFixture();
+  resolveVendorModelAlias("claude", "opus", fixture.deps());
+  fixture.listings.length = 0;
+  const now = readCatalog(fixture.cachePath).checkedAt + DAY_MS - 60_000;
+  for (const vendor of ["codex", "agy", "claude", "grok"]) resolveVendorModelAlias(vendor, "sol", fixture.deps({ now: () => now }));
+  resolveModelRoute("sol", fixture.deps({ now: () => now }));
+  assert.equal(fixture.listings.length, 0, "no listing inside the call");
+  assert.equal(fixture.launches.length, 0, "no background refresh");
+});
+
+test("an old catalog starts one background refresh and the call does not wait for it", async () => {
+  const fixture = liveCatalogFixture();
+  resolveVendorModelAlias("claude", "opus", fixture.deps());
+  const stale = readCatalog(fixture.cachePath);
+  stale.vendors.agy.models = stale.vendors.agy.models.filter((model) => !/3\.[78]/.test(model.canonical));
+  writeFileSync(fixture.cachePath, JSON.stringify(stale));
+  fixture.listings.length = 0;
+  const later = () => stale.checkedAt + DAY_MS + 60_000;
+
+  // A pinned call goes on with the catalog it has, and names the model that
+  // catalog knows; the refresh is detached and has not run.
+  const pinned = await dryRun(["--vendor", "agy", "--model", "gemini", "--effort", "low"], fixture.deps({ now: later }));
+  assert.equal(modelArgument(pinned.argv), "gemini-3.6-flash");
+  assert.equal(fixture.listings.length, 0, "the pinned call ran no listing");
+  assert.equal(fixture.launches.length, 1);
+  assert.equal(fixture.launches[0].cachePath, fixture.cachePath);
+
+  // Automatic routing under the same condition does not wait either, and while the
+  // first refresh still holds the lock no second one starts.
+  const automatic = await dryRun(["--model", "sol"], fixture.deps({ now: later }));
+  assert.equal(modelArgument(automatic.argv), "gpt-6-sol");
+  assert.equal(fixture.listings.length, 0, "the automatic call ran no listing");
+  assert.equal(fixture.launches.length, 1, "a refresh that is still running is not started again");
+
+  // The detached child: it refreshes the one path it was given and releases the lock.
+  assert.equal(await executeCli([MODEL_CATALOG_REFRESH_ARG, fixture.cachePath], fixture.deps({ now: later })), 0);
+  assert.equal(existsSync(`${fixture.cachePath}.lock`), false, "a finished refresh releases the lock");
+  assert.equal(readCatalog(fixture.cachePath).checkedAt, later());
+
+  // The call after it uses the refreshed catalog and starts nothing.
+  const next = await dryRun(["--vendor", "agy", "--model", "gemini", "--effort", "low"], fixture.deps({ now: () => later() + 60_000 }));
+  assert.equal(modelArgument(next.argv), "gemini-3.8-flash");
+  assert.equal(fixture.launches.length, 1);
+});
+
+test("a codex call never waits for the unified cache, and a devin call never touches it", async () => {
+  const fixture = liveCatalogFixture();
+  const codex = await dryRun(["--vendor", "codex", "--model", "sol"], fixture.deps());
+  assert.equal(modelArgument(codex.argv), "gpt-6-sol");
+  assert.equal(fixture.listings.length, 0, "no listing inside a codex call");
+  assert.equal(fixture.launches.length, 1, "the missing cache is refreshed in the background instead");
+
+  const devin = makeTempDir("second-opinion-devin-catalog-");
+  const devinDeps = (cachePath, now) => ({
+    cachePath,
+    now,
+    spawnSync: () => { throw new Error("devin must not list catalogs"); },
+    launchCatalogRefresh: () => { throw new Error("devin must not start a refresh"); },
+  });
+  const missing = join(devin, "missing.json");
+  const value = await dryRun(["--vendor", "devin", "--model", "swe-2-max"], devinDeps(missing));
+  assert.equal(value.model, "swe-2-max");
+  assert.equal(existsSync(missing), false);
+  assert.equal(existsSync(`${missing}.lock`), false);
+  const old = emptyModelCatalog(join(devin, "old.json"));
+  const oldText = readFileSync(old, "utf8");
+  await dryRun(["--vendor", "devin", "--model", "swe-2-max"], devinDeps(old, () => Date.now() + (2 * DAY_MS)));
+  assert.equal(readFileSync(old, "utf8"), oldText);
+  assert.equal(existsSync(`${old}.lock`), false);
+});
+
+test("a listing that fails or names nothing keeps that vendor's last good list and is retried by the next call", async () => {
+  // Each vendor reaches its list through a different parser, so each one fails on its own.
+  const cases = [
+    ["agy", "gemini", "gemini-3.8-flash", "Fetching available models...\n"],
+    ["claude", "opus", "claude-opus-5-5", claudeCatalogOutput([])],
+    ["grok", "grok", "grok-4.7", "You are logged in with grok.com.\n\nAvailable models:\n"],
+  ];
+  for (const [vendor, bare, newest, emptyListing] of cases) {
+    for (const [label, failure] of [
+      ["error", { status: 1, stdout: "", stderr: "503 Service Unavailable" }],
+      ["empty", { status: 0, stdout: emptyListing, stderr: "" }],
+    ]) {
+      const fixture = liveCatalogFixture();
+      resolveVendorModelAlias("claude", "opus", fixture.deps());
+      const good = readCatalog(fixture.cachePath);
+      const refreshedAt = good.checkedAt + DAY_MS + 1;
+      fixture.failures[vendor] = failure;
+      assert.equal(await executeCli([MODEL_CATALOG_REFRESH_ARG, fixture.cachePath], fixture.deps({ now: () => refreshedAt })), 0);
+      const after = readCatalog(fixture.cachePath);
+      const names = (catalog) => catalog.vendors[vendor].models.map((model) => model.canonical);
+      assert.equal(after.vendors[vendor].available, true, `${vendor} ${label}`);
+      assert.deepEqual(names(after), names(good), `${vendor} ${label}: keeps the list that last succeeded`);
+      assert.equal(after.degraded, true, `${vendor} ${label}: the refresh is not recorded as done`);
+      assert.equal(after.checkedAt, refreshedAt);
+      assert.equal(resolveVendorModelAlias(vendor, bare, fixture.deps({ now: () => refreshedAt + 60_000 })), newest);
+      assert.equal(fixture.launches.length, 1, `${vendor} ${label}: a minute later, not a day, the next call starts a refresh again`);
+    }
+  }
+});
+
+test("a vendor CLI that is not installed is not an outage to retry on every call", async () => {
+  const fixture = liveCatalogFixture();
+  resolveVendorModelAlias("claude", "opus", fixture.deps());
+  const refreshedAt = readCatalog(fixture.cachePath).checkedAt + DAY_MS + 1;
+  fixture.failures.agy = { status: null, error: Object.assign(new Error("spawnSync agy ENOENT"), { code: "ENOENT" }), stdout: "", stderr: "" };
+  assert.equal(await executeCli([MODEL_CATALOG_REFRESH_ARG, fixture.cachePath], fixture.deps({ now: () => refreshedAt })), 0);
+  assert.equal(readCatalog(fixture.cachePath).degraded, false);
+  resolveVendorModelAlias("agy", "gemini", fixture.deps({ now: () => refreshedAt + 60_000 }));
+  assert.equal(fixture.launches.length, 0);
+});
+
+test("calls that find an old catalog at the same moment start one refresh between them", async () => {
+  const fixture = liveCatalogFixture();
+  resolveVendorModelAlias("claude", "opus", fixture.deps());
+  const stale = readCatalog(fixture.cachePath);
+  stale.checkedAt -= 2 * DAY_MS;
+  writeFileSync(fixture.cachePath, JSON.stringify(stale));
+  const counter = join(makeTempDir("second-opinion-refresh-count-"), "launches.txt");
+  const script = [
+    `import { appendFileSync } from "node:fs";`,
+    `import { resolveVendorModelAlias } from ${JSON.stringify(new URL("./dispatch.mjs", import.meta.url).href)};`,
+    `resolveVendorModelAlias("claude", "opus", { cachePath: ${JSON.stringify(fixture.cachePath)}, env: {}, spawnSync: () => { throw new Error("no listing in the call"); }, launchCatalogRefresh: () => appendFileSync(${JSON.stringify(counter)}, "launch\\n") });`,
+  ].join("\n");
+  const runs = await Promise.all(Array.from({ length: 8 }, () => new Promise((resolveRun) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("close", (status) => resolveRun({ status, stderr }));
+  })));
+  assert.deepEqual(runs.map((run) => run.status), Array(8).fill(0), runs.map((run) => run.stderr).join("\n"));
+  assert.equal(readFileSync(counter, "utf8"), "launch\n", "eight simultaneous calls started exactly one refresh");
+});
+
+test("the detached refresh runs on after the call has returned and rewrites the catalog", async () => {
+  const home = makeTempDir("second-opinion-detached-home-");
+  const cachePath = join(home, ".second-opinion", "model-catalog-v1.json");
+  emptyModelCatalog(cachePath);
+  const stale = readCatalog(cachePath);
+  stale.checkedAt -= 2 * DAY_MS;
+  writeFileSync(cachePath, JSON.stringify(stale));
+  // The only vendor CLI on PATH is a "grok" that is really node running ./models,
+  // which answers after three seconds. A refresh that the call waited for would
+  // therefore be finished by the time the call returns; a detached one is not.
+  // ./models is read from the refresh's own cwd, and that is the cache's folder,
+  // not the caller's: the script is only there, so a refresh that inherited the
+  // caller's cwd would list nothing.
+  const bin = makeTempDir("second-opinion-slow-bin-");
+  const grok = join(bin, process.platform === "win32" ? "grok.exe" : "grok");
+  try { linkSync(process.execPath, grok); } catch { copyFileSync(process.execPath, grok); }
+  chmodSync(grok, 0o755);
+  const cwd = makeTempDir("second-opinion-slow-cwd-");
+  writeFileSync(join(dirname(cachePath), "models"), "setTimeout(() => console.log('Available models:\\n  * grok-9.9'), 3000);\n");
+  // Windows spells PATH as Path; drop every spelling so this PATH is the only one.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:path|home|userprofile|localappdata|codex_home)$/i.test(key)));
+  Object.assign(env, { HOME: home, USERPROFILE: home, LOCALAPPDATA: home, PATH: bin, CODEX_HOME: modelCache(LIVE_CODEX_SLUGS) });
+  const started = Date.now();
+  const result = await new Promise((resolveChild, rejectChild) => {
+    const child = spawn(process.execPath, [join(scriptsDirectory, "dispatch.mjs"), "--vendor", "codex", "--model", "sol", "--operation", "text", "--brief", brief, "--dry-run"], {
+      cwd, env, stdio: ["ignore", "pipe", "pipe"], shell: false, windowsHide: true,
+    });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", rejectChild);
+    child.once("close", (status) => resolveChild({ status, stdout, stderr }));
+  });
+  const returnedAfter = Date.now() - started;
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(modelArgument(JSON.parse(result.stdout).argv), "gpt-6-sol");
+  assert.equal(readCatalog(cachePath).checkedAt, stale.checkedAt, `the call returned (${returnedAfter}ms) before the refresh finished`);
+  assert.equal(existsSync(`${cachePath}.lock`), true, "the refresh it started still holds the lock");
+  // A host removes its temporary workspace as soon as the dispatch returns. On
+  // Windows a folder that is a live process's cwd cannot be removed, so this fails
+  // with EPERM if the refresh, or a listing it started, holds the caller's cwd.
+  rmSync(cwd, { recursive: true, force: true });
+  assert.equal(existsSync(cwd), false, "the caller's cwd can be removed while the refresh runs");
+  assert.equal(existsSync(`${cachePath}.lock`), true, "and the refresh was still running when it was");
+  const deadline = Date.now() + 30_000;
+  while (existsSync(`${cachePath}.lock`) && Date.now() < deadline) {
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+  }
+  const refreshed = readCatalog(cachePath);
+  assert.equal(existsSync(`${cachePath}.lock`), false, "the detached child released the lock");
+  assert.ok(refreshed.checkedAt > stale.checkedAt, "the detached child rewrote the catalog after the call returned");
+  assert.deepEqual(refreshed.vendors.grok.models.map((model) => model.canonical), ["grok-9.9"]);
+  // Codex's seven own models; its 30 opencodex routes are not Codex catalog rows.
+  assert.equal(refreshed.vendors.codex.models.length, 7);
+  assert.equal(refreshed.degraded, false, "missing vendor CLIs are not an outage");
+});
+
+test("a pinned call without --model keeps the catalog on the same schedule and never waits for it", () => {
+  const fixture = liveCatalogFixture();
+  const noModel = (vendor, extra = {}) => parseCli(["--vendor", vendor, "--operation", "text", "--brief", brief, "--out", join(root, "no-model.out"), "--err", join(root, "no-model.err")], root, fixture.deps(extra));
+  // Missing cache: nothing to resolve, so the call does not wait; the refresh is detached.
+  noModel("agy");
+  assert.equal(fixture.listings.length, 0);
+  assert.equal(fixture.launches.length, 1);
+  assert.equal(existsSync(fixture.cachePath), false);
+  // Old cache: a call without --model starts it too. (claude and grok require
+  // --model, so only codex and agy make such a call; devin never refreshes.)
+  rmSync(`${fixture.cachePath}.lock`, { recursive: true, force: true });
+  resolveVendorModelAlias("claude", "opus", fixture.deps());
+  const later = () => readCatalog(fixture.cachePath).checkedAt + DAY_MS + 60_000;
+  fixture.listings.length = 0;
+  for (const vendor of ["codex", "agy"]) {
+    rmSync(`${fixture.cachePath}.lock`, { recursive: true, force: true });
+    const before = fixture.launches.length;
+    noModel(vendor, { now: later });
+    assert.equal(fixture.launches.length, before + 1, `${vendor} without --model`);
+  }
+  rmSync(`${fixture.cachePath}.lock`, { recursive: true, force: true });
+  const before = fixture.launches.length;
+  noModel("devin", { now: later, launchCatalogRefresh: () => { throw new Error("devin must not start a refresh"); } });
+  assert.equal(fixture.launches.length, before);
+  assert.equal(fixture.listings.length, 0, "no call listed a catalog itself");
+});
+
+test("the --request-json path keeps its older codex resolution and starts no refresh", async () => {
+  // run() re-resolves codex names because --request-json reaches it without parseCli.
+  // That path is outside this release: `sol` with two versions stays `sol`.
+  const both = modelCache(["gpt-5.6-sol", "gpt-6-sol"]);
+  assert.equal(resolveCodexModelAlias("sol", { CODEX_HOME: both }), "sol");
+  assert.equal(resolveCodexModelAlias("gpt-6-sol", { CODEX_HOME: both }), "gpt-6-sol", "a CLI-resolved slug resolves to itself");
+  const homeCatalog = join(isolatedHome, ".second-opinion", "model-catalog-v1.json");
+  const fresh = readFileSync(homeCatalog, "utf8");
+  const old = JSON.parse(fresh);
+  old.checkedAt -= 2 * DAY_MS;
+  writeFileSync(homeCatalog, JSON.stringify(old));
+  try {
+    const stdout = memoryWriter();
+    const status = await run(
+      { vendor: "codex", operation: "text", mode: "default", brief, cwd: root, model: "sol", inputs: [], timeout: 60, dryRun: true },
+      { spawn: () => { throw new Error("dry-run must not spawn"); }, stdout: stdout.stream, stderr: memoryWriter().stream, env: { CODEX_HOME: both } },
+    );
+    assert.equal(status, 0);
+    assert.equal(JSON.parse(stdout.value()).model, "sol");
+    assert.equal(existsSync(`${homeCatalog}.lock`), false, "run() started no refresh on an old catalog");
+  } finally {
+    writeFileSync(homeCatalog, fresh);
+  }
+});
+
+test("a dead refresh's lock is taken over by exactly one of the calls that find it", async () => {
+  const fixture = liveCatalogFixture();
+  resolveVendorModelAlias("claude", "opus", fixture.deps());
+  const stale = readCatalog(fixture.cachePath);
+  stale.checkedAt -= 2 * DAY_MS;
+  writeFileSync(fixture.cachePath, JSON.stringify(stale));
+  const lock = `${fixture.cachePath}.lock`;
+  const ageLock = (path, minutes) => { const then = new Date(Date.now() - minutes * 60_000); utimesSync(path, then, then); };
+
+  // A lock younger than any refresh can run is respected.
+  mkdirSync(lock);
+  ageLock(lock, 5);
+  resolveVendorModelAlias("claude", "opus", fixture.deps());
+  assert.equal(fixture.launches.length, 0);
+  // Another caller is mid-takeover: this one leaves it to them.
+  ageLock(lock, 30);
+  mkdirSync(`${lock}.takeover`);
+  resolveVendorModelAlias("claude", "opus", fixture.deps());
+  assert.equal(fixture.launches.length, 0);
+  // A takeover left by a crash is cleared after a minute, and the dead lock is taken over.
+  ageLock(`${lock}.takeover`, 2);
+  resolveVendorModelAlias("claude", "opus", fixture.deps());
+  assert.equal(fixture.launches.length, 1);
+  assert.equal(existsSync(`${lock}.takeover`), false);
+  assert.equal(pathAgeMinutes(lock) < 1, true, "the lock now belongs to the refresh just started");
+
+  // Eight processes that find the same dead lock at once start one refresh between them.
+  ageLock(lock, 30);
+  const counter = join(makeTempDir("second-opinion-takeover-count-"), "launches.txt");
+  const script = [
+    `import { appendFileSync } from "node:fs";`,
+    `import { resolveVendorModelAlias } from ${JSON.stringify(new URL("./dispatch.mjs", import.meta.url).href)};`,
+    `resolveVendorModelAlias("claude", "opus", { cachePath: ${JSON.stringify(fixture.cachePath)}, env: {}, spawnSync: () => { throw new Error("no listing in the call"); }, launchCatalogRefresh: () => appendFileSync(${JSON.stringify(counter)}, "launch\\n") });`,
+  ].join("\n");
+  const runs = await Promise.all(Array.from({ length: 8 }, () => new Promise((resolveRun) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("close", (status) => resolveRun({ status, stderr }));
+  })));
+  assert.deepEqual(runs.map((entry) => entry.status), Array(8).fill(0), runs.map((entry) => entry.stderr).join("\n"));
+  assert.equal(readFileSync(counter, "utf8"), "launch\n", "one takeover, one refresh");
+});
+
+function pathAgeMinutes(path) { return (Date.now() - statSync(path).mtimeMs) / 60_000; }
+
+// Help is the routing reference callers read first, and SKILL.md, the adapters, and
+// both READMEs repeat it. Each sentence 0.9.20 used for the rules this release
+// replaced is named here, so a surface that keeps one fails instead of teaching it.
+test("help, skill, adapters, and READMEs teach latest mapping and the daily refresh, not the rules it replaced", () => {
+  const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
+  const help = usageText();
+  const skill = read("../skills/second-opinion/SKILL.md");
+  const claudeAdapter = read("../skills/second-opinion/references/adapter-claude.md");
+  const readme = read("../../../README.md");
+  const koreanReadme = read("../../../README.ko.md");
+  for (const [name, text, stale] of [
+    ["--help", help, [/A fresh-cache miss refreshes once/, /Degraded fallback retries after 5m/, /a pinned vendor never refreshes/, /anything short of\s+exactly one model forwards --model unchanged instead of renaming your call/]],
+    ["SKILL.md", skill, [/이미 있는 것만 읽는다/, /Claude 최신 alias/, /degraded cache는 5분 뒤/, /`terra`·`gpt 5\.5`·\s*`5\.6 sol`은 Codex 정규 slug로 바뀐다/]],
+    ["adapter-claude.md", claudeAdapter, [/최신 alias 그대로 전달/]],
+    ["README.md", readme, [/stays Claude's latest alias/, /no provider process, no refresh/, /forwards the caller's exact string whenever that is not enough/, /five-minute retry/]],
+    ["README.ko.md", koreanReadme, [/최신 별칭으로 유지/, /공급자 프로세스도 갱신도 없고/, /후보가 유일하지 않으면 호출자가 쓴 문자열을 그대로 넘겨/, /5분 후 재시도/]],
+  ]) {
+    for (const pattern of stale) assert.doesNotMatch(text, pattern, `${name} still teaches ${pattern}`);
+  }
+  assert.match(help, /starts one background refresh and goes on with the catalog it has/);
+  assert.match(help, /a bare family name \(sol, luna, terra, astra, opus, sonnet, fable, haiku, gemini, grok\)\s+becomes\s+that family's newest model/);
+  assert.match(help, /--model gemini becomes the newest Gemini slug without the effort tail/);
+  assert.match(skill, /하루 한 번/);
+  assert.match(skill, /버전 없는 이름은 그 계열의 최신 버전으로 바뀐다/);
+  assert.match(claudeAdapter, /`opus` → `claude-opus-5-5`/);
+  assert.match(readme, /refreshes it once a day/);
+  assert.match(readme, /`sol` → `gpt-6-sol`/);
+  assert.match(koreanReadme, /하루 한 번 갱신/);
+  assert.match(koreanReadme, /`sol` → `gpt-6-sol`/);
+
+  // No surface may still teach a resolution onto an opencodex route (0.9.21), and
+  // every one says that none happens.
+  const codexAdapter = read("../skills/second-opinion/references/adapter-codex.md");
+  const changelog = read("../../../CHANGELOG.md");
+  const release = changelog.slice(changelog.indexOf("## 0.9.21"), changelog.indexOf("## 0.9.20"));
+  for (const [name, text, stale, current] of [
+    ["--help", help, [/codex pro stays/, /pro stays\s+google-antigravity/], /Nothing is ever resolved or routed to an opencodex entry/],
+    ["SKILL.md", skill, [/`pro`는\s*`google-antigravity\/gemini-3\.1-pro`\)/], /opencodex 경유 항목으로는 어떤 이름도 해석·라우팅하지 않는다/],
+    ["adapter-codex.md", codexAdapter, [/그쪽 최신으로 바뀐다/], /opencodex 경유 항목으로 어떤 이름도 해석·라우팅하지 않는다/],
+    ["README.md", readme, [/Codex's `pro` → `google-antigravity/], /no name is ever resolved or routed to an opencodex entry/],
+    ["README.ko.md", koreanReadme, [/Codex 카탈로그의 `pro` → `google-antigravity/], /opencodex 경유 항목으로는 어떤 이름도 해석·라우팅하지 않음/],
+    ["CHANGELOG 0.9.21", release, [/0\.9\.20처럼 `google-antigravity/, /`--request-json` 경로는 바뀌지 않았다/], /opencodex 경유 항목으로는 어떤 이름도 해석·라우팅하지 않는다/],
+  ]) {
+    for (const pattern of stale) assert.doesNotMatch(text, pattern, `${name} still teaches ${pattern}`);
+    assert.match(text, current, `${name} states the opencodex rule`);
+  }
+});
+
+test("automatic routing never reuses a Codex row from another CODEX_HOME, and an incompatible cache refreshes in the background", () => {
+  const fixture = liveCatalogFixture();
+  resolveVendorModelAlias("claude", "opus", fixture.deps());
   assert.throws(
-    () => resolveVendorForModel("opus", { env: { CODEX_HOME: join(root, "different-missing-codex-home") }, cachePath, now: () => staleTime + (7 * 60 * 1000), spawnSync: failed }),
+    () => resolveVendorForModel("opus", fixture.deps({ env: { CODEX_HOME: join(root, "different-missing-codex-home") } })),
     /model catalog unavailable.*codex/,
     "unified cache must not leak Codex models across CODEX_HOME values",
   );
-});
-
-test("an incompatible fresh Claude cache refreshes, while a known provider outage stays negatively cached", () => {
-  const home = modelCache(["gpt-5.6-luna"]);
-  const cachePath = join(makeTempDir("second-opinion-cache-migration-"), "catalog.json");
-  const now = 2_100_000_000_000;
-  const vendors = {
-    codex: { available: true, models: [{ canonical: "gpt-5.6-luna", aliases: ["luna"], efforts: ["high"] }] },
-    agy: { available: true, models: [{ canonical: "gemini-3.6-flash-high", aliases: ["gemini-3.6-flash-high"], efforts: [] }] },
-    claude: { available: true, models: [{ canonical: "claude-opus-5", aliases: ["opus"], efforts: ["high"], family: "opus" }] },
-  };
-  writeFileSync(cachePath, JSON.stringify({ schemaVersion: 1, checkedAt: now, degraded: false, vendors }));
-  let calls = 0;
-  const refresh = (command) => {
-    calls += 1;
-    return command === "agy"
-      ? { status: 0, stdout: "gemini-3.6-flash-high\n", stderr: "" }
-      : { status: 0, stdout: claudeCatalogOutput(), stderr: "" };
-  };
-  assert.deepEqual(resolveModelRoute("opus", { env: { CODEX_HOME: home }, cachePath, now: () => now + 1, spawnSync: refresh }), { vendor: "claude", model: "opus" });
-  assert.equal(calls, 2, "missing alias provenance invalidates an otherwise fresh development cache");
-
-  const unavailable = JSON.parse(readFileSync(cachePath, "utf8"));
-  unavailable.checkedAt = now + 2;
-  unavailable.degraded = true;
-  unavailable.vendors.agy = { available: false, models: [] };
-  writeFileSync(cachePath, JSON.stringify(unavailable));
-  calls = 0;
-  assert.throws(
-    () => resolveVendorForModel("opus", { env: { CODEX_HOME: home }, cachePath, now: () => now + 3, spawnSync: () => { calls += 1; throw new Error("must stay cached"); } }),
-    /model catalog unavailable.*agy/,
-  );
-  assert.equal(calls, 0, "a known outage is cached for the five-minute degraded TTL");
+  // Development caches written before provider-advertised aliases were told apart
+  // from display-derived families carry no latestAlias, and are not reused.
+  const cached = readCatalog(fixture.cachePath);
+  for (const model of cached.vendors.claude.models) delete model.latestAlias;
+  writeFileSync(fixture.cachePath, JSON.stringify(cached));
+  assert.equal(resolveVendorModelAlias("claude", "opus", fixture.deps()), "opus");
+  assert.equal(fixture.launches.length, 1);
 });
 
 test("Codex accepts current max/ultra efforts and UI effort labels normalize to CLI values", () => {
@@ -1903,7 +2487,7 @@ test("Codex accepts current max/ultra efforts and UI effort labels normalize to 
     assert.equal(parsed.effort, expected);
   }
   assert.match(usageText(), /cached for 24h.*model-catalog-v1\.json/s);
-  assert.match(usageText(), /fresh-cache miss refreshes once/);
+  assert.match(usageText(), /over 24h old, or finds its last refresh\s+failed for claude, agy or grok, starts one background refresh/);
 
   const catalogs = {
     codex: [{ slug: "gpt-future", supported_reasoning_levels: [{ effort: "low" }] }],
@@ -4172,7 +4756,7 @@ test("this-machine parallel observation leaves 12 of 12 parseable portable rows"
 });
 
 test("raw-only rows preserve every installed 0.9.6 field while adding identity evidence", (t) => {
-  const installed = join(homedir(), ".claude", "plugins", "cache", "second-opinion", "second-opinion", "0.9.6", "scripts", "dispatch.mjs");
+  const installed = join(realHome, ".claude", "plugins", "cache", "second-opinion", "second-opinion", "0.9.6", "scripts", "dispatch.mjs");
   if (!existsSync(installed)) {
     t.skip("optional installed second-opinion 0.9.6 comparison is unavailable");
     return;
@@ -4590,4 +5174,25 @@ test("the claude child is spawned with CLAUDE.md disabled exactly when skills ar
   const mdsKeys = Object.keys(shadowed.env).filter((key) => key.toUpperCase() === "CLAUDE_CODE_DISABLE_CLAUDE_MDS");
   assert.deepEqual(mdsKeys, ["CLAUDE_CODE_DISABLE_CLAUDE_MDS"], "the caller's spelling must be dropped, not shadowed");
   assert.equal(shadowed.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS, "1");
+});
+
+// The refresh code never retries Codex (every call re-reads its local cache) or a
+// vendor CLI that is not installed. --help is the routing canon madi callers read,
+// so every surface must say so; the H20 review caught the docs claiming "any vendor".
+test("help and docs say which failed listings the next call retries", () => {
+  const help = usageText();
+  assert.match(help, /failed for claude, agy or grok/);
+  assert.match(help, /not installed is not a failure to retry, and Codex is never retried/);
+  assert.doesNotMatch(help, /refresh\s+failed for any vendor/);
+  const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
+  assert.match(skill, /설치돼 있지 않은 벤더 CLI는 실패로 치지 않는다\. Codex도 이 재시도 대상이 아니다/);
+  const changelog = readFileSync(new URL("../../../CHANGELOG.md", import.meta.url), "utf8");
+  assert.match(changelog, /claude·agy·grok 중 한 벤더의 조회가\s+실패했으면\(설치되지 않은 벤더 CLI는 실패로 치지 않고, Codex는/);
+  const readmes = [new URL("../../../README.md", import.meta.url), new URL("../../../README.ko.md", import.meta.url)].filter((url) => existsSync(url));
+  for (const url of readmes) {
+    const text = readFileSync(url, "utf8");
+    assert.ok(/the claude, agy or grok listing failed \(a vendor CLI that is not installed does not count, and Codex is never retried/.test(text)
+      || /claude·agy·grok 중 한 벤더라도 조회에 실패했으면\(설치되지 않은 벤더 CLI는 실패로 치지 않고, Codex는/.test(text), url.pathname);
+    assert.doesNotMatch(text, /any vendor's listing failed|지난 갱신에서 한 벤더라도 조회에 실패했으면/);
+  }
 });

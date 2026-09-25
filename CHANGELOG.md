@@ -4,6 +4,43 @@
 > add `Planned release version: <plugin.json version>` under `## Unreleased`.
 > Replace it with the matching release heading when releasing.
 
+## 0.9.21 — 2026-09-24
+
+- **버전 없는 모델 이름은 그 계열의 최신 버전으로 나간다.** codex·claude·agy·grok에 `sol`·`luna`·
+  `terra`·`astra`·`opus`·`sonnet`·`fable`·`haiku`·`gemini`·`grok`을 주면 `--vendor`를 박았든 생략했든
+  카탈로그에서 최신을 골라 실행하고 영수증 `model`에 그 버전을 남긴다(2026-09-23 카탈로그: `sol` →
+  `gpt-6-sol`, `terra` → `gpt-5.6-terra`, `opus` → `claude-opus-5-5`, `gemini` → `gemini-3.8-flash`,
+  `grok` → `grok-4.7`). 벤더는 버전 없는 이름을 exit 1로 거절한다. 0.9.20까지는 같은 이름이 카탈로그
+  상태에 따라 갈렸고(`terra`는 박히고 `sol`·`luna`는 후보가 둘이라 원문 그대로 나가 거절됨), claude는
+  `opus`·`sonnet`·`haiku`를 원문 그대로 넘겨 영수증에 실제 버전이 남지 않았다.
+- 카탈로그에 출시 순서가 없으므로 버전은 이름에서 숫자로 읽는다. `3.10`이 `3.8`보다 높고, 하이픈
+  버전(`claude-opus-5-5` = 5.5)을 읽고, 8자리 날짜와 이름 끝의 4자리 월일(`-0813`)은 버전이 아니며,
+  effort·속도 꼬리는 새 버전이 아니다. 같은 버전의 변형 라인보다 꼬리 없는 라인을 고른다. 버전 없는
+  이름이 이미 카탈로그 모델 하나의 제 이름이면 다른 라인과 견주지 않고 그 모델로 나간다. agy는 effort를
+  따로 받으므로 `gemini`는 꼬리 없는 slug로 나가고 호출자의 `--effort`가 붙는다 — 없으면 채우지 않는다.
+  버전을 적은 이름과 0.9.18의 뒤 토큰·네임스페이스·날짜 해석은, 0.9.19 결과가 opencodex 경유 항목이
+  아니던 것은 0.9.19와 같다.
+- **opencodex 경유 항목으로는 어떤 이름도 해석·라우팅하지 않는다.** Codex의 `models_cache.json`에는
+  opencodex가 넣은 프록시 항목이 Codex 자체 모델과 함께 있다(2026-09-24 실측 38개 중 31개 — 슬러그가
+  `anthropic/…`·`xai/…`처럼 공급자 네임스페이스를 달고 설명이 「Routed via opencodex → <공급자>」).
+  슬러그의 `/`나 그 설명으로 알아보고 Codex 카탈로그에서 빼므로, `--vendor`를 박았든 생략했든, 버전이
+  있든 없든 결과가 이 항목이 되지 않는다. 이 항목만 가리키던 이름은 `--vendor codex`에서 쓴 그대로
+  나간다 — 0.9.18~0.9.20의 네임스페이스 해석(`claude-opus-4-6` → `anthropic/claude-opus-4-6`, `pro` →
+  `google-antigravity/gemini-3.1-pro`)도 이제 원문이다. 자동 라우팅에서는 Codex 후보가 아니어서, 다른
+  벤더도 받지 않는 이름(`pro`·`flash`)은 unknown으로 멈춘다. `--request-json` 경로의 Codex 이름 해석도
+  같은 카탈로그를 읽어 이 항목으로 가지 않는다. 통합 캐시의 Codex 행에도 이 항목은 남지 않는다.
+- **카탈로그는 하루 한 번 갱신된다.** 24시간이 지났거나 지난 갱신에서 claude·agy·grok 중 한 벤더의 조회가
+  실패했으면(설치되지 않은 벤더 CLI는 실패로 치지 않고, Codex는 매 호출 자기 캐시를 다시 읽어 이 재시도 대상이 아니다)
+  `--vendor devin`을 뺀 호출이(`--model`이 없어도) 백그라운드 갱신을 하나 띄우고 자기는 있는 카탈로그로
+  간다. 락으로 동시 호출·진행 중 갱신에서도 하나만 뜬다. 떨어진 갱신은 호출자의 작업 폴더가 아니라
+  캐시 폴더에서 돌아, 호출 직후 호출자가 임시 폴더를 지우는 것을 막지 않는다. 조회가 실패하거나 0건인
+  벤더는 마지막 성공 목록을 쓰고 다음 호출이 다시 띄운다. 캐시가 없으면 자동 라우팅과 `--model`을 준
+  `--vendor claude|agy|grok` 호출만 그 자리에서 갱신한다. 0.9.20의 동기 갱신·fresh miss 즉시 갱신·
+  degraded 5분 재시도와 「고정 벤더는 갱신하지 않는다」를 대체한다. `--vendor codex`는 기다리지 않고
+  `--vendor devin`은 카탈로그를 건드리지 않는다. `--request-json` 경로에는 최신 매핑도 갱신도 없다.
+- `agy models`의 현재 출력(머리줄 + `슬러그<탭>라벨`)을 읽는다. 0.9.20 파서는 이를 0건으로 읽어 갱신이
+  매번 실패했고 agy 목록이 3.6 flash에 머물러 있었다.
+
 ## 0.9.20 — 2026-09-24
 
 - Devin 모델 정보를 `--help`·`SKILL.md`·`references/adapter-devin.md`·README 2종에 같은 내용으로 실었다.

@@ -463,9 +463,11 @@ export function buildVendorInvocation(options) {
   if (model) after.push("--model", model);
   // agy 1.1.26 split reasoning effort out of the model name: a bare `--model
   // gemini-3.8-flash` now exits 1 with `requires --effort (available: low,
-  // medium, high)`, while the older `-high` suffix still resolves. Forward what
-  // the caller asked for and let agy reconcile the two spellings — rewriting the
-  // slug here would hide which of them the vendor actually honoured.
+  // medium, high)`, while the older `-high` suffix still resolves. Forward the
+  // slug and effort exactly as they arrive and let agy reconcile the two spellings —
+  // rewriting the slug here would hide which of them the vendor actually honoured.
+  // (A version-less `gemini` has already become a tail-less slug in dispatch.mjs's
+  // name resolution, before it reaches this argv.)
   if (effort) after.push("--effort", effort);
   const directories = [options.cwd, ...(operation === "image-analyze" ? inputs.map((input) => dirname(input)) : [])].filter(Boolean);
   const seen = new Set();

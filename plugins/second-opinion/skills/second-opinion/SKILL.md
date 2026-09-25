@@ -14,7 +14,7 @@ description: >
 
 # second-opinion — 외부 AI 어댑터
 
-**버전 0.9.20** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). SuperGrok 구독 CLI `grok`과 Devin CLI `devin`. (정본 버전은 `plugin.json`.)
+**버전 0.9.21** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). SuperGrok 구독 CLI `grok`과 Devin CLI `devin`. (정본 버전은 `plugin.json`.)
 
 이 스킬은 **아무것도 차단하지 않는다** — 중개(relay)만 한다. 디스패처는 커맨드 정합성을 위한 도구일 뿐이다. "Claude가 디스패처를 반드시 거치게" 강제하는 것은 **부르는 쪽(caller)의 책임**이다 → [references/enforcement.md](references/enforcement.md).
 
@@ -234,29 +234,69 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/provider-probe.mjs" --targets-json providers.j
 
 모델을 지정하고 벤더를 모르면 `--vendor`를 생략할 수 있다. 디스패처가 Codex
 `models_cache.json`, `agy models`, Claude initialize control metadata, `grok models`를 대조해 자동
-라우팅한다. 모델 메타데이터만 `~/.second-opinion/model-catalog-v1.json`에 24시간
-캐시하므로 fresh hit에서는 공급자 프로세스를 실행하지 않는다. 이미 로컬 파일인 Codex
+라우팅한다. 모델 메타데이터만 `~/.second-opinion/model-catalog-v1.json`에 캐시하며,
+이 캐시는 **하루 한 번** 갱신된다. 나이는 디스패처가 이 파일을 마지막으로 갱신한 때부터
+재고, 벤더 쪽 시각(Codex cache의 `fetched_at`)으로 재지 않는다. 이미 로컬 파일인 Codex
 카탈로그는 현재 `CODEX_HOME`에서 매번 다시 읽어 다른 환경의 cache가 섞이지 않게 한다.
-fresh cache에서 모델을 못 찾으면 한 번 즉시 갱신하고, 갱신 실패 시 last-known-good를
-사용하되 degraded cache는 5분 뒤 다시 확인한다. 정상 데이터가
-없는 공급자가 있거나 0개/동순위 복수 후보면 실행 전에 fail-closed한다.
+
+- 24시간 안이면 갱신하지 않는다. 공급자 프로세스를 띄우지 않는다.
+- 24시간을 넘었거나 지난 갱신에서 한 벤더라도 조회에 실패했으면, `--vendor devin`을 뺀
+  호출(`--model`이 없어도)이 갱신을 **호출과 떨어진 백그라운드**로 하나 띄우고 자기는 있는 카탈로그로 간다.
+  갱신 결과는 다음 호출부터 쓴다. 조회 실패 뒤에는 24시간을 기다리지 않고 다음 호출이
+  다시 띄운다. 설치돼 있지 않은 벤더 CLI는 실패로 치지 않는다. Codex도 이 재시도 대상이 아니다 —
+  매 호출 자기 로컬 캐시를 다시 읽기 때문이다.
+- 여러 호출이 동시에 만료를 만나도, 앞 호출이 띄운 갱신이 아직 도는 중이어도 갱신은
+  하나만 뜬다.
+- 한 벤더의 조회가 오류로 끝나거나 목록이 0건이면 그 벤더는 마지막으로 성공한 목록을 쓴다.
+- 캐시 파일이 없을 때만 호출 안에서 갱신을 끝내고 그 결과로 간다. 그 캐시를 읽는
+  호출(`--vendor`를 생략한 자동 라우팅과 `--model`을 준 `--vendor claude|agy|grok`)만 그렇다.
+  `--vendor codex`는 자기 캐시를 읽으므로, `--model`이 없는 호출은 읽을 이름이 없으므로
+  기다리지 않는다. `--vendor devin`은 카탈로그를 읽지도 갱신하지도 않는다.
+- `--request-json` 경로는 이 규칙 밖이다 — 최신 매핑도 카탈로그 갱신도 하지 않는다.
+
+정상 데이터가 없는 공급자가 있거나 0개/동순위 복수 후보면 자동 라우팅은 실행 전에
+fail-closed한다.
 
 `--vendor`를 명시하면 그 값이 항상 우선하며, 벤더는 절대 바뀌지 않는다. 다만 모델
 이름은 그 **한 벤더의 카탈로그로만** 해석한다 — `--vendor agy --model "opus 4.6"`은
-agy가 게시하는 slug로 바뀌어 전달된다. 이 경로는 **이미 있는 것만 읽는다**: 공급자
-프로세스를 띄우지 않고 갱신도 하지 않으므로, 캐시가 없거나 낡았거나 후보가 유일하지
-않으면 **호출자가 쓴 문자열을 그대로** 벤더에 넘긴다. 벤더의 loud reject를 숨기지
-않고, 맞게 쓴 이름을 다른 모델로 바꿔 부르지도 않는다. 영수증은 호출자가 준 이름
-(`modelRequested`)과 실제 쓴 이름(`model`)을 계속 따로 남긴다.
+agy가 게시하는 slug로 바뀌어 전달된다. 버전을 적은 이름은 후보가 유일하지 않으면
+**호출자가 쓴 문자열을 그대로** 벤더에 넘긴다. 벤더의 loud reject를 숨기지 않고, 맞게 쓴
+이름을 다른 모델로 바꿔 부르지도 않는다. 영수증은 호출자가 준 이름(`modelRequested`)과
+실제 쓴 이름(`model`)을 계속 따로 남긴다.
+
+**버전 없는 이름은 그 계열의 최신 버전으로 바뀐다.** `sol`·`luna`·`terra`·`astra`(Codex),
+`opus`·`sonnet`·`fable`·`haiku`(Claude), `gemini`(AGY), `grok`(Grok)을 주면 `--vendor`를
+박았든 생략했든 카탈로그에서 그 이름을 가진 후보 중 버전이 가장 높은 것이 나간다.
+벤더가 버전 없는 이름을 받지 않기 때문이다 — codex `-m sol`, agy `--model gemini`, grok
+`-m grok`은 셋 다 exit 1로 거절된다. 카탈로그에는 출시 순서가 없으므로 버전은 이름에서
+숫자로 읽는다(`3.10`이 `3.8`보다 높다, `claude-opus-5-5`는 5.5, `-20251001` 같은 8자리
+날짜와 이름 끝의 `-0813` 같은 4자리 월일은 버전이 아니다). `-high`·`-fast` 같은
+effort·속도 꼬리는 새 버전이 아니고, 같은 버전에 변형 라인이 있으면 꼬리 없는 라인을
+고른다(`grok` → `grok-4.7`, `grok-4.7-build-fast` 아님). AGY는 effort를 따로 받으므로 `gemini`는 꼬리 없는 slug(`gemini-3.8-flash`)로 나가고
+호출자의 `--effort`가 그대로 붙는다 — effort를 안 주면 디스패처도 채우지 않고 agy가
+거절한다. 버전을 적은 이름(`gpt-5.6-sol`)은 더 새 버전이 있어도 바꾸지 않는다. 후보가
+없는 버전 없는 이름은 그대로 나간다. 버전 없는 이름이 이미 카탈로그 모델 하나의 제 이름이면
+다른 라인과 버전을 견주지 않고 그 모델로 나간다.
+
+**opencodex 경유 항목으로는 어떤 이름도 해석·라우팅하지 않는다.** Codex의
+`models_cache.json`에는 opencodex가 넣은 프록시 항목이 Codex 자체 모델과 함께 있다(2026-09-24
+실측 38개 중 31개) — 슬러그가 `anthropic/…`·`google-antigravity/…`·`xai/…`처럼 공급자
+네임스페이스를 달고, 설명이 「Routed via opencodex → <공급자>」다. 디스패처는 슬러그의 `/`나 그
+설명 문구로 이 항목을 알아보고 Codex 카탈로그에서 뺀다. 그래서 `--vendor`를 박았든
+생략했든, 버전 없는 이름이든 버전을 적은 이름이든 결과가 이 항목이 되지 않는다. 이 항목만
+가리키던 이름은 `--vendor codex`에서 쓴 그대로 나가고(`claude-opus-4-6`은 `claude-opus-4-6`,
+`pro`는 `pro` — 0.9.18~0.9.20은 네임스페이스 해석으로 `anthropic/claude-opus-4-6`·
+`google-antigravity/gemini-3.1-pro`로 바꿨다), 자동 라우팅에서는 Codex 후보가 아니다. `--request-json` 경로의 Codex 이름 해석도 같은
+카탈로그를 읽으므로 이 항목으로 가지 않는다.
 
 대소문자와 공백·점·하이픈은 같은 이름으로 본다. 정확한 카탈로그 항목이 family/version
-추론보다 우선한다. 따라서 `opus`는 Claude 최신 alias, `opus 4.8`은 Claude Code,
-`opus 4.6`·`sonnet 4.6`은 정확한 항목을 가진 AGY로 간다. Claude Code의 4.6을 원하면
+추론보다 우선한다. 따라서 `opus`는 Claude 최신 slug(`claude-opus-5-5`), `opus 4.8`은
+Claude Code, `opus 4.6`·`sonnet 4.6`은 정확한 항목을 가진 AGY로 간다. Claude Code의 4.6을 원하면
 `--vendor`를 생략하고 `Claude Code opus 4.6`이라고 쓰거나, `--vendor claude --model
 claude-opus-4-6`으로 정규 ID를 박는다. `--vendor claude`가 박혀 있으면 AGY로 샐 일이
 없으므로 `opus 4.6`이라고만 써도 카탈로그가 캐시돼 있는 한 같은 곳으로 간다.
-`terra`·`gpt 5.5`·
-`5.6 sol`은 Codex 정규 slug로 바뀐다. `opus terra`처럼 모델 둘을 한 값에 쓰면 추측하지
+`gpt 5.5`·`5.6 sol`은 Codex 정규 slug로 바뀌고, 버전 없는 `terra`·`sol`은 최신
+(`gpt-5.6-terra`·`gpt-6-sol`)으로 바뀐다. `opus terra`처럼 모델 둘을 한 값에 쓰면 추측하지
 않고 unknown으로 거부한다.
 
 `devin`은 모델 이름이 다른 벤더와 겹치므로 **자동 라우팅 후보가 아니다.** 반드시
@@ -288,7 +328,8 @@ timeout은 직접 자식에 `child.kill()`만 수행하므로 벤더가 만든 �
   정규화하며 Codex는 선택 모델이 광고한 `low, medium, high, xhigh, max, ultra` 중
   지원값만 허용한다. Codex 모델은
   `CODEX_HOME/models_cache.json`(기본 `~/.codex/models_cache.json`)의 slug·display name·
-  논리 별칭과 대조한다. receipt의 `modelRequested`는 입력 원문, `model`은 실행에 전달한
+  논리 별칭과 대조한다 — opencodex 경유 항목은 대조하지 않는다(위 「opencodex 경유 항목으로는
+  어떤 이름도 해석·라우팅하지 않는다」). receipt의 `modelRequested`는 입력 원문, `model`은 실행에 전달한
   정규화 결과다.
 - codex는 로컬 파일을 읽는다(전 sandbox 모드 실측). 큰 내용은 파일로 두고 경로를 지시할 수 있다.
   과거 CryptUnprotectData 오류는 elevated sandbox 계정의 DPAPI stale 버그로 상위 수정됐다 —
@@ -337,7 +378,7 @@ AGY headless는 command permission을 물을 수 없으므로 dispatcher가 expl
   `expectedTotal`이 `null`이면 **미신고**라 부분 등록 여부를 알 수 없고, `outputChecks.length`와 **같으면 전건 등록**,
   **크면 부분 등록**이다. 신고가 없으면 `outputCheckStatus: matched`만으로는 전 구획이 돌았는지 알 수 없다.
 - `--model`은 디스플레이 라벨(`"Gemini 3.1 Pro (High)"`)이나 `agy models`가 출력하는 정규 slug(`gemini-3.1-pro-high`) 둘 다 유효하다. `agy models`는 slug를, 모델 피커 화면은 라벨을 보여준다. 형식이 깨졌거나 모르는 이름은 exit 1로 거부되니(구버전의 silent-downgrade 아님) 호출 후 exit code를 확인할 것.
-- ⚠ **agy 1.1.26부터 reasoning effort가 별도 축이다**(실측 2026-08-31). `--model gemini-3.8-flash --effort low|medium|high`가 정식형이고, dispatcher가 `--effort`를 그대로 전달한다. 옛 접미사(`gemini-3.8-flash-low`)는 **단독으로는 아직 통한다.** 다만 **둘을 섞으면 exit 1**이고(`--model gemini-3.8-flash-low conflicts with --effort=high`), **접미사 없는 이름을 effort 없이 주면 그것도 exit 1**이다(`requires --effort`). 어느 쪽도 조용히 한쪽을 고르지 않는다 — 이긴 값을 추측하지 말고 exit code를 읽어라.
+- ⚠ **agy 1.1.26부터 reasoning effort가 별도 축이다**(실측 2026-08-31). `--model gemini-3.8-flash --effort low|medium|high`가 정식형이고, dispatcher가 `--effort`를 그대로 전달한다. 옛 접미사(`gemini-3.8-flash-low`)는 **단독으로는 아직 통한다.** 다만 **둘을 섞으면 exit 1**이고(`--model gemini-3.8-flash-low conflicts with --effort=high`), **접미사 없는 이름을 effort 없이 주면 그것도 exit 1**이다(`requires --effort`). 어느 쪽도 조용히 한쪽을 고르지 않는다 — 이긴 값을 추측하지 말고 exit code를 읽어라. 버전 없는 `--model gemini`는 디스패처가 최신 slug의 꼬리 없는 형태(`gemini-3.8-flash`)로 바꿔 넘기므로 같은 규칙을 따른다 — `--effort`를 함께 준다.
 - **agy 영수증 한계**: 영수증의 `model`·`invoked`는 agy에도 기록되지만(요청 모델·실행 여부), 실측 토큰(`vendorUsage`)과 실제 응답 backend 확인은 **Codex 전용**이다. agy는 응답에 모델·session id를 안 실어(헤더 없음) 요청과 실제 실행 모델을 묶을 앵커가 없다. 대신 unknown 모델을 loud reject하므로 강등 위험은 낮다.
 → 호출 전 필수: `references/adapter-antigravity.md` 를 반드시 읽을 것 (Windows 호스트 주의·모델 라벨·이미지 생성·복구·기타 함정)
 

@@ -5,7 +5,7 @@
 Claude Code 안에서 **다른 벤더의 AI**(Codex/GPT, Antigravity/Gemini, Grok, Devin)를 일상어로 부려 쓰는
 어댑터 스킬 — 점검·리뷰·의견부터 작업 오프로드, 이미지 생성까지.
 
-**버전 0.9.20**
+**버전 0.9.21**
 
 > "이 설계 코덱스로 점검받고 싶어" / "안티그래비티한테 물어봐" / "그록으로 봐줘" / "데빈으로 봐줘" / "교차 검증해줘"
 > "코덱스한테 로고 시안 이미지 만들어달라고 해줘" / "클로드 사용량 아끼게 이 번역은 제미나이로"
@@ -81,16 +81,18 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
 | `agy -p "<텍스트>"`는 stdin을 안 닫으면 **무한 hang** + argv라 **30,000자 한계** | brief를 stdin으로 전달(`-p - < brief.txt`) — hang 없음, 105KB 실측 통과 |
 | `--model`은 디스플레이 라벨(`"Gemini 3.1 Pro (High)"`)과 `agy models`의 정규 slug(`gemini-3.1-pro-high`) 둘 다 유효(agy 1.1.5). `agy models`는 slug를, 피커는 라벨을 보여줌. 모르는·깨진 이름은 **exit 1로 loud reject**(구버전은 조용히 강등) | 어느 출처든 그대로 복사하고 exit code 확인. 카탈로그가 캐시돼 있으면 라벨은 slug로 바뀌어 전달되고, 영수증의 `modelRequested`에는 쓴 문자열이 그대로 남음 |
 | subprocess·영수증 cwd가 temp여도 AGY가 이전 host project를 계속 사용할 수 있음 | 모든 AGY 호출에 요청 workspace를 `--add-dir`로 결속하고, 필요하면 `--expect-output`으로 hidden token 읽기를 검사 |
-| `terra`·`gpt 5.5`·`5.6 sol@ultra`처럼 입력했지만 Codex CLI는 현재 정규 slug를 요구 | 대소문자·구분자와 UI effort 명칭을 정규화하고 Codex live cache에서 해석(`terra` → `gpt-5.6-terra`). 선택 모델이 광고한 effort만 허용(`low`부터 `ultra` 중 지원값) |
-| `opus`·`opus 4.8`·`fable`처럼 모델명만 알고 벤더는 모름 | cache-first Codex·AGY·Claude 메타데이터를 대조. 공급자가 직접 광고한 `opus`는 최신 별칭으로 유지하고 display에서 유도한 `fable`은 `claude-fable-5`로 전달. 버전명은 고정 family 표가 아니라 현재 메타데이터에서 유도 |
+| `terra`·`gpt 5.5`·`5.6 sol@ultra`처럼 입력했지만 Codex CLI는 현재 정규 slug를 요구 | 대소문자·구분자와 UI effort 명칭을 정규화하고 Codex live cache에서 해석(`gpt 5.5` → `gpt-5.5`). 선택 모델이 광고한 effort만 허용(`low`부터 `ultra` 중 지원값) |
+| Codex 모델 캐시에 opencodex 프록시 항목도 들어 있음(2026-09-24 실측 38개 중 31개: `anthropic/claude-opus-5-5`·`xai/grok-4.7`처럼 공급자 네임스페이스를 단 슬러그, 설명 「Routed via opencodex」). 그 프록시로는 라우팅하면 안 됨 | **opencodex 경유 항목으로는 어떤 이름도 해석·라우팅하지 않음** — 벤더를 박든 생략하든, 버전이 있든 없든. 슬러그의 `/`나 그 설명으로 알아보고 Codex 카탈로그에서 뺌. 이 항목만 가리키던 이름은 `--vendor codex`에서 쓴 그대로 나가고(`claude-opus-4-6`은 `claude-opus-4-6`, `pro`는 `pro` — 0.9.18~0.9.20은 네임스페이스 해석으로 `anthropic/claude-opus-4-6`·`google-antigravity/gemini-3.1-pro`로 바꿨음), 자동 라우팅에서는 Codex 후보가 아님. `--request-json` 경로의 Codex 이름 해석도 같은 카탈로그를 읽음 |
+| 모델 버전이 빠르게 바뀌는데, 벤더는 버전 없는 이름을 거절함(codex `-m sol`, agy `--model gemini`, grok `-m grok` 모두 exit 1) | 버전 없는 이름은 `--vendor`를 박든 생략하든 카탈로그에서 그 계열의 최신 모델로 바꿈. 2026-09-23 카탈로그 기준 `sol` → `gpt-6-sol`, `terra` → `gpt-5.6-terra`, `opus` → `claude-opus-5-5`, `gemini` → `gemini-3.8-flash`(agy는 `--effort`를 따로 받음), `grok` → `grok-4.7`. 버전은 이름에서 숫자로 읽는다(`3.10`이 `3.8`보다 높고, `claude-opus-5-5`는 5.5, 8자리 날짜와 이름 끝의 `-0813` 같은 4자리 월일은 버전이 아니며, `-high`·`-fast` 같은 effort·속도 꼬리는 새 버전이 아님). 버전 없는 이름이 이미 카탈로그 모델 하나의 제 이름이면 다른 라인과 견주지 않고 그 모델로 감. 버전을 적은 이름은 다른 버전으로 바꾸지 않고, 후보가 없는 버전 없는 이름은 쓴 그대로 넘김. 영수증에는 `modelRequested`와 실제 돈 버전 `model`이 따로 남음 |
+| `opus`·`opus 4.8`·`fable`처럼 모델명만 알고 벤더는 모름 | cache-first Codex·AGY·Claude 메타데이터를 대조. 버전 없는 `opus`·`fable`은 다른 벤더처럼 Claude의 최신 slug(`claude-opus-5-5`·`claude-fable-5-1`)로 전달. 버전명은 고정 family 표가 아니라 현재 메타데이터에서 유도 |
 | `opus 4.6`·`sonnet 4.6`이 Claude Code와 AGY 양쪽에 존재 | AGY의 정확한 카탈로그 항목이 Claude의 family/version 추론보다 우선. `--vendor` 생략 시 `Claude Code opus 4.6`, 또는 `--vendor claude --model claude-opus-4-6`으로 Claude 선택. 박힌 `--vendor`는 절대 다른 벤더로 새지 않으므로 `--vendor claude --model "opus 4.6"`도 Claude로 간다 |
-| 박힌 `--vendor`는 호출자가 쓴 `--model` 문자열을 그대로 벤더에 넘겨, 그 벤더가 게시하지 않는 이름이 `--dry-run`을 통과하고 실호출에서야 거절됨 | 그 **한 벤더의 카탈로그로만** `--model`을 해석(`--vendor agy --model "opus 4.6"` → `claude-opus-4-6-thinking`). 이미 캐시된 것만 읽어 공급자 프로세스도 갱신도 없고, 후보가 유일하지 않으면 호출자가 쓴 문자열을 그대로 넘겨 맞게 쓴 이름을 바꿔 부르지 않음 |
-| 호출마다 공급자 카탈로그를 조회하면 시작·네트워크 시간이 낭비됨 | 모델 메타데이터만 `~/.second-opinion/model-catalog-v1.json`에 24시간 캐시. fresh cache miss는 1회 갱신하고 실패하면 last-known-good를 쓰되 5분 후 재시도. 이미 로컬인 Codex cache는 현재 `CODEX_HOME`에서 다시 읽음 |
+| 박힌 `--vendor`는 호출자가 쓴 `--model` 문자열을 그대로 벤더에 넘겨, 그 벤더가 게시하지 않는 이름이 `--dry-run`을 통과하고 실호출에서야 거절됨 | 그 **한 벤더의 카탈로그로만** `--model`을 해석(`--vendor agy --model "opus 4.6"` → `claude-opus-4-6-thinking`). 자동 라우팅과 같은 하루 한 번 갱신을 따른다. 버전 없는 이름은 후보가 여럿이어도 그 계열의 최신으로 바꾸고, 그 밖의 이름은 한 모델로 정해지지 않으면 호출자가 쓴 문자열을 그대로 넘겨 맞게 쓴 이름을 바꿔 부르지 않음 |
+| 호출마다 공급자 카탈로그를 조회하면 시작·네트워크 시간이 낭비되고, 갱신하지 않으면 새 모델을 놓침 | 모델 메타데이터만 `~/.second-opinion/model-catalog-v1.json`에 캐시하고 하루 한 번 갱신. 나이는 디스패처 자신의 마지막 갱신부터 잰다. 24시간 안이면 갱신하지 않는다. 24시간을 넘었거나 지난 갱신에서 claude·agy·grok 중 한 벤더라도 조회에 실패했으면(설치되지 않은 벤더 CLI는 실패로 치지 않고, Codex는 매 호출 자기 로컬 캐시를 다시 읽으므로 이 재시도 대상이 아니다) `--vendor devin`을 뺀 호출(`--model`이 없어도)이 **호출과 떨어진 백그라운드 갱신**을 하나 띄우고 자기는 있는 카탈로그로 가며, 결과는 다음 호출부터 쓴다. 동시 호출도, 앞 갱신이 도는 중에 온 호출도 갱신을 하나만 띄운다. 조회가 오류로 끝나거나 0건인 벤더는 마지막 성공 목록을 쓰고, 다음 호출이 24시간을 기다리지 않고 다시 띄운다. 캐시 파일이 없을 때만 호출 안에서 갱신하며 자동 라우팅과 `--model`을 준 `--vendor claude\|agy\|grok`만 그렇다. `--vendor codex`와 `--model` 없는 호출은 기다리지 않고, `--vendor devin`은 카탈로그를 건드리지 않으며, `--request-json`은 매핑도 갱신도 하지 않는다. 이미 로컬인 Codex cache는 현재 `CODEX_HOME`에서 다시 읽음 |
 | Windows에서 codex sandbox의 **파일 읽기 불능** | "파일 읽어봐" 대신 내용을 brief에 발췌 동봉 |
 | 이미지 생성: agy는 **지정 저장 위치를 무시**(자기 scratch 폴더에 저장), codex는 **쓰기 샌드박스 필요** + Windows 복사 실패 가능 | 벤더별 실제 산출물 위치를 알고, 파일 존재를 직접 확인 후 원한 위치로 옮김 — 벤더의 "저장했다"를 성공으로 안 침 |
 | "이상 없음"은 약한 신호(특히 Gemini의 false-negative 편향) | "문제를 못 찾음 ≠ 문제 없음" 명시 전달 |
 | Grok `--tools`는 이름이 전부 틀리면 조용히 열린다. Grok은 Claude/Cursor 하네스 설정을 기본으로 읽는다 | plan/review는 `--permission-mode plan`을 바닥으로 쓰고 격리 env 13개 강제(Claude 6 + Cursor 6 + `GROK_CODEX_SESSIONS_ENABLED`). 프로젝트 루트 `CLAUDE.md`는 남을 수 있다 |
-| AGY 호출이 effort를 모델 slug 안에 넣음 | agy 1.1.26부터 effort가 별도 축(`--effort low|medium|high`)이다. 옛 `-high` 접미사는 단독으로는 아직 통하지만 `--effort`와 섞으면 **한쪽을 고르는 게 아니라 exit 1**이고, 접미사 없는 이름을 effort 없이 주면 그것도 거부된다. dispatcher는 두 표기를 그대로 전달해 벤더가 실제로 받은 것이 영수증에 남게 한다 |
+| AGY 호출이 effort를 모델 slug 안에 넣음 | agy 1.1.26부터 effort가 별도 축(`--effort low|medium|high`)이다. 옛 `-high` 접미사는 단독으로는 아직 통하지만 `--effort`와 섞으면 **한쪽을 고르는 게 아니라 exit 1**이고, 접미사 없는 이름을 effort 없이 주면 그것도 거부된다. dispatcher는 두 표기를 그대로 전달해 벤더가 실제로 받은 것이 영수증에 남게 한다. 버전이 아예 없는 이름(`gemini`)만 최신 slug의 effort 꼬리 없는 형태로 바꾸며, 같은 규칙대로 `--effort`를 함께 준다 — 대신 채워 주지 않는다 |
 | 로컬을 안 건드렸는데 AGY 기본 모델이 바뀜 | 기본값이 설정 파일이 아니라 Antigravity 계정 쪽에 있다. 실측 — 아무것도 안 고쳤는데 `gemini-3.7-flash`에서 `gemini-3.8-flash-high`로 옮겨갔다. **재현이 필요한 호출은 `--model`을 박을 것** |
 | Grok 리뷰 예시가 reasoning effort를 빼면 벤더 기본값으로 조용히 실행됨 | 표준 리뷰 예시는 가성비 기준 `--effort medium`을 명시. dispatch가 그대로 전달하고 영수증의 `effortRequested`에 요청값을 남김 |
 | 리뷰어에게 exact current diff 확인이나 스위트 실행을 시킴 | Claude plan/review에는 `git diff`와 이력 조회용 Bash/PowerShell이 있고 `--no-host-shell`로 제거할 수 있다. Grok·AGY explicit mode에는 git shell이 없으므로 linked-worktree 리뷰는 **변경 파일 목록과 unified diff 전문**을 brief에 넣고, 스위트 결과는 **호출자가 직접 재서 값으로** 준다 |

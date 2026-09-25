@@ -34,6 +34,23 @@ test.after(() => {
   for (const root of roots) rmSync(root, { recursive: true, force: true });
 });
 
+// A catalog refreshed just now that names no models: no call refreshes it, and
+// every --model is left as the caller wrote it.
+function emptyModelCatalog(home) {
+  const path = join(home, ".second-opinion", "model-catalog-v1.json");
+  mkdirSync(dirname(path), { recursive: true });
+  const vendors = Object.fromEntries(["codex", "agy", "claude", "grok"].map((vendor) => [vendor, { available: false, models: [] }]));
+  writeFileSync(path, JSON.stringify({ schemaVersion: 1, checkedAt: Date.now(), degraded: false, vendors }));
+}
+
+// A call that resolves --model keeps the home catalog current, and an old or
+// missing one runs the real vendor listings. This process's home is a temporary
+// one with a fresh, empty catalog, so no test refreshes the real one.
+const isolatedHome = temporaryRoot("second-opinion-home");
+emptyModelCatalog(isolatedHome);
+process.env.HOME = isolatedHome;
+process.env.USERPROFILE = isolatedHome;
+
 function memoryWriter() {
   let data = "";
   return {
@@ -1419,6 +1436,9 @@ test("C-11: receipt resolution is env over config over none and malformed config
   writeFileSync(brief, "fixture", "utf8");
   writeFileSync(configuredReceipt, "preserve", "utf8");
   writeFileSync(homeConfig, JSON.stringify({ receipt: configuredReceipt }), "utf8");
+  // A codex call keeps this home's model catalog current even without --model; a
+  // fresh one here keeps it from starting a refresh against the real vendors.
+  emptyModelCatalog(home);
   const cleanEnv = { ...process.env, HOME: home, USERPROFILE: home };
   for (const key of Object.keys(cleanEnv)) if (/^SECOND_OPINION_(?:PORTABLE_)?RECEIPT$/i.test(key)) delete cleanEnv[key];
   const dispatchPath = fileURLToPath(new URL("./dispatch.mjs", import.meta.url));
@@ -1627,6 +1647,10 @@ test("GLOBAL-1/H-5 C-7 subprocess CLI receipts preserve the repository-owned 0.9
   ];
   mkdirSync(dirname(configPath), { recursive: true });
   writeFileSync(brief, "fixture", "utf8");
+  // The baseline predates model-name resolution, so these calls keep the names
+  // they were given: a fresh, empty catalog, not a missing one that agy and claude
+  // would refresh from the real vendors inside the call.
+  emptyModelCatalog(home);
 
   const baseEnv = { ...process.env, HOME: home, USERPROFILE: home };
   for (const key of Object.keys(baseEnv)) if (/^SECOND_OPINION_(?:PORTABLE_)?RECEIPT$/i.test(key)) delete baseEnv[key];
