@@ -53,8 +53,8 @@ display name, 논리 별칭을 대소문자·구분자 차이 없이 대조한�
 
 예: `gpt 5.5` 또는 `5.5` → `gpt-5.5`.
 버전 없는 이름은 그 이름을 가진 slug 중 **버전이 가장 높은 것**으로 바뀐다 — `sol` →
-`gpt-6-sol`, `luna` → `gpt-6-luna`, `terra` → `gpt-5.6-terra`, `astra` → `gpt-6-astra`
-(2026-09-23 cache). `gpt-5.6-sol`과 `gpt-6-sol`이 함께 있어도 `sol`은 항상 최신이다.
+`gpt-6-sol`, `luna` → `gpt-6-luna`, `terra` → `gpt-5.6-terra`, `astra` → `gpt-6-astra`.
+`gpt-5.6-sol`과 `gpt-6-sol`이 함께 있어도 `sol`은 항상 최신이다.
 Codex는 `-m sol`을 exit 1(*"The 'sol' model is not supported when using Codex with a ChatGPT
 account."*)로 거절하므로 원문을 넘기지 않는다. 버전을 적은 `gpt-5.6-sol`은 그대로 나간다.
 그 밖의 이름은 동순위 후보가 복수면 추측하지 않는다. 명시적 `--vendor codex` 호출에서 로컬
@@ -64,9 +64,8 @@ Codex cache에는 opencodex가 넣은 프록시 항목(`anthropic/claude-opus-5-
 공급자 네임스페이스를 단 슬러그, 설명 「Routed via opencodex → <공급자>」)도 있다. 디스패처는
 **opencodex 경유 항목으로 어떤 이름도 해석·라우팅하지 않는다** — 슬러그의 `/`나 그 설명 문구로
 알아보고 대조 대상에서 뺀다. `--vendor codex --model opus`·`pro`·`claude-opus-4-6`은 쓴 그대로
-나가고(0.9.18~0.9.20은 네임스페이스 해석으로 `pro`를 `google-antigravity/gemini-3.1-pro`로,
-`anthropic/claude-opus-4-6` 항목이 있으면 `claude-opus-4-6`을 그리로 바꿨다), 자동 라우팅에서도 이
-항목은 Codex 후보가 아니다. `--request-json` 경로의 Codex 이름 해석도 마찬가지다.
+나가고, 자동 라우팅에서도 이 항목은 Codex 후보가 아니다. `--request-json` 경로의 Codex 이름
+해석도 마찬가지다.
 
 고정 별칭표와 fuzzy matching은 없다. 공급자 통합 cache의 하루 한 번 갱신 정책은 SKILL.md를
 따른다. codex 호출은 통합 cache를 기다리지 않는다. receipt의 `modelRequested`는 호출자의 원문이고 `model`은 실제 CLI에
@@ -84,8 +83,7 @@ Claude는 `--tools` allowlist에서 내장 Write·Edit를 빼되 셸은 기본�
 plan + 읽기 전용 입력 프로필을 사용한다. Codex에는 그 층이 없다 — 권한을 좁히는 수단이 샌드박스(`-s read-only`)
 뿐인데 이 프로젝트는 샌드박스를 쓰지 않는다(맥락 전달이 어렵고 결과 품질이 떨어진다).
 `codex exec review --help`가 내놓는 옵션도 `--uncommitted`·`--base`처럼 **무엇을 볼지**를
-고르는 것이지 권한이 아니다. 실측: `--mode review`로 부른 호출의 영수증에
-`sandbox: danger-full-access`가 그대로 찍혔고, 그 값은 mode가 아니라
+고르는 것이지 권한이 아니다. `--mode review`로 부른 호출의 sandbox 값은 mode가 아니라
 `~/.codex/config.toml`의 `sandbox_mode`에서 온다.
 → **Codex 리뷰에서 파일을 지키는 것은 brief의 금지 지시뿐이다.** `--mode review`를
 읽기 전용 보증으로 계산하지 말고, 쓰기 금지가 중요하면 brief에 명시하고 호출 후
@@ -98,14 +96,11 @@ codex CLI가 스스로 읽어 프롬프트에 붙이는 `AGENTS.md`다. `--mode 
 argv에 `--disable hooks`와 `-c project_doc_max_bytes=0`이 붙는다.
 
 - **훅** — `hooks`는 codex의 정식 feature 이름이고 `--disable hooks`는 `-c features.hooks=false`와
-  같다. 실측(codex-cli 0.153.4): `codex features list --disable hooks`에서 `hooks`가 `false`로
+  같다. codex-cli 0.153.4 기준 `codex features list --disable hooks`에서 `hooks`가 `false`로
   뒤집히는 동안 `plugins`와 `skill_search`는 `true`로 남는다. **플러그인·스킬·MCP 도구를 끄는
   스위치가 아니다** — 다만 그 플러그인이 훅으로만 제공하던 부가 동작은 함께 멈춘다.
 - **문서** — `project_doc_max_bytes`는 프로젝트 `AGENTS.md`의 바이트 상한이라 0이면 안 붙는다.
   ⚠ **`CODEX_HOME`의 `AGENTS.md`는 이 키로 걷히지 않는다.** 다른 경로로 실려 그대로 남는다.
-  실측(2026-09-06): 어떤 레포에서 `codex debug prompt-input`이 기본 57,489 B였고
-  `-c project_doc_max_bytes=0`으로 54,967 B가 됐는데(프로젝트 `AGENTS.md` 2,429 B가 빠졌다),
-  전역 문서의 지시 블록은 그대로 남았다. `CODEX_HOME` 자체를 비운 경우에만 13,461 B로 떨어졌다.
 
 `--host-hooks`/`--host-docs`로 한 축을 다시 열고, `--no-host-hooks`/`--no-host-docs`로
 `--mode`를 안 준 호출에서도 막는다. ⚠ **`--mode default`는 인자가 아니다** — 「default」는
@@ -123,14 +118,14 @@ dry-run 행에는 계획, 그 밖의 spawn 전 실패 행에는 빈 배열**을 
 
 - 비-git cwd는 디스패처가 `--skip-git-repo-check`를 자동 판정·삽입한다
 - 출력 머리에 taskkill 한글 잡음(프로세스 정리 메시지)이 섞일 수 있음 — 본문만 취하면 됨
-- codex는 로컬 파일을 읽는다(전 sandbox 모드 실측). 큰 내용은 파일로 두고 경로를 지시한다.
-  과거 CryptUnprotectData 오류는 elevated sandbox 계정의 DPAPI stale 버그로 상위 수정됐다.
-  재발 시 `/sandbox-add-read-dir`로 읽기 디렉토리를 추가하거나 `[windows] sandbox="unelevated"`,
-  또는 bypass를 쓰며, 내용을 brief에 **발췌 동봉**하는 방법은 안전 폴백으로 유지한다
+- codex는 sandbox 모드와 무관하게 로컬 파일을 읽는다. 큰 내용은 파일로 두고 경로를 지시한다.
+  파일 읽기 오류가 발생하면 `/sandbox-add-read-dir`로 읽기 디렉토리를 추가하거나
+  `[windows] sandbox="unelevated"`, 또는 bypass를 쓰며, 내용을 brief에 **발췌 동봉**하는 방법은
+  안전 폴백으로 유지한다
 
 정본은 `scripts/vendor-policy.mjs`이며 아래 커맨드는 비정본 설명이다.
 
-> **Codex Desktop / Windows 호스트 참고** (실측 2026-07-08):
+> **Codex Desktop / Windows 호스트 참고**:
 > SKILL.md fast-path의 Bash 예시는 Bash (Git Bash / WSL) 문법이다. Codex Desktop의 `exec_command`는
 > 기본적으로 PowerShell을 실행하므로 Bash `timeout 280 ... < brief.txt` 구문은
 > 직접 사용할 수 없다. PowerShell 등가 패턴:
@@ -171,8 +166,8 @@ Use the built-in image_gen tool. Prompt: '<프롬프트>'. Size: 1024x1024 (또�
 
 **실행 (정본 — 디스패처)**: `node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor codex --operation image-generate --brief brief.txt [--model <라벨> --effort <레벨>] --out out.txt --err err.txt` — 디스패처가 `-s workspace-write`를 자동 삽입한다. raw `echo … | codex exec -s workspace-write …`는 비정본(내부 동작 설명용)이며 정본은 디스패처 호출이다.
 
-- **`-s workspace-write` 필수** — 기본 샌드박스에선 이미지 과업을 수행하지 못한다 (실측:
-  NO-IMAGE-CAPABILITY 회신)
+- **`-s workspace-write` 필수** — 기본 샌드박스에선 이미지 과업을 수행하지 못하고
+  NO-IMAGE-CAPABILITY 응답이 돌아온다
 - 산출물 원본은 `~/.codex/generated_images/<세션>/`에 생성된다. Windows에선 요청 경로로의
   복사가 샌드박스 오류로 실패할 수 있다(벤더는 실패를 정직하게 보고) — 그 폴더에서 최신
   파일을 직접 회수해 원하는 위치로 복사한다
@@ -197,7 +192,7 @@ Use the built-in image_gen tool. Prompt: '<프롬프트>'. Size: 1024x1024 (또�
   - 설치 경로: `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe` (installer가 User PATH에 자동 등록).
   - **업데이트도 위 명령 재실행**이 정본이다(별도 업데이트 명령 없음).
 
-- **여러 채널 혼용 금지**(2026-07-11 실측 사고): npm 전역·winget·수동 배치본을 섞으면 PATH 순서로
+- **여러 채널 혼용 금지**: npm 전역·winget·수동 배치본을 섞으면 PATH 순서로
   어느 게 실행될지 모호해져 **낡은 본이 조용히 잡히고**, 최신 모델(예: gpt-5.6)이 서버에서 400
   `"requires a newer version of Codex"`를 낸다(= CLI가 낡은 것이지 모델이 막힌 게 아니다).
   기존 난립본은 정리한다: `winget uninstall OpenAI.Codex` + npm shim(`~/AppData/Roaming/npm/codex{,.cmd}`)·
@@ -215,5 +210,4 @@ Use the built-in image_gen tool. Prompt: '<프롬프트>'. Size: 1024x1024 (또�
   재로그인이 필요 없는 게 정상.
 - `refresh_token_reused`는 같은 refresh token이 두 번 쓰인 것(전형: auth.json을
   머신 간 복사/sync). 재로그인으로 풀리지만, **auth 파일을 머신 간 복제하지 않는 것**이
-  근본 해법이다. 머신별 독립 `codex login`은 안전하게 공존한다 (통제 실험 2026-07-03:
-  한 머신의 신규 로그인 전후로 다른 머신 정상 동작 확인).
+  근본 해법이다. 머신별 독립 `codex login`은 안전하게 공존한다.

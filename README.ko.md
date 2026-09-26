@@ -5,7 +5,7 @@
 Claude Code 안에서 **다른 벤더의 AI**(Codex/GPT, Antigravity/Gemini, Grok, Devin)를 일상어로 부려 쓰는
 어댑터 스킬 — 점검·리뷰·의견부터 작업 오프로드, 이미지 생성까지.
 
-**버전 0.9.23**
+**버전 0.9.24**
 
 > "이 설계 코덱스로 점검받고 싶어" / "안티그래비티한테 물어봐" / "그록으로 봐줘" / "데빈으로 봐줘" / "교차 검증해줘"
 > "코덱스한테 로고 시안 이미지 만들어달라고 해줘" / "클로드 사용량 아끼게 이 번역은 제미나이로"
@@ -13,17 +13,13 @@ Claude Code 안에서 **다른 벤더의 AI**(Codex/GPT, Antigravity/Gemini, Gro
 
 쓰임 세 축: ① **의견** — 공유 맹점을 뚫는 교차 리뷰 (대표 용도이자 이름의 유래)
 ② **용량** — 원할 때 작업을 벤더 quota로 오프로드 (언제 돌릴지는 항상 사용자가 결정)
-③ **능력** — 벤더 고유 기능. 이미지 생성은 양 벤더 실측 검증됨
+③ **능력** — 벤더 고유 기능. 이미지 생성은 양 벤더에서 검증됨
 
 ## 왜
 
 같은 벤더의 렌즈를 아무리 늘려도 그 벤더가 공유하는 맹점은 뚫리지 않는다.
 Claude가 만든 것을 Claude가 검토하면 결함을 과소보고한다 — 벤더를 바꾸는 것이
 렌즈를 늘리는 것과는 다른 축의 검증이다. 이 스킬은 그 축을 대화 한 줄로 연다.
-
-실측 사례(이 스킬의 모태가 된 다중 라운드 리뷰 방법론 프로젝트): Claude 5렌즈가
-전원 놓친 결함을 외부 벤더 리뷰가 적발했고, Gemini breadth 리뷰는 2라운드 연속으로
-실질 P0급 결함(allowlist 우회, 슬롯 오염 래치 등)을 잡았다.
 
 ## 무엇을 주나
 
@@ -60,42 +56,39 @@ HTTP 실패 response와 raw 영수증은 `retryAfter`를 `{ observed, value }`�
 `value`는 수신한 `Retry-After` 원문이고, `observed: true`이면서 `value: null`이면 헤더가
 없었으며, `observed: false`이면 응답 헤더를 관측하지 못했다는 뜻이다.
 
-0.9.8 실패 어휘를 상수로 고정한 소비자는 연동 코드를 갱신해야 한다.
-`no-output-timeout` class는 그대로지만 payload 침묵 초과의 `failureActor`는 `vendor`, 호출자가
+실패 어휘에서 payload 침묵 초과의 `failureActor`는 `vendor`, 호출자가
 명시한 전체 마감 초과는 `caller`, 3600초 비용 상한 도달은 `dispatcher`다. 재시도 대기도
 호출마다 달라진다.
 
 `max_completion_tokens`가 너무 작으면 텍스트가 남지 않아 같은 provider 재시도를 소진할 수
-있다(Zhipu에서 16 token으로 실측). `gemini-2.5-flash`에서는 thinking 토큰이 16-token
-completion 예산을 먼저 잠식해 보이는 텍스트가 남지 않았다. subscription
-빈 출력의 재시도는 CLI 프로세스를 다시 띄우므로 최대 `1 + max_retries`회(기본값이면 6회)
-spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries`를 낮춘다.
+있다. subscription 빈 출력의 재시도는 CLI 프로세스를 다시 띄우므로 최대 `1 + max_retries`회
+(기본값이면 6회) spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries`를 낮춘다.
 
 - **자연어 트리거** — "코덱스로 점검", "제미나이로 봐줘", "다른 AI 시각으로", "second opinion"
 - **벤더 자동 제안** — 지정 안 하면 작업 성격으로 고른다: 코드 리뷰·기술 감사 → Codex /
   빠른 다각 점검·문서 검토·볼륨 호출 → Gemini / 중요 판단 → 둘 다 병렬 후 대조
-- **실측 기반 gotcha 내장** — 아래 함정들을 스킬이 알아서 피한다
+- **gotcha 내장** — 아래 함정들을 스킬이 알아서 피한다
 
-| 함정 (전부 실측) | 스킬의 처리 |
+| 함정 | 스킬의 처리 |
 |---|---|
-| `agy -p "<텍스트>"`는 stdin을 안 닫으면 **무한 hang** + argv라 **30,000자 한계** | brief를 stdin으로 전달(`-p - < brief.txt`) — hang 없음, 105KB 실측 통과 |
-| `--model`은 디스플레이 라벨(`"Gemini 3.1 Pro (High)"`)과 `agy models`의 정규 slug(`gemini-3.1-pro-high`) 둘 다 유효(agy 1.1.5). `agy models`는 slug를, 피커는 라벨을 보여줌. 모르는·깨진 이름은 **exit 1로 loud reject**(구버전은 조용히 강등) | 어느 출처든 그대로 복사하고 exit code 확인. 카탈로그가 캐시돼 있으면 라벨은 slug로 바뀌어 전달되고, 영수증의 `modelRequested`에는 쓴 문자열이 그대로 남음 |
+| `agy -p "<텍스트>"`는 stdin을 안 닫으면 **무한 hang** + argv라 **30,000자 한계** | brief를 stdin으로 전달(`-p - < brief.txt`) — hang 없음, argv 한계 없음 |
+| `--model`은 디스플레이 라벨(`"Gemini 3.1 Pro (High)"`)과 `agy models`의 정규 slug(`gemini-3.1-pro-high`) 둘 다 유효(agy 1.1.5 이상). `agy models`는 slug를, 피커는 라벨을 보여줌. 모르는·깨진 이름은 **exit 1로 loud reject** | 어느 출처든 그대로 복사하고 exit code 확인. 카탈로그가 캐시돼 있으면 라벨은 slug로 바뀌어 전달되고, 영수증의 `modelRequested`에는 쓴 문자열이 그대로 남음 |
 | subprocess·영수증 cwd가 temp여도 AGY가 이전 host project를 계속 사용할 수 있음 | 모든 AGY 호출에 요청 workspace를 `--add-dir`로 결속하고, 필요하면 `--expect-output`으로 hidden token 읽기를 검사 |
 | `terra`·`gpt 5.5`·`5.6 sol@ultra`처럼 입력했지만 Codex CLI는 현재 정규 slug를 요구 | 대소문자·구분자와 UI effort 명칭을 정규화하고 Codex live cache에서 해석(`gpt 5.5` → `gpt-5.5`). 선택 모델이 광고한 effort만 허용(`low`부터 `ultra` 중 지원값) |
-| Codex 모델 캐시에 opencodex 프록시 항목도 들어 있음(2026-09-24 실측 38개 중 31개: `anthropic/claude-opus-5-5`·`xai/grok-4.7`처럼 공급자 네임스페이스를 단 슬러그, 설명 「Routed via opencodex」). 그 프록시로는 라우팅하면 안 됨 | **opencodex 경유 항목으로는 어떤 이름도 해석·라우팅하지 않음** — 벤더를 박든 생략하든, 버전이 있든 없든. 슬러그의 `/`나 그 설명으로 알아보고 Codex 카탈로그에서 뺌. 이 항목만 가리키던 이름은 `--vendor codex`에서 쓴 그대로 나가고(`claude-opus-4-6`은 `claude-opus-4-6`, `pro`는 `pro` — 0.9.18~0.9.20은 네임스페이스 해석으로 `anthropic/claude-opus-4-6`·`google-antigravity/gemini-3.1-pro`로 바꿨음), 자동 라우팅에서는 Codex 후보가 아님. `--request-json` 경로의 Codex 이름 해석도 같은 카탈로그를 읽음 |
-| 모델 버전이 빠르게 바뀌는데, 벤더는 버전 없는 이름을 거절함(codex `-m sol`, agy `--model gemini`, grok `-m grok` 모두 exit 1) | 버전 없는 이름은 `--vendor`를 박든 생략하든 카탈로그에서 그 계열의 최신 모델로 바꿈. 2026-09-23 카탈로그 기준 `sol` → `gpt-6-sol`, `terra` → `gpt-5.6-terra`, `opus` → `claude-opus-5-5`, `gemini` → `gemini-3.8-flash`(agy는 `--effort`를 따로 받음), `grok` → `grok-4.7`. 버전은 이름에서 숫자로 읽는다(`3.10`이 `3.8`보다 높고, `claude-opus-5-5`는 5.5, 8자리 날짜와 이름 끝의 `-0813` 같은 4자리 월일은 버전이 아니며, `-high`·`-fast` 같은 effort·속도 꼬리는 새 버전이 아님). 버전 없는 이름이 이미 카탈로그 모델 하나의 제 이름이면 다른 라인과 견주지 않고 그 모델로 감. 버전을 적은 이름은 다른 버전으로 바꾸지 않고, 후보가 없는 버전 없는 이름은 쓴 그대로 넘김. 영수증에는 `modelRequested`와 실제 돈 버전 `model`이 따로 남음 |
+| Codex 모델 캐시에 opencodex 프록시 항목도 들어 있음(`anthropic/claude-opus-5-5`·`xai/grok-4.7`처럼 공급자 네임스페이스를 단 슬러그, 설명 「Routed via opencodex」). 그 프록시로는 라우팅하면 안 됨 | **opencodex 경유 항목으로는 어떤 이름도 해석·라우팅하지 않음** — 벤더를 박든 생략하든, 버전이 있든 없든. 슬러그의 `/`나 그 설명으로 알아보고 Codex 카탈로그에서 뺌. 이 항목만 가리키던 이름은 `--vendor codex`에서 쓴 그대로 나가고(`claude-opus-4-6`은 `claude-opus-4-6`, `pro`는 `pro`), 자동 라우팅에서는 Codex 후보가 아님. `--request-json` 경로의 Codex 이름 해석도 같은 카탈로그를 읽음 |
+| 모델 버전이 빠르게 바뀌는데, 벤더는 버전 없는 이름을 거절함(codex `-m sol`, agy `--model gemini`, grok `-m grok` 모두 exit 1) | 버전 없는 이름은 `--vendor`를 박든 생략하든 카탈로그에서 그 계열의 최신 모델로 바꿈. `sol` → `gpt-6-sol`, `terra` → `gpt-5.6-terra`, `opus` → `claude-opus-5-5`, `gemini` → `gemini-3.8-flash`(agy는 `--effort`를 따로 받음), `grok` → `grok-4.7`. 버전은 이름에서 숫자로 읽는다(`3.10`이 `3.8`보다 높고, `claude-opus-5-5`는 5.5, 8자리 날짜와 이름 끝의 `-0813` 같은 4자리 월일은 버전이 아니며, `-high`·`-fast` 같은 effort·속도 꼬리는 새 버전이 아님). 버전 없는 이름이 이미 카탈로그 모델 하나의 제 이름이면 다른 라인과 견주지 않고 그 모델로 감. 버전을 적은 이름은 다른 버전으로 바꾸지 않고, 후보가 없는 버전 없는 이름은 쓴 그대로 넘김. 영수증에는 `modelRequested`와 실제 돈 버전 `model`이 따로 남음 |
 | `opus`·`opus 4.8`·`fable`처럼 모델명만 알고 벤더는 모름 | cache-first Codex·AGY·Claude 메타데이터를 대조. 버전 없는 `opus`·`fable`은 다른 벤더처럼 Claude의 최신 slug(`claude-opus-5-5`·`claude-fable-5-1`)로 전달. 버전명은 고정 family 표가 아니라 현재 메타데이터에서 유도 |
 | `opus 4.6`·`sonnet 4.6`이 Claude Code와 AGY 양쪽에 존재 | AGY의 정확한 카탈로그 항목이 Claude의 family/version 추론보다 우선. `--vendor` 생략 시 `Claude Code opus 4.6`, 또는 `--vendor claude --model claude-opus-4-6`으로 Claude 선택. 박힌 `--vendor`는 절대 다른 벤더로 새지 않으므로 `--vendor claude --model "opus 4.6"`도 Claude로 간다 |
-| 박힌 `--vendor`는 호출자가 쓴 `--model` 문자열을 그대로 벤더에 넘겨, 그 벤더가 게시하지 않는 이름이 `--dry-run`을 통과하고 실호출에서야 거절됨 | 그 **한 벤더의 카탈로그로만** `--model`을 해석(`--vendor agy --model "opus 4.6"` → `claude-opus-4-6-thinking`). 자동 라우팅과 같은 하루 한 번 갱신을 따른다. 버전 없는 이름은 후보가 여럿이어도 그 계열의 최신으로 바꾸고, 그 밖의 이름은 한 모델로 정해지지 않으면 호출자가 쓴 문자열을 그대로 넘겨 맞게 쓴 이름을 바꿔 부르지 않음 |
+| 박힌 `--vendor`라도 그 벤더가 게시하지 않는 이름이 그대로 넘어가면 안 됨 | 그 **한 벤더의 카탈로그로만** `--model`을 해석(`--vendor agy --model "opus 4.6"` → `claude-opus-4-6-thinking`). 자동 라우팅과 같은 하루 한 번 갱신을 따른다. 버전 없는 이름은 후보가 여럿이어도 그 계열의 최신으로 바꾸고, 그 밖의 이름은 한 모델로 정해지지 않으면 호출자가 쓴 문자열을 그대로 넘겨 맞게 쓴 이름을 바꿔 부르지 않음 |
 | 호출마다 공급자 카탈로그를 조회하면 시작·네트워크 시간이 낭비되고, 갱신하지 않으면 새 모델을 놓침 | 모델 메타데이터만 `~/.second-opinion/model-catalog-v1.json`에 캐시하고 하루 한 번 갱신. 나이는 디스패처 자신의 마지막 갱신부터 잰다. 24시간 안이면 갱신하지 않는다. 24시간을 넘었거나 지난 갱신에서 claude·agy·grok 중 한 벤더라도 조회에 실패했으면(설치되지 않은 벤더 CLI는 실패로 치지 않고, Codex는 매 호출 자기 로컬 캐시를 다시 읽으므로 이 재시도 대상이 아니다) `--vendor devin`을 뺀 호출(`--model`이 없어도)이 **호출과 떨어진 백그라운드 갱신**을 하나 띄우고 자기는 있는 카탈로그로 가며, 결과는 다음 호출부터 쓴다. 동시 호출도, 앞 갱신이 도는 중에 온 호출도 갱신을 하나만 띄운다. 조회가 오류로 끝나거나 0건인 벤더는 마지막 성공 목록을 쓰고, 다음 호출이 24시간을 기다리지 않고 다시 띄운다. 캐시 파일이 없을 때만 호출 안에서 갱신하며 자동 라우팅과 `--model`을 준 `--vendor claude\|agy\|grok`만 그렇다. `--vendor codex`와 `--model` 없는 호출은 기다리지 않고, `--vendor devin`은 카탈로그를 건드리지 않으며, `--request-json`은 매핑도 갱신도 하지 않는다. 이미 로컬인 Codex cache는 현재 `CODEX_HOME`에서 다시 읽음 |
 | Windows에서 codex sandbox의 **파일 읽기 불능** | "파일 읽어봐" 대신 내용을 brief에 발췌 동봉 |
 | 이미지 생성: agy는 **지정 저장 위치를 무시**(자기 scratch 폴더에 저장), codex는 **쓰기 샌드박스 필요** + Windows 복사 실패 가능 | 벤더별 실제 산출물 위치를 알고, 파일 존재를 직접 확인 후 원한 위치로 옮김 — 벤더의 "저장했다"를 성공으로 안 침 |
 | "이상 없음"은 약한 신호(특히 Gemini의 false-negative 편향) | "문제를 못 찾음 ≠ 문제 없음" 명시 전달 |
 | Grok `--tools`는 이름이 전부 틀리면 조용히 열린다. Grok은 Claude/Cursor 하네스 설정을 기본으로 읽는다 | plan/review는 `--permission-mode plan`을 바닥으로 쓰고 격리 env 13개 강제(Claude 6 + Cursor 6 + `GROK_CODEX_SESSIONS_ENABLED`). 프로젝트 루트 `CLAUDE.md`는 남을 수 있다 |
-| AGY 호출이 effort를 모델 slug 안에 넣음 | agy 1.1.26부터 effort가 별도 축(`--effort low|medium|high`)이다. 옛 `-high` 접미사는 단독으로는 아직 통하지만 `--effort`와 섞으면 **한쪽을 고르는 게 아니라 exit 1**이고, 접미사 없는 이름을 effort 없이 주면 그것도 거부된다. dispatcher는 두 표기를 그대로 전달해 벤더가 실제로 받은 것이 영수증에 남게 한다. 버전이 아예 없는 이름(`gemini`)만 최신 slug의 effort 꼬리 없는 형태로 바꾸며, 같은 규칙대로 `--effort`를 함께 준다 — 대신 채워 주지 않는다 |
-| 로컬을 안 건드렸는데 AGY 기본 모델이 바뀜 | 기본값이 설정 파일이 아니라 Antigravity 계정 쪽에 있다. 실측 — 아무것도 안 고쳤는데 `gemini-3.7-flash`에서 `gemini-3.8-flash-high`로 옮겨갔다. **재현이 필요한 호출은 `--model`을 박을 것** |
+| AGY 호출이 effort를 모델 slug 안에 넣음 | agy 1.1.26 이상에서는 effort가 별도 축(`--effort low|medium|high`)이다. 옛 `-high` 접미사는 단독으로는 아직 통하지만 `--effort`와 섞으면 **한쪽을 고르는 게 아니라 exit 1**이고, 접미사 없는 이름을 effort 없이 주면 그것도 거부된다. dispatcher는 두 표기를 그대로 전달해 벤더가 실제로 받은 것이 영수증에 남게 한다. 버전이 아예 없는 이름(`gemini`)만 최신 slug의 effort 꼬리 없는 형태로 바꾸며, 같은 규칙대로 `--effort`를 함께 준다 — 대신 채워 주지 않는다 |
+| 로컬을 안 건드렸는데 AGY 기본 모델이 바뀜 | 기본값이 설정 파일이 아니라 Antigravity 계정 쪽에 있다. **재현이 필요한 호출은 `--model`을 박을 것** |
 | Grok 리뷰 예시가 reasoning effort를 빼면 벤더 기본값으로 조용히 실행됨 | 표준 리뷰 예시는 가성비 기준 `--effort medium`을 명시. dispatch가 그대로 전달하고 영수증의 `effortRequested`에 요청값을 남김 |
-| 리뷰어에게 exact current diff 확인이나 스위트 실행을 시킴 | Claude plan/review에는 `git diff`와 이력 조회용 Bash/PowerShell과 `node` 허용 규칙 하나가 있어 리뷰어가 `node --test`를 직접 돌리고, `--no-host-shell`로 둘 다 제거할 수 있다. Devin plan/review는 `exec`를 열어 두어 같은 명령을 직접 돌린다. Grok·AGY explicit mode에는 git shell이 없으므로 linked-worktree 리뷰는 **변경 파일 목록과 unified diff 전문**을 brief에 넣고, 스위트 결과는 **호출자가 직접 재서 값으로** 준다 |
+| 리뷰어에게 exact current diff 확인이나 스위트 실행을 시킴 | Claude plan/review에는 `git diff`와 이력 조회용 Bash/PowerShell과 `node` 허용 규칙 하나가 있어 리뷰어가 `node --test`를 직접 돌리고, `--no-host-shell`로 둘 다 제거할 수 있다. `git -C`와 PowerShell 스크립트 문법은 거부되므로 brief에 거부된 명령을 평범한 형태로 다시 쓰라고 적는다. Devin plan/review는 `exec`를 열어 두어 같은 명령을 직접 돌린다. Grok·AGY explicit mode에는 git shell이 없으므로 linked-worktree 리뷰는 **변경 파일 목록과 unified diff 전문**을 brief에 넣고, 스위트 결과는 **호출자가 직접 재서 값으로** 준다 |
 | Devin이 호출자 agent/editor 스킬과 MCP 설정을 가져옴 | 모든 Devin 호출에 `read_config_from` 여덟 축을 끈 bundled config를 전달. default는 전권, plan/review는 쓰기 도구를 막는 PreToolUse hook을 더해 거절 이유를 자식이 관측한 뒤 계속 실행하되 `exec`는 열어 둠 — 셸이 도는 이상 셸로 파일을 쓸 수 있어 쓰기를 붙잡는 것은 brief의 금지 지시 |
 
 - **실행 영수증** — 벤더를 부른 뒤 관측한 것을 한 줄로 남긴다: 요청한 벤더·모델,
@@ -176,11 +169,13 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
   자식이 스킬·플러그인을 쓰게 하며, 구성을 통째로 닫던 스위치 하나를 대신하므로 훅·MCP·
   CLAUDE.md는 그 경우 모든 mode에서 기본 차단이 된다. claude 리뷰어에게는 **git 이력을 읽고
   시험을 돌리도록 셸도 준다** — 허용 규칙 `Bash(node *)`·`PowerShell(node *)` 하나를 함께 싣는다.
-  자식 정책이 `dontAsk`에서 `node`를 거부했기 때문이며, 이 규칙은 여는 것이지 묶는 것이 아니다.
-  셸을 묶는 목록은 붙이지 않는다. 허용 목록이 도구를 묶지 못하는 것을 실측했고,
-  금지 목록은 같은 효과를 내는 다른 이름이 남아 증명이 될 수 없다. `node`는 스크립트를 무엇이든
+  이 규칙은 여는 것이지 묶는 것이 아니다. 셸을 묶는 목록은 붙이지 않는다. `node`는 스크립트를 무엇이든
   실행하므로 리뷰어를 실제로 붙잡는 것은 brief의 금지 지시이며, `--no-host-shell`로 셸과 규칙을
-  함께 닫을 수 있다. 이것은 **구성 격리이지 filesystem
+  함께 닫을 수 있다. 자식의 `dontAsk`는 셸 명령을 모양으로 거른다(claude 2.1.283 기준).
+  평범한 읽기 명령은 `;`로 잇거나 파이프·`2>&1`을 붙이거나 cwd 밖 경로를 줘도 돌고 `node`도 돈다.
+  `git -C`와 PowerShell 스크립트 문법(변수 대입, `foreach`, 괄호식, `$()` 치환)은 거부되고, 한 줄에
+  하나라도 섞이면 줄 전체가 거부된다. claude 리뷰어 brief에 「거부는 그 명령 하나에 대한 것이니 평범한 형태로 다시 쓰고, 해시·줄 수 같은
+  계산은 `node -e`로 하라」고 싣는다. 이것은 **구성 격리이지 filesystem
   sandbox가 아니며** full-access와 공존한다. 부모 전용 `CLAUDECODE` marker는 child
   환경에서 제거해 의도한 nested 호출이 vendor CLI에서 다시 거부되지 않게 한다.
   기본값은 꺼짐이며, 설정 안 하면 아무것도 쓰지 않는다.
@@ -197,8 +192,8 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
   plan + 읽기 전용 입력 프로필을 사용한다. 그런데 Codex CLI에는 그 층이 없다 — 권한을 좁히는 수단이 샌드박스
   (`-s read-only`)뿐이고 이 프로젝트는 샌드박스를 쓰지 않는다. Codex의 `exec review`는
   리뷰 워크플로를 고르는 것이지 권한 수준이 아니다(`codex exec review --help`의 옵션도
-  `--uncommitted`·`--base` 같은 대상 지정뿐이다). 실측: `--mode review`로 부른 Codex
-  호출의 영수증에 `sandbox: danger-full-access`가 그대로 찍혔고, 그 값은 mode가 아니라
+  `--uncommitted`·`--base` 같은 대상 지정뿐이다). `--mode review`로 부른 Codex
+  호출의 sandbox 값은 mode가 아니라
   `~/.codex/config.toml`에서 온다. Codex 리뷰에서 파일을 지키는 것은 brief의 금지 지시뿐이니
   `--mode review`를 안전장치로 계산하지 말 것. Grok plan/review는 Codex보다 강하다 —
   `--permission-mode plan`과 닫힌 `--tools` allowlist. 도구 이름이 전부 틀리면
@@ -228,7 +223,7 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
 - **Antigravity CLI (`agy`)** — Windows PowerShell: `irm https://antigravity.google/cli/install.ps1 | iex`
   (macOS/Linux: `curl -fsSL https://antigravity.google/cli/install.sh | bash` /
   Windows CMD: `curl -fsSL https://antigravity.google/cli/install.cmd -o install.cmd && install.cmd && del install.cmd`) 후 Google 계정 로그인.
-  **v1.0.15 이상 필수** — 그 이전 버전은 Windows 비-TTY에서 출력이 조용히 유실된다(수정된 버그)
+  **v1.0.15 이상 필수** — 그보다 낮은 버전은 Windows 비-TTY에서 출력이 조용히 유실된다
 - **Grok CLI** — Windows PowerShell: `irm https://x.ai/cli/install.ps1 | iex` 후
   `grok login` (SuperGrok OAuth). 텍스트만. 이미지 과업은 거부한다.
 - **Devin CLI** — Devin OAuth 로그인 후 `--vendor devin`으로 명시 호출한다. 텍스트만이며 Windows
@@ -290,8 +285,8 @@ claude -p "/plugin marketplace add stepbyjason-lab/second-opinion"
 claude plugin install second-opinion@second-opinion
 ```
 
-`claude plugin install`은 `--help`에 안 나오지만 동작한다(Windows Claude Code,
-2026-07 실측). 대화형 `/plugin` 다이얼로그를 못 여는 환경에서 유용.
+`claude plugin install`은 `--help`에 안 나오지만 동작한다(Windows Claude Code에서 확인). 대화형
+`/plugin` 다이얼로그를 못 여는 환경에서 유용.
 
 Claude 이외의 호스트에서는 그 호스트의 available-skills 카탈로그가 제공한 정확한 스킬
 경로를 사용한다. root alias와 상대 경로를 그대로 결합하며, 캐시에서 marketplace/plugin
@@ -351,7 +346,7 @@ unified diff 전문을 넣는다. 이 explicit review mode에는 `git diff`가 �
 - 벤더 CLI의 **로컬 인증 상태**를 그대로 쓴다 — 로그인이 만료되면 호출이 실패하고, 스킬은 그 사실을 그대로 보고한다(성공 위장 없음). 벤더를 **지명**했다면 설치/로그인 안내 후 재시도를 제안한다 — 조용히 다른 리뷰어로 대체하지 않는다(대체는 동의 시에만)
 - 사용량은 각 벤더 구독의 quota를 소모한다
 - 세션 이관·백그라운드 잡 관리 같은 무거운 기능은 없다 — 그건 [openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc)(공식, Apache-2.0)를 병행 설치하면 된다. 이 스킬과 배타적이지 않다
-- Windows(Git Bash)에서 실측 검증됐다(이미지 생성 포함). macOS/Linux는 동일 명령 구조지만 이 저장소 시점엔 미실측이다
+- Windows(Git Bash)에서 검증됐다(이미지 생성 포함). macOS/Linux는 동일 명령 구조지만 이 저장소 시점엔 미실측이다
 
 ## 라이선스
 

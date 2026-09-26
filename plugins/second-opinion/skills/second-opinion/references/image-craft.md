@@ -112,9 +112,9 @@ plastic skin, beauty filter` · UGC(의도적 불완전): `professional studio, 
 - 구조화(JSON) 프롬프트의 정밀도 향상 효과 크기
 - 네이티브 해상도 상한·K 선택 기준
 - 레퍼런스 이미지 개수·마스크리스 편집 지원
-- 텍스트 렌더링 단어수 한계(5단어는 실측 기준치)
+- 텍스트 렌더링 단어수 한계(5단어를 권장 기준치로 삼는다)
 - 안전필터 민감도
 
 ---
-_출처: nanobanana(크래프트 원리) + codex-image(품질 서술어·네거티브 미지원 주의) 증류(2026-07-11).
+_출처: nanobanana(크래프트 원리) + codex-image(품질 서술어·네거티브 미지원 주의) 증류.
 벤더 전용 기계(JSON 스키마·API 파라미터·모델ID·SynthID·API키·guidance_scale 수치)는 제외._

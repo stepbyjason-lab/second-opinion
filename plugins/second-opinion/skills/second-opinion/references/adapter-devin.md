@@ -1,6 +1,6 @@
 # adapter-devin — Devin CLI subscription channel
 
-> 실측 기준: Devin CLI 3000.10.31, Windows, 2026-09-22.
+> 기준: Devin CLI 3000.10.31, Windows.
 
 ## 정식 호출
 
@@ -18,14 +18,14 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor devin --operation text 
 ## 모델 — SWE-2
 
 Devin에는 effort 인자가 없다. **effort는 슬러그 끝으로 고른다** — `--effort`를 주면 spawn 전에 거부된다.
-이 채널에서 쓰는 모델은 SWE-2 하나다(`devin models list`, 2026-09-24 실측).
+이 채널에서 쓰는 모델은 SWE-2 하나다(`devin models list`로 확인).
 
 | `--model` | effort | 비고 |
 |---|---|---|
 | `swe-2-high` | high | Free · 262K context |
 | `swe-2-medium` | medium | Free · 262K context |
 | `swe-2-max` | max | Free · 262K context |
-| `swe` | high | 별칭. 실호출 영수증 `vendorUsage.actualModels`가 `SWE-2 High`였다(2026-09-24) |
+| `swe` | high | 별칭. 실호출 영수증 `vendorUsage.actualModels`는 `SWE-2 High`로 남는다 |
 
 - 무엇이 실제로 돌았는지는 영수증 `vendorUsage.actualModels`(transcript의 `agent.model_name`)로 확인한다.
   영수증 `model`은 호출자가 준 문자열 그대로다.
@@ -52,12 +52,12 @@ dispatcher는 default에 `scripts/devin-isolated-config.json`, plan/review에
 `read_config_from`의 `agents_standard`, `cursor`, `windsurf`, `claude`, `copilot`, `opencode`, `vscode`,
 `zed`를 모두 `false`로 둔다. read-only 파일은 추가로 위 네 도구를 PreToolUse에서 block하고
 `exec`는 열어 둔다.
-`apply_patch`도 예방적으로 matcher에 포함하지만, Devin CLI 3000.10.31에서는 미노출 도구이므로
+`apply_patch`도 예방적으로 matcher에 포함하지만, Devin CLI 3000.10.31 기준 미노출 도구이므로
 실제 호출·차단 성공으로 세지 않는다.
 두 설정에는 계정·조직 ID나 절대 홈 경로 같은 기계 고유값을 넣지 않으며, `shell.setup_complete`만으로
 새 설정 위치의 첫 호출 환영 배너를 막는다.
-3000.10.31 실측에서 이 설정으로 `devin mcp list`는 서버 0개였고,
-`devin skills list --json`에는 Devin이 자체 제공하는 기본 항목만 남았다.
+이 설정에서 `devin mcp list`는 서버 0개이고,
+`devin skills list --json`에는 Devin이 자체 제공하는 기본 항목만 남는다.
 
 이 격리는 호출자 하네스의 스킬·MCP를 끄는 설정이지 filesystem sandbox가 아니다. 프로젝트나 사용자
 경로의 `AGENTS.md`처럼 Devin이 상시 지시 문서로 직접 찾는 표면은 차단되지 않는다. receipt의
@@ -66,8 +66,8 @@ portable 영수증은 그 경로를
 `bundled:devin-isolated-config.json` 또는 `bundled:devin-readonly-config.json`으로 기록한다.
 
 검증 범위: 로컬 단위 테스트는 설정의 matcher와 hook 명령이 반환하는 block 결정·이유를 확인한다.
-Devin의 실제 도구 호출이나 거절 뒤 실행 계속 여부를 대신 증명하지 않는다. 3000.10.31 실호출에서는
-plan/review 각각 쓰기 도구의 차단 이유와 이후 읽기 단계 진행을 확인했다.
+Devin의 실제 도구 호출이나 거절 뒤 실행 계속 여부를 대신 증명하지 않는다. 3000.10.31 기준 실호출에서
+plan/review 각각 쓰기 도구의 차단 이유와 이후 읽기 단계 진행이 확인된다.
 
 ## 영수증
 

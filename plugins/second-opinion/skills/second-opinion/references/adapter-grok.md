@@ -18,9 +18,7 @@ Grok CLI의 `--effort`는 선택값이다. 다만 Madi를 비롯한 코드 리�
 ## Linked Git worktree의 current-diff 리뷰
 
 Grok explicit plan/review는 `read_file`, `grep`, `list_dir`만 가진다. terminal·`git diff`가 없으므로
-worktree 루트의 `.git`이 파일인 경우 current diff를 스스로 발견할 수 없다. 실제 사례에서
-`list_dir <worktree>/.git`은 “file, not a directory”로 실패한 뒤 부모 Git 관리 경로·`.scratch`를
-반복 탐색해 리뷰가 무효가 됐다.
+worktree 루트의 `.git`이 파일인 경우 current diff를 스스로 발견할 수 없다.
 
 current-diff 리뷰의 caller는 brief `대상 내용`에 다음을 **전문으로** 넣는다.
 
@@ -42,7 +40,7 @@ dispatcher의 기본 3600초는 완료 목표가 아니라 runaway 비용 백스
 
 ### ⚠ `--tools` allowlist는 이름이 맞을 때만 막는다 — 전부 틀리면 **조용히 열린다**
 
-**실측 2026-08-19 (grok 1.0.5, `--permission-mode bypassPermissions` 고정, 파일 쓰기 요청)**
+**grok 1.0.5 기준, `--permission-mode bypassPermissions` 고정, 파일 쓰기 요청**
 
 | `--tools` 값 | 읽기 | 쓰기 | 결과 |
 |---|---|---|---|
@@ -59,7 +57,7 @@ plan/review가 소리 없이 full-access가 된다.** 실패가 산출물에 드
 
 ### ⚠ Grok은 다른 하네스 설정을 기본으로 읽어 온다 — 리뷰 호출에서 env로 끈다
 
-`grok inspect` 실측(2026-08-19):
+`grok inspect` 결과:
 
 ```
 Harness Compatibility
@@ -68,9 +66,8 @@ Harness Compatibility
 └ codex  : sessions — on (default)
 ```
 
-**읽기만이 아니라 따른다.** 같은 프로브에서 응답 `thought`에 호출자의 전역 `Claude.md` 규칙
-(*"MemKraft rule about searching first on each turn"* · *"check memory first"*)이 그대로 나타났다.
-`Permissions` 절도 `~/.claude/settings.json`을 원본으로 읽고(97 loaded / 20 skipped) 모르는 항목만 건너뛴다.
+**읽기만이 아니라 따른다.** 호출자의 전역 지침 파일 내용이 응답에 그대로 반영될 수 있다.
+`Permissions` 절도 `~/.claude/settings.json`을 원본으로 읽고 모르는 항목만 건너뛴다.
 
 끄는 키(grok 1.0.5 user-guide): env > config.toml > default(on).
 `GROK_CONFIG` overlay는 compat 테이블을 받지 않는다.
@@ -85,7 +82,7 @@ Harness Compatibility
 
 사용자 `config.toml`은 쓰지 않는다. default 호출은 강제하지 않는다.
 
-**켜서 검증하지 않는다.** 호환 on은 이미 실측됐고(지침·훅·MCP를 읽고 세션이 죽는다).
+**켜서 검증하지 않는다.** 호환을 켜면 지침·훅·MCP를 읽어 세션이 죽는 위험이 있다.
 검증은 **꺼진 상태**만 본다: `grok inspect`의 Harness Compatibility가 off인지, spawn env가
 13개 모두 `false`인지. 칸을 `true`로 올려 덮기를 확인하는 호출은 하지 않는다.
 
@@ -105,16 +102,15 @@ Harness Compatibility
 
 - brief는 `--prompt-file <brief 절대경로>`로 넘긴다. dispatcher는 stdin을 닫기만 하고 brief 본문을 쓰지 않는다.
 - `--request-json` 구독 생성은 `--output-format json` 결과의 `text` 필드를 응답 본문과 stream chunk로 꺼낸다. 전체 JSON 문서를 `response.text`나 chunk로 쓰지 않는다. `text`가 없거나 JSON이 아니면 fail-closed.
-- `--output-format json` — 실측(2026-08-19, grok 1.0.5, SuperGrok OAuth):
+- `--output-format json` (grok 1.0.5 기준, SuperGrok OAuth):
   - `text`, `stopReason`, `usage.input_tokens` / `output_tokens` / `total_tokens`
   - `modelUsage["grok-4.6-build"]` (요청 slug `grok-4.6`의 실행 키)
-  - `total_cost_usd` 가 이 프로브에서는 존재했음. 없으면 토큰 필드로만 귀속한다.
+  - `total_cost_usd`가 있으면 사용하고, 없으면 토큰 필드로만 귀속한다.
 - image-analyze / image-generate 는 거부한다.
 
 ## 모델
 
-`grok models` 실측: default `grok-4.6`, available `grok-4.6` · `grok-4.5`.
-2026-09-23 실측: `grok-4.7`(default) · `grok-4.7-build-fast` · `grok-4.6` · `grok-4.5`.
+`grok models` 결과: `grok-4.7`(default) · `grok-4.7-build-fast` · `grok-4.6` · `grok-4.5`.
 버전 없는 `--model grok`은 grok이 `unknown model id`로 거절하므로, dispatcher가 이 목록에서
 가장 높은 버전의 꼬리 없는 라인(`grok-4.7`, `grok-4.7-build-fast` 아님)으로 바꿔 넘긴다.
 요청 모델과 `modelUsage` 키가 접두로 맞으면 통과한다 (`grok-4.6` ↔ `grok-4.6-build`).

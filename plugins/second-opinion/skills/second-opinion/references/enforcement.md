@@ -2,7 +2,7 @@
 
 second-opinion은 **중개(relay) 스킬**이다 — 요청을 외부 벤더로 넘기고 결과를 돌려줄 뿐, **아무것도 차단하지 않는다.** 커맨드 정합성(예: 이미지 생성일 때만 `-s workspace-write`)은 디스패처(`scripts/dispatch.mjs`)가 보장하는 **도구**다.
 
-"Claude가 벤더를 직접 부르지 말고 반드시 디스패처를 거치게" 강제하고 싶다면, 그건 **부르는 쪽(caller) 프로젝트의 정책**이다. 중개자가 온 머신에 전역으로 강제하면 다른 프로젝트(madi 등)의 정당한 codex/agy 직접호출까지 막는다 — 그게 0.5.x가 저지른 버그이자 이 문서의 이유다.
+"Claude가 벤더를 직접 부르지 말고 반드시 디스패처를 거치게" 강제하고 싶다면, 그건 **부르는 쪽(caller) 프로젝트의 정책**이다. 중개자가 온 머신에 전역으로 강제하면 다른 프로젝트(madi 등)의 정당한 codex/agy 직접호출까지 막는다 — 그래서 강제는 caller 스코프에서만 한다.
 
 ## caller가 자기 프로젝트에서 강제하는 법
 
@@ -54,13 +54,13 @@ process.exit(0);
 
 ### 3. 탐지 로직 — 복사해서 쓴다 (import 아님)
 
-탐지 참조 구현은 `scripts/vendor-policy.mjs`의 `detectDirectInference(command)`다. 모델은 **default-deny**다 — codex/agy/grok 실행 자체를 기본 차단하고, 명시적 관리 서브커맨드 allowlist(`login`·`--version`·`models` 등)이거나 순수 `--help`/`--version`일 때만 통과시킨다. (이전 버전은 codex `exec` 서브커맨드 하나만 걸러냈는데, codex는 bare 호출·`review`·`resume`·`fork`·추론전용 플래그(`-m`/`-i` 등)로도 추론을 돌린다 — deny-list 방식은 이 진입점들을 전부 놓쳤다. 지금은 그 갭을 닫았다. Grok은 `$grok`/`${grok}` 변수형과 `--prompt-file` 추론도 같은 default-deny다.) 셸 구분자·투명 wrapper(`timeout`·`env` 등)·셸 wrapper(`bash -lc`·`cmd /c`·`powershell -Command`) 재귀·패키지 러너(`npx`·`pnpm exec` 등)·heredoc 본문 제외·`codex sandbox`/`codex cloud exec` 커맨드 캐리어까지 판정해 벤더명 또는 null을 돌려준다.
+탐지 참조 구현은 `scripts/vendor-policy.mjs`의 `detectDirectInference(command)`다. 모델은 **default-deny**다 — codex/agy/grok 실행 자체를 기본 차단하고, 명시적 관리 서브커맨드 allowlist(`login`·`--version`·`models` 등)이거나 순수 `--help`/`--version`일 때만 통과시킨다. codex는 bare 호출·`review`·`resume`·`fork`·추론전용 플래그(`-m`/`-i` 등)로도 추론을 돌리므로 이 진입점을 모두 막는다. Grok은 `$grok`/`${grok}` 변수형과 `--prompt-file` 추론도 같은 default-deny다. 셸 구분자·투명 wrapper(`timeout`·`env` 등)·셸 wrapper(`bash -lc`·`cmd /c`·`powershell -Command`) 재귀·패키지 러너(`npx`·`pnpm exec` 등)·heredoc 본문 제외·`codex sandbox`/`codex cloud exec` 커맨드 캐리어까지 판정해 벤더명 또는 null을 돌려준다.
 
 **그 파일을 직접 import하지 말 것.** 플러그인은 전역 버전 고정 경로(`~/.claude/plugins/cache/second-opinion/<버전>/…/scripts/vendor-policy.mjs`)에 설치돼, 버전이 오르면 그 경로가 깨진다. 대신 `detectDirectInference` 로직을 **네 레포로 복사**해(위 예시의 `./detect-vendor.mjs`, 같은 함수명 유지) 직접 관리하라. (안정적 모듈 경로가 필요하면 CLI/패키지 배포는 향후 과제다.)
 
 ### 4. 한계 (공시)
 
-이 탐지는 **부주의 방지용**이지 적대적 우회에 대한 보증이 아니다. 정적 파서라 다음은 못 잡는다: 셸 별칭(`Set-Alias cx codex`), PowerShell `-EncodedCommand`(base64로 인코딩된 명령), 스크립트 파일 안에 숨긴 간접 호출. 관리 서브커맨드 allowlist는 설치된 CLI 버전(`codex --help` 0.144.1, `agy --help` 1.1.3)에서 실측한 값이라, 벤더 CLI가 새 서브커맨드를 추가하면 재검증이 필요하다.
+이 탐지는 **부주의 방지용**이지 적대적 우회에 대한 보증이 아니다. 정적 파서라 다음은 못 잡는다: 셸 별칭(`Set-Alias cx codex`), PowerShell `-EncodedCommand`(base64로 인코딩된 명령), 스크립트 파일 안에 숨긴 간접 호출. 관리 서브커맨드 allowlist는 `codex --help` 0.144.1, `agy --help` 1.1.3 기준 값이라, 벤더 CLI가 새 서브커맨드를 추가하면 재검증이 필요하다.
 
 ## 경계
 

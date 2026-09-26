@@ -2,7 +2,7 @@
 
 **English** | [한국어](./README.ko.md)
 
-![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.23-informational)
+![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.24-informational)
 
 **Use other AI vendors from inside Claude Code — in plain language.**
 Second opinions, task offloading, and vendor capabilities like image generation.
@@ -27,14 +27,6 @@ Stack ten reviewers from the same vendor and they still share the same blind spo
 A model reviewing its own vendor's output systematically under-reports defects.
 Switching vendors is a different *axis* of verification than adding more lenses —
 and this skill opens that axis with one sentence.
-
-This isn't theory. In the multi-round review methodology project this skill was
-extracted from:
-
-- A defect that **five parallel Claude review lenses all missed** was caught by an
-  external-vendor review.
-- A Gemini breadth review caught **real P0-class defects two rounds in a row**
-  (an allowlist bypass, a slot-contamination latch).
 
 ## What you get
 
@@ -76,17 +68,14 @@ record `retryAfter` as `{ observed, value }`: `value` preserves the received
 `Retry-After` string, `null` with `observed: true` means the header was absent, and
 `observed: false` means no response headers were observed.
 
-Consumers that froze the 0.9.8 failure vocabulary as a constant must update that
-integration. `no-output-timeout` is unchanged, but payload-silence failures now report
-`failureActor: "vendor"`; only an explicit caller deadline reports `"caller"`, while the
-3600-second cost backstop reports `"dispatcher"`. Retry waits are also intentionally
-different from call to call.
+In the failure vocabulary, payload-silence failures report `failureActor: "vendor"`; only an
+explicit caller deadline reports `"caller"`, while the 3600-second cost backstop reports
+`"dispatcher"`. Retry waits are also intentionally different from call to call.
 
-A very low `max_completion_tokens` can leave no text and exhaust same-provider retries
-(observed with Zhipu at 16 tokens). On `gemini-2.5-flash`, thinking tokens consumed the
-16-token completion budget before visible text was produced. A subscription empty-output retry launches the CLI again, for up to
-`1 + max_retries` processes (six with the default), so lower `max_retries` when repeated
-CLI launches are not worth that diagnostic cost.
+A very low `max_completion_tokens` can leave no text and exhaust same-provider retries. A
+subscription empty-output retry launches the CLI again, for up to `1 + max_retries` processes
+(six with the default), so lower `max_retries` when repeated CLI launches are not worth that
+diagnostic cost.
 
 - **Natural-language triggers** — "review this with Codex", "ask Gemini",
   "get a second opinion", "cross-check this with another AI". Korean triggers work too.
@@ -101,27 +90,27 @@ CLI launches are not worth that diagnostic cost.
 - **Field-tested gotchas, built in.** Every row below was hit in real usage. The
   skill routes around them so you don't have to:
 
-| Gotcha (all observed in the field) | How the skill handles it |
+| Gotcha | How the skill handles it |
 |---|---|
-| `agy -p "<text>"` **hangs forever** if stdin isn't closed, and argv caps the brief at **30,000 chars** | feeds the brief via stdin (`-p - < brief.txt`) — no hang, 105KB verified |
-| `--model` accepts both the display label (`"Gemini 3.1 Pro (High)"`) and the canonical slug from `agy models` (`gemini-3.1-pro-high`); `agy models` prints slugs while the picker shows labels. An unknown/malformed name is **rejected loudly (exit 1)** with an available-models list — not silently downgraded (older agy versions did downgrade) | copies the exact string from either source and checks the exit code; when the catalog is cached the label is forwarded as its slug, and the receipt keeps the string you wrote as `modelRequested` |
+| `agy -p "<text>"` **hangs forever** if stdin isn't closed, and argv caps the brief at **30,000 chars** | feeds the brief via stdin (`-p - < brief.txt`) — no hang, no argv cap |
+| `--model` accepts both the display label (`"Gemini 3.1 Pro (High)"`) and the canonical slug from `agy models` (`gemini-3.1-pro-high`); `agy models` prints slugs while the picker shows labels. An unknown/malformed name is **rejected loudly (exit 1)** with an available-models list | copies the exact string from either source and checks the exit code; when the catalog is cached the label is forwarded as its slug, and the receipt keeps the string you wrote as `modelRequested` |
 | AGY can keep using a previous host project even when the subprocess and receipt use a temporary `cwd` | binds every AGY call to the requested workspace with `--add-dir`; callers can add `--expect-output` for a hidden-token read check |
 | AGY headless plan auto-denies shell commands, so a review brief asking for `git diff` can return exit 0 with no review | explicit AGY plan/review automatically composes the `agy-native-readonly/v1` input profile, using native read/list/search; empty output still fails closed |
 | A caller passes `terra`, `gpt 5.5`, or `5.6 sol@ultra`, but Codex CLI needs its current canonical slug | normalizes case/separators and UI effort labels, then resolves the live Codex cache (`gpt 5.5` → `gpt-5.5`); the selected model's advertised effort levels are enforced (`low` through `ultra` where supported) |
-| Codex's model cache also holds opencodex's proxy routes (31 of 38 entries on 2026-09-24: provider-namespaced slugs such as `anthropic/claude-opus-5-5` or `xai/grok-4.7`, described as "Routed via opencodex"), and no call should be routed through that proxy | **no name is ever resolved or routed to an opencodex entry** — pinned or automatic, bare or versioned. The entries are recognized by the `/` in the slug or that description and left out of the Codex catalog. A name only they answered is forwarded as written with `--vendor codex` (`claude-opus-4-6` stays `claude-opus-4-6`, `pro` stays `pro`, where 0.9.18–0.9.20's namespace matching sent them to `anthropic/claude-opus-4-6` and `google-antigravity/gemini-3.1-pro`) and is not a Codex candidate for automatic routing. The `--request-json` path's Codex name matching reads the same catalog |
-| Model versions move fast, and the vendors reject a name without one (codex `-m sol`, agy `--model gemini`, grok `-m grok` all exit 1) | a bare family name becomes that family's newest model in the catalog, with or without `--vendor`: `sol` → `gpt-6-sol`, `terra` → `gpt-5.6-terra`, `opus` → `claude-opus-5-5`, `gemini` → `gemini-3.8-flash` (agy takes `--effort` beside it), `grok` → `grok-4.7` on the 2026-09-23 catalogs. The version is read from the name as a number (`3.10` beats `3.8`, `claude-opus-5-5` is 5.5, an eight-digit date or a four-digit month-day at the end of a name such as `-0813` is not a version, effort/speed tails such as `-high`/`-fast` are not new versions). A bare name that is already exactly one catalog model's own name keeps that model instead of being compared across lines. A name that carries a version is never moved to another one, and a bare name with no candidate is forwarded as written. The receipt keeps `modelRequested` and the version that ran as `model` |
+| Codex's model cache also holds opencodex's proxy routes (provider-namespaced slugs such as `anthropic/claude-opus-5-5` or `xai/grok-4.7`, described as "Routed via opencodex"), and no call should be routed through that proxy | **no name is ever resolved or routed to an opencodex entry** — pinned or automatic, bare or versioned. The entries are recognized by the `/` in the slug or that description and left out of the Codex catalog. A name only they answered is forwarded as written with `--vendor codex` (`claude-opus-4-6` stays `claude-opus-4-6`, `pro` stays `pro`) and is not a Codex candidate for automatic routing. The `--request-json` path's Codex name matching reads the same catalog |
+| Model versions move fast, and the vendors reject a name without one (codex `-m sol`, agy `--model gemini`, grok `-m grok` all exit 1) | a bare family name becomes that family's newest model in the catalog, with or without `--vendor`: `sol` → `gpt-6-sol`, `terra` → `gpt-5.6-terra`, `opus` → `claude-opus-5-5`, `gemini` → `gemini-3.8-flash` (agy takes `--effort` beside it), `grok` → `grok-4.7`. The version is read from the name as a number (`3.10` beats `3.8`, `claude-opus-5-5` is 5.5, an eight-digit date or a four-digit month-day at the end of a name such as `-0813` is not a version, effort/speed tails such as `-high`/`-fast` are not new versions). A bare name that is already exactly one catalog model's own name keeps that model instead of being compared across lines. A name that carries a version is never moved to another one, and a bare name with no candidate is forwarded as written. The receipt keeps `modelRequested` and the version that ran as `model` |
 | The caller knows `opus`, `opus 4.8`, or `fable` but not which vendor owns it | compares cache-first Codex, AGY, and Claude metadata. Bare `opus` and `fable` become Claude's newest slugs (`claude-opus-5-5`, `claude-fable-5-1`), like every other vendor's bare names; versioned families come from current metadata rather than a fixed list |
 | `opus 4.6` and `sonnet 4.6` exist in both Claude Code and AGY | an exact AGY catalog entry wins over Claude's inferred family/version route; use `Claude Code opus 4.6` (with omitted `--vendor`) or `--vendor claude --model claude-opus-4-6` to select Claude. A pinned `--vendor` never reroutes, so `--vendor claude --model "opus 4.6"` also stays on Claude |
-| A pinned `--vendor` used to hand the vendor whatever `--model` string the caller typed, so a name that vendor does not publish passed `--dry-run` and failed only once the call was paid for | resolves `--model` through that one vendor's catalog too (`--vendor agy --model "opus 4.6"` → `claude-opus-4-6-thinking`), under the same daily refresh as automatic routing. A bare family name becomes that family's newest model even when several versions match; any other name that is not enough to name one model is forwarded as the caller wrote it, so a correct name is never renamed |
+| A pinned `--vendor` should not let an unpublished `--model` string reach the vendor unresolved | resolves `--model` through that one vendor's catalog too (`--vendor agy --model "opus 4.6"` → `claude-opus-4-6-thinking`), under the same daily refresh as automatic routing. A bare family name becomes that family's newest model even when several versions match; any other name that is not enough to name one model is forwarded as the caller wrote it, so a correct name is never renamed |
 | Provider catalog checks on every call would waste startup and network time, but a catalog that is never refreshed misses new models | caches model-only metadata at `~/.second-opinion/model-catalog-v1.json` and refreshes it once a day, timed from the dispatcher's own last refresh. Under 24 hours nothing is refreshed. Past 24 hours, or after a refresh in which the claude, agy or grok listing failed (a vendor CLI that is not installed does not count, and Codex is never retried this way because every call re-reads its local cache), any call except `--vendor devin` (with or without `--model`) starts one detached background refresh and goes on with the catalog it has; the next call uses the result. Parallel calls start one refresh between them, including while one is still running. A vendor whose listing errors or returns nothing keeps its last good list, and the next call retries instead of waiting a day. Only a missing cache is refreshed inside the call, by automatic routing and by `--vendor claude\|agy\|grok` calls that pass `--model`; `--vendor codex` and calls without `--model` never wait, `--vendor devin` never touches the catalog, and `--request-json` does neither the mapping nor the refresh. The already-local Codex cache is re-read for the active `CODEX_HOME` |
 | Codex sandbox **can't read files on Windows** | excerpts content into the brief instead of asking it to read files |
 | Image generation: agy **ignores where you asked it to save** (uses its own scratch dir), codex needs a **write-enabled sandbox** and its Windows copy step can fail | knows each vendor's real artifact location, verifies the file actually exists, and moves it where you wanted — a vendor saying "saved" is not treated as success |
 | "No issues found" is a weak signal (Gemini especially leans false-negative) | always relayed as "didn't find problems ≠ no problems" |
 | Grok `--tools` with every name unknown fail-open; Grok also loads Claude/Cursor harness config by default | plan/review use `--permission-mode plan` as a floor and force isolation env: Claude 6 + Cursor 6 + `GROK_CODEX_SESSIONS_ENABLED`. Project-root `CLAUDE.md` can still load |
-| An AGY call sets reasoning effort inside the model slug | agy 1.1.26 split effort onto its own `--effort low|medium|high`; the old `-high` suffix still resolves alone, but pairing it with `--effort` exits 1 instead of choosing, and a bare model name without `--effort` is rejected — the dispatcher forwards both spellings untouched so the receipt shows what the vendor actually received. Only a name with no version at all (`gemini`) is rewritten, to the newest slug without an effort tail, and it takes `--effort` the same way; none is filled in for you |
-| AGY's default model moves without any local change | it lives on the Antigravity account, not in a config file; measured moving from `gemini-3.7-flash` to `gemini-3.8-flash-high` with nothing edited locally, so pin `--model` on any call whose result must be reproducible |
+| An AGY call sets reasoning effort inside the model slug | on agy 1.1.26 or later, reasoning effort is its own `--effort low|medium|high` flag; the old `-high` suffix still resolves alone, but pairing it with `--effort` exits 1 instead of choosing, and a bare model name without `--effort` is rejected — the dispatcher forwards both spellings untouched so the receipt shows what the vendor actually received. Only a name with no version at all (`gemini`) is rewritten, to the newest slug without an effort tail, and it takes `--effort` the same way; none is filled in for you |
+| AGY's default model moves without any local change | it lives on the Antigravity account, not in a config file, so pin `--model` on any call whose result must be reproducible |
 | Grok review examples that omit reasoning effort silently use the vendor default | the standard review example explicitly uses `--effort medium` for cost/quality balance; dispatch forwards it unchanged and the receipt retains `effortRequested` |
-| A review must inspect the exact current diff, or run the suite, to judge | Claude plan/review includes Bash/PowerShell for `git diff` and history, plus one allow rule for `node` so the reviewer runs `node --test` itself; `--no-host-shell` removes both. Devin plan/review leaves `exec` open for the same commands. Grok/AGY explicit modes still have no git shell, so linked-worktree reviews must put the changed-file list and full unified diff in the brief and state any suite result the caller measured |
+| A review must inspect the exact current diff, or run the suite, to judge | Claude plan/review includes Bash/PowerShell for `git diff` and history, plus one allow rule for `node` so the reviewer runs `node --test` itself; `--no-host-shell` removes both. `git -C` and PowerShell script syntax are refused, so the brief tells the reviewer to rewrite a refused command in plain form. Devin plan/review leaves `exec` open for the same commands. Grok/AGY explicit modes still have no git shell, so linked-worktree reviews must put the changed-file list and full unified diff in the brief and state any suite result the caller measured |
 | Devin can import the caller's agent/editor skills and MCP configuration | every Devin call receives a bundled config with all eight `read_config_from` sources disabled; default is unrestricted, while plan/review add a PreToolUse hook that blocks the write tools and returns the reason to the child so execution continues — `exec` stays open, so a running shell can still write and the brief's prohibitions are the guard |
 
 - **Execution receipts** — after every vendor call the skill states what was
@@ -209,19 +198,23 @@ CLI launches are not worth that diagnostic cost.
   dispatcher-owned config paths with stable bundled labels; a valid dry-run
   has its planned vector, and every other pre-spawn failure has empty arrays.
   What the child then enforced is not recorded:
-  passing a flag and the flag taking effect are different things, and this round
-  measured a case where they were not the same. An `AGENTS.md` in the
+  passing a flag and the flag taking effect are different things. An `AGENTS.md` in the
   codex home is NOT covered by the document switch. `--host-skills` (claude only)
   lets the child run skills and plugins; it replaces the one switch that had been
   closing configuration wholesale, so hooks, MCP, and `CLAUDE.md` then block by
   default in every mode. A claude reviewer also gets a shell so it can read git
   history and run tests. One allow rule rides with it, `Bash(node *)` /
-  `PowerShell(node *)`, because the child's own `dontAsk` policy refused `node`;
-  that rule grants and does not confine. No rule list confines the shell: allow
-  rules were measured not to confine the tool at all, and a deny list of subcommand
-  names can never cover the effects it is named for. `node` runs any script, so the
+  `PowerShell(node *)`; that rule grants and does not confine. No rule list
+  confines the shell and `node` runs any script, so the
   brief's own prohibitions are the guard, and `--no-host-shell` removes the shell
-  and the rule rather than narrowing them. None of this is a
+  and the rule rather than narrowing them. The child's `dontAsk` policy sorts shell
+  commands by shape (claude 2.1.283): plain read commands run,
+  also chained with `;`, piped, with `2>&1`, or on paths outside cwd, and so does
+  `node`; `git -C` and PowerShell script syntax (variable assignment, `foreach`, a
+  parenthesized expression, `$()` substitution) are refused, and one such piece
+  refuses the whole line. Tell a claude reviewer this in the brief: a refusal covers
+  that command, not the shell; rewrite it in plain form and do sums such as hashes
+  and line counts with `node -e`. None of this is a
   filesystem sandbox — it is configuration isolation and coexists with tool access.
   The dispatcher operates as a neutral broker and does not
   hard-block same-vendor calls; it removes the parent-only `CLAUDECODE` marker
@@ -244,8 +237,8 @@ CLI launches are not worth that diagnostic cost.
   Codex CLI has no such layer — its only way to narrow permissions is the sandbox
   (`-s read-only`), which this project does not use. Codex's `exec review` selects
   a review workflow, not a permission level (`codex exec review --help` offers only
-  target selectors like `--uncommitted` and `--base`). Measured: a `--mode review`
-  Codex call still recorded `sandbox: danger-full-access`, which comes from
+  target selectors like `--uncommitted` and `--base`). A `--mode review`
+  Codex call's sandbox value comes from
   `~/.codex/config.toml`, not from the mode. For Codex reviews, the brief's own
   prohibitions are the only thing keeping files untouched — do not count
   `--mode review` as a safety mechanism there.
@@ -351,7 +344,7 @@ claude plugin install second-opinion@second-opinion
 ```
 
 `claude plugin install` doesn't appear in `claude plugin --help`, but it works
-(verified on Claude Code for Windows, 2026-07). Useful when you can't open the
+(verified on Claude Code for Windows). Useful when you can't open the
 interactive `/plugin` dialog.
 
 For non-Claude hosts, use the exact skill path supplied by that host's

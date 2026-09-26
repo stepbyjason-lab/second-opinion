@@ -20,14 +20,13 @@ native 파일 읽기·목록·검색만 사용하고 terminal·command·shell·`
 receipt의 `inputProfile`에서 확인한다. 그래도 auto-denial 뒤 0바이트가 반환되면
 dispatcher는 provider exit 0을 성공으로 승격하지 않고 exit 4로 닫는다.
 
-- **brief는 무-플래그 stdin으로** (파일 리다이렉트) — 대용량 실측 통과, argv 경로의
-  30,000자 한계 없음. 파일 리다이렉트가 stdin을 닫아주므로 hang 걱정도 없다.
-  `-p -`는 1.1.1에서 `-`가 리터럴 프롬프트로 바뀌어 깨졌다. stdin은 미문서화
-  (#525/#542)라 자동업데이트로 다시 깨질 수 있으므로, 대형 입력이나 재파손 시
+- **brief는 무-플래그 stdin으로** (파일 리다이렉트) — 대용량 입력도 통과하고, argv 경로의
+  30,000자 한계가 없다. 파일 리다이렉트가 stdin을 닫아주므로 hang 걱정도 없다. stdin은
+  미문서화(#525/#542)라 자동업데이트로 다시 깨질 수 있으므로, 대형 입력이나 재파손 시
   `--add-dir`로 디렉토리를 허용하고 파일 경로를 읽게 하는 폴백을 쓴다
-- 디스패처는 `--cwd`를 모든 AGY operation의 `--add-dir`로 전달한다. AGY가 process
+- 디스패처는 `--cwd`를 모든 AGY operation의 `--add-dir`로 전달한다. AGY는 process
   cwd와 무관하게 이전 host project를 선택할 수 있어, spawn cwd와 영수증 cwd만으로는
-  파일 접근 대상을 결속하지 못했던 0.8.3 결함의 최소 수정이다.
+  파일 접근 대상을 결속하지 못한다 — 이 결속이 그 최소 수정이다.
 - hidden sentinel을 읽었는지 기계적으로 확인해야 하면 `--out <path>`와
   `--expect-output <ASCII-token, max 1024 chars>`을 추가한다. token은 대상 파일에만 두고 brief에는
   exact 파일 경로와 읽기 지시만 쓴다. token은 AGY argv·stdin에는 전달되지 않지만 raw·portable receipt에는 원문 그대로 기록되며,
@@ -35,15 +34,15 @@ dispatcher는 provider exit 0을 성공으로 승격하지 않고 exit 4로 닫�
 - ⚠️ argv로 줄 때(`-p "$(cat brief.txt)"`)만 적용되는 함정 둘: **`</dev/null` 필수**
   (stdin 안 닫으면 무한 hang) + **30,000자 한계** (Windows CreateProcess) — 특별한
   이유가 없으면 stdin 경로를 기본으로 쓸 것
-- ⚠️ **effort 축 분리 (agy 1.1.26 실측, 2026-08-31)** — 1.1.5까지는 effort가 slug 안에 녹아 있었는데 이제 `--effort low|medium|high`가 따로 있다. 실측 네 형태:
+- ⚠️ **effort 축 분리 (agy 1.1.26 이상)** — `--effort low|medium|high`가 정식형이다. 조합별 결과:
   `--model gemini-3.8-flash --effort medium` → **exit 0**(정식형) · `--model gemini-3.8-flash-low` → **exit 0**(옛 접미사, 아직 유효) ·
   `--model gemini-3.8-flash`(effort 없음) → **exit 1** `requires --effort (available: low, medium, high)` ·
   `--model gemini-3.8-flash-low --effort high` → **exit 1** `conflicts with --effort=high`.
   **섞으면 한쪽이 이기는 게 아니라 거부된다.** dispatcher는 버전을 적은 slug의 effort 꼬리를 다시 쓰지 않고 caller가 준 것을 그대로 넘긴다 — 재작성하면 벤더가 실제로 무엇을 받았는지가 영수증에서 사라진다.
   버전 없는 `--model gemini`만 예외다. agy는 `gemini`를 모르는 모델로 거절하므로(`model gemini is not recognized as a known model`), dispatcher가 `agy models` 목록에서 가장 높은 버전의 꼬리 없는 slug(`gemini-3.8-flash`)로 바꿔 넘기고 호출자의 `--effort`를 그대로 붙인다. effort를 안 주면 채우지 않는다 — agy가 `requires --effort`로 거절한다. flash와 pro처럼 라인이 둘이면 버전이 높은 쪽이 나간다.
-- ⚠️ **기본 모델은 계정 쪽에 있고 예고 없이 바뀐다.** 실측 — 설정을 하나도 안 건드렸는데 기본이 `gemini-3.7-flash`(2026-08-29)에서 `gemini-3.8-flash-high`(2026-08-31)로 옮겨갔다. **재현이 필요한 호출은 `--model`을 반드시 박는다.**
-- ⚠️ `--model` 형식 (agy 1.1.5 실측, 2026-07-22): **디스플레이 라벨**(`"Gemini 3.5 Flash (High)"`)과 **`agy models`가 출력하는 정규 slug**(`gemini-3.5-flash-medium`) **둘 다 그대로 받는다** — 어느 쪽을 복사해도 된다. **주의: `agy models`는 이제 라벨이 아니라 slug를 출력한다**(모델 피커 화면은 라벨을 보여줌 — 두 출처 형식이 다르다). 모르는·형식이 깨진 이름(옛 예시 `gemini-3-1-pro-high`처럼 버전에 하이픈, 또는 effort 빠진 `gemini-3.5-flash`)은 **exit 1로 거부**되고 available 목록을 stderr로 준다 — **조용히 강등하지 않는다.** (구버전 agy는 slug를 silent-ignore→계정 기본값 강등했으나 1.1.5는 loud reject로 바뀜. 그래도 호출 후 exit code는 확인할 것.)
-- 모델 메뉴 (`agy models` 실측, 2026-07-22 — 벤더가 바꿀 수 있으니 실행해 재확인).
+- ⚠️ **기본 모델은 계정 쪽에 있고 예고 없이 바뀐다.** **재현이 필요한 호출은 `--model`을 반드시 박는다.**
+- ⚠️ `--model` 형식 (agy 1.1.5 이상): **디스플레이 라벨**(`"Gemini 3.5 Flash (High)"`)과 **`agy models`가 출력하는 정규 slug**(`gemini-3.5-flash-medium`) **둘 다 그대로 받는다** — 어느 쪽을 복사해도 된다. `agy models`는 라벨이 아니라 slug를 출력한다(모델 피커 화면은 라벨을 보여줌 — 두 출처 형식이 다르다). 모르는·형식이 깨진 이름(예: `gemini-3-1-pro-high`처럼 버전에 하이픈, 또는 effort 빠진 `gemini-3.5-flash`)은 **exit 1로 거부**되고 available 목록을 stderr로 준다 — **조용히 강등하지 않는다.** 호출 후 exit code는 확인할 것.
+- 모델 메뉴 (`agy models` 출력 — 벤더가 바꿀 수 있으니 실행해 재확인).
   slug / (라벨): `gemini-3.6-flash-{high,medium,low}` (Gemini 3.6 Flash) ·
   `gemini-3.5-flash-{high,medium,low}` (Gemini 3.5 Flash) ·
   `gemini-3.1-pro-{high,low}` (Gemini 3.1 Pro) · `claude-sonnet-4-6` ·
@@ -54,26 +53,26 @@ dispatcher는 provider exit 0을 성공으로 승격하지 않고 exit 4로 닫�
   `--vendor claude --model claude-opus-4-6`을 쓴다.
 - ⚠️ `antigravity chat`은 이 스킬의 headless 채널이 아니다 — IDE 채팅 디스패치이며
   `--model` 표면이 `agy`와 다르다. headless second-opinion에는 반드시 `agy`를 쓸 것
-- ⚠️ quota: 사용량이 여러 모델에서 **동일 %로 동반 상승**하는 것이 관측됨 (2026-07-03
-  사용자 실측) — **모델을 바꾸면 quota를 아낀다고 가정하지 말 것** (풀 구조 미확정)
+- ⚠️ quota: 사용량이 여러 모델에서 **동일 %로 동반 상승**하는 것이 관측됨 —
+  **모델을 바꾸면 quota를 아낀다고 가정하지 말 것** (풀 구조 미확정)
 - ⚠️ Antigravity가 제공하는 Claude 모델(Opus/Sonnet)은 Claude Code 결과를 독립
   벤더로 교차 검증했다는 증거가 아니다. 사용자가 Claude-family 고추론 렌즈를 명시하면
   쓸 수 있지만, 그 결과는 Antigravity 호스트의 Claude-family 의견으로 라벨링하고
   Claude Code host/runtime 검증으로 포장하지 말 것
 - Codex 불능 상태에서 GPT 계보의 제3 시각이 필요하면: **`"GPT-OSS 120B (Medium)"`**
-  (OpenAI 오픈웨이트, Antigravity 제공 — 실측). 단 Codex 본체의 대체가 아니라 추가
+  (OpenAI 오픈웨이트, Antigravity 제공). 단 Codex 본체의 대체가 아니라 추가
   시각이며, 지명 벤더 무단 대체 금지 규칙은 그대로 적용된다
-- **인증: Antigravity IDE 로그인을 공유** (실측) — IDE에 로그인돼 있으면 agy 별도
+- **인증: Antigravity IDE 로그인을 공유** — IDE에 로그인돼 있으면 agy 별도
   로그인 불필요. IDE가 없거나 응답 없이 exit 0이면 `agy` 1회 대화 실행(로그인) 안내
 
 정본은 `scripts/vendor-policy.mjs`이며 아래 커맨드는 비정본 설명이다.
 
-> **Codex Desktop / Windows 호스트 참고** (실측 2026-07-08):
+> **Codex Desktop / Windows 호스트 참고**:
 > SKILL.md fast-path의 Bash 예시는 Bash 문법이다. Codex Desktop의 `exec_command`에서는 `timeout`과
 > `< brief.txt` 리다이렉트를 그대로 쓸 수 없다.
 >
 > `agy`가 PATH에 없을 수 있다 — Codex 세션에서 `Get-Command agy`가 실패하면
-> 다음 fallback 경로를 사용 (실측 확인):
+> 다음 fallback 경로를 사용:
 > `$env:LOCALAPPDATA\agy\bin\agy.exe`
 > (예: `C:\Users\<user>\AppData\Local\agy\bin\agy.exe`)
 >
@@ -84,8 +83,7 @@ dispatcher는 provider exit 0을 성공으로 승격하지 않고 exit 4로 닫�
 > Get-Content brief.txt | & $agy --model "Gemini 3.5 Flash (High)" > out.txt 2> err.txt
 > ```
 >
-> `agy models` 출력으로 사용 가능한 모델 라벨을 확인할 수 있다 (Codex 세션에서도
-> 실측 통과 — 2026-07-08).
+> `agy models` 출력으로 사용 가능한 모델 라벨을 확인할 수 있다 (Codex 세션에서도 통과).
 
 ## 파일 입력 과업 — 이미지·영상 분석
 
@@ -114,10 +112,10 @@ Generate an image: <프롬프트>. Save it as <파일명>.png.
 
 **실행 (정본 — 디스패처)**: `node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor agy --operation image-generate --brief brief.txt --model "Gemini 3.5 Flash (High)" --out out.txt --err err.txt` — raw `echo … | "$AGY"`는 비정본(내부 동작 설명용)이며 정본은 디스패처 호출이다.
 
-- 사진급 생성모델 실측 확인. 단 **저장 위치 지시를 무시**하고 자기 scratch 디렉토리
+- 사진급 생성모델을 지원한다. 단 **저장 위치 지시를 무시**하고 자기 scratch 디렉토리
   `~/.gemini/antigravity-cli/scratch/`에 저장한다 (파일명은 지시대로 따름) — 거기서
   회수해 사용자가 원한 위치로 복사
-- "IMG-SAVED" 같은 성공 답변이 요청 경로 기준으로는 거짓일 수 있다 (실측)
+- "IMG-SAVED" 같은 성공 답변이 요청 경로 기준으로는 거짓일 수 있다
 
 ## 설치·업데이트·복구
 
@@ -127,5 +125,5 @@ Generate an image: <프롬프트>. Save it as <파일명>.png.
   (v1.0.15 미만은 Windows 비-TTY 출력 유실 버그 — 이상이면 위 명령 재실행으로 업데이트).
   **검증**: `agy --version` + 실제 스모크(파일 존재 ≠ 동작). Antigravity IDE가 깔려 있어도
   headless CLI `agy`는 별개다 — IDE 존재를 설치됨으로 오인하지 말 것. 채널 혼용 시 stale
-  PATH로 낡은 본이 잡힐 수 있으니(codex 실측 사고) 설치 후 호스트 앱 재시작으로 배제.
+  PATH로 낡은 본이 잡힐 수 있으니 설치 후 호스트 앱 재시작으로 배제.
 - agy 인증 문제: `agy` 1회 대화 실행(재로그인)

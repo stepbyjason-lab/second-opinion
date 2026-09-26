@@ -14,7 +14,7 @@ description: >
 
 # second-opinion — 외부 AI 어댑터
 
-**버전 0.9.23** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). SuperGrok 구독 CLI `grok`과 Devin CLI `devin`. (정본 버전은 `plugin.json`.)
+**버전 0.9.24** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). SuperGrok 구독 CLI `grok`과 Devin CLI `devin`. (정본 버전은 `plugin.json`.)
 
 이 스킬은 **아무것도 차단하지 않는다** — 중개(relay)만 한다. 디스패처는 커맨드 정합성을 위한 도구일 뿐이다. "Claude가 디스패처를 반드시 거치게" 강제하는 것은 **부르는 쪽(caller)의 책임**이다 → [references/enforcement.md](references/enforcement.md).
 
@@ -32,8 +32,8 @@ Claude Code 안에서 **다른 벤더의 AI**를 일상어로 부려 쓴다. Cod
    바꾸는 것은 다른 축이다 — 공유 맹점은 후자만 뚫는다.
 2. **용량** — 사용자가 원할 때 작업을 외부 벤더 quota로 오프로드. **언제 돌릴지는
    사용자/호출자가 정한다** — 이 스킬은 채널만 제공하고 스스로 라우팅 정책을 갖지 않는다.
-3. **능력** — 벤더 고유 기능 사용. 현재 실측 검증: 이미지 생성 · 이미지/영상 분석 입력 ·
-   대용량 파일 입력(실측 2026-07-11).
+3. **능력** — 벤더 고유 기능 사용. 이미지 생성 · 이미지/영상 분석 입력 · 대용량 파일 입력을
+   지원한다.
 
 ## 실행 모드 — 호출자가 명시할 때만
 
@@ -50,9 +50,11 @@ plan/review 권한을 자동 적용하지 않는다. **`--mode`가 받는 값은
 - 이번 mode는 text operation 전용이다.
 - Claude plan/review에는 `Bash,PowerShell`과 `--permission-mode dontAsk`가 있어 `git diff`와
   변경 이력을 직접 읽고, 허용 규칙 `Bash(node *)`·`PowerShell(node *)` 하나가 있어 `node --test`를
-  직접 돌린다. 이 규칙은 자식이 거부하던 `node`를 여는 것이지 셸을 묶는 것이 아니므로 셸은
+  직접 돌린다. 이 규칙은 `node`를 여는 것이지 셸을 묶는 것이 아니므로 셸은
   filesystem sandbox가 아니며(`node`는 스크립트를 무엇이든 실행한다), 엄격히 닫아야 할 때만
-  `--no-host-shell`을 쓴다 — 셸과 규칙이 함께 빠진다. 스킬·플러그인은 기본 제외되고
+  `--no-host-shell`을 쓴다 — 셸과 규칙이 함께 빠진다. `git -C`와 PowerShell 스크립트 문법(변수 대입·
+  `foreach`·괄호식·`$()` 치환)은 자식이 거부한다 — claude 리뷰어 brief에 실을 안내는 아래 Claude 채널 절에
+  있다. 스킬·플러그인은 기본 제외되고
   `--host-skills`를 명시한 호출에서만 `Skill` 도구가 추가된다.
 - Grok·AGY의 explicit plan/review에는 git shell이 없다. linked worktree 리뷰는 호출자가
   **변경 파일 목록과 unified diff 전문, 인용할 정본 전문을 brief 본문에 인라인**하고,
@@ -73,10 +75,9 @@ plan/review 권한을 자동 적용하지 않는다. **`--mode`가 받는 값은
   (`-s read-only`)뿐이고, 이 프로젝트는 샌드박스를 쓰지 않는다(맥락 전달이 어렵고 결과
   품질이 떨어진다). 그래서 Codex의 `exec review`는 **"무엇을 볼지"를 정하는 워크플로**이지
   권한 축소가 아니다(`codex exec review --help`의 옵션도 `--uncommitted`·`--base`처럼
-  대상 지정뿐이다). 실측: `--mode review`로 부른 Codex 호출의 영수증에 `sandbox:
-  danger-full-access`가 그대로 찍혔다 — 그 값은 mode가 아니라 `~/.codex/config.toml`의
-  `sandbox_mode`에서 온다. **Codex 리뷰에서 파일을 지키는 것은 brief의 금지 지시뿐이니,
-  `--mode review`를 안전장치로 계산하지 말 것.**
+  대상 지정뿐이다). `--mode review`로 부른 Codex 호출의 sandbox 값은 mode가 아니라
+  `~/.codex/config.toml`의 `sandbox_mode`에서 온다. **Codex 리뷰에서 파일을 지키는 것은
+  brief의 금지 지시뿐이니, `--mode review`를 안전장치로 계산하지 말 것.**
 - sandbox·worktree·snapshot·packet·분리 cwd를 만들지 않는다. 권한은 mode별 flag 조합으로만
   결정되고, 어느 mode든 caller가 준 실제 cwd에서 실행된다.
 - Madi 같은 caller가 review panel을 소집할 때만 `--mode review`를 붙인다.
@@ -87,9 +88,8 @@ plan/review 권한을 자동 적용하지 않는다. **`--mode`가 받는 값은
 
 ## Madi 게이트 바로 보내기 — 저자게이트·리뷰게이트
 
-**둘은 같은 호출이다.** madi 저장소의 실제 발주 영수증을 전수로 세어 보면(2026-08~09, 저자게이트
-25건·리뷰게이트 45건) 저자게이트와 리뷰게이트가 벤더·모델·mode·격리 플래그까지 같고 **brief와 완주
-토큰만 다르다.** 그래서 아래 한 형태가 둘을 덮는다.
+**둘은 같은 호출이다.** madi 저장소의 실제 발주 영수증을 대조하면 저자게이트와 리뷰게이트가
+벤더·모델·mode·격리 플래그까지 같고 **brief와 완주 토큰만 다르다.** 그래서 아래 한 형태가 둘을 덮는다.
 
 **brief는 게이트의 조립기가 만든다 — 손으로 짜지 않는다.** 저자게이트와 리뷰게이트는 각자 조립기를
 갖고 있고, 완주 토큰·동결 범위·렌즈 전문도 거기서 나온다. 어느 조립기를 쓰는지는 madi 지도
@@ -110,13 +110,12 @@ node <dispatch> --vendor codex --model gpt-5.6-terra --effort high \
 `--expect-total`은 자동 계산되지 않고 호출자가 「구획이 몇이었나」를 직접 신고하는 값이다.
 
 **codex에 `--mode review`를 붙이지 않는 이유** — codex의 native review 워크플로는 **자기 보고 형식을
-brief 위에 덮는다.** brief가 findings 형식을 정하는 게이트에서는 그 형식이 진다(실측: R75e가 run 1을
-`--mode review`로 보냈다가 run 2·3에서 뺐다). 게다가 codex의 review는 권한을 좁히지도 않으므로(아래 ⚠)
-mode로 얻을 게 없다. 그래서 **mode를 빼고 격리를 직접 준다** — `--no-host-hooks --no-host-docs`.
-실측 분포도 그렇다: 토큰을 거는 codex 게이트 발주는 대부분 mode 없이 나간다. Claude 리뷰어는 반대로
+brief 위에 덮는다.** brief가 findings 형식을 정하는 게이트에서는 그 형식이 진다. 게다가 codex의
+review는 권한을 좁히지도 않으므로(아래 ⚠) mode로 얻을 게 없다. 그래서 **mode를 빼고 격리를 직접
+준다** — `--no-host-hooks --no-host-docs`. Claude 리뷰어는 반대로
 `--mode review`를 쓴다 — 그쪽은 mode가 실제로 권한을 좁히고 호스트 설정도 기본 차단한다.
 
-**모델·effort는 항상 박는다.** 실측 70건 전부 `@high`이고 모델이 지정돼 있다(codex `gpt-5.6-terra`·
+**모델·effort는 항상 박는다.** 모델이 지정돼 있다(codex `gpt-5.6-terra`·
 `gpt-5.6-sol`, Claude `opus`). codex는 `--model`이 필수가 아니지만 게이트 발주는 재현성 때문에 박는다.
 
 독립 2차 패스는 같은 brief·`--cwd`를 보존하고 `--vendor`, 그 벤더의 `--model`/`--effort`,
@@ -140,7 +139,7 @@ mode로 얻을 게 없다. 그래서 **mode를 빼고 격리를 직접 준다** 
 | 코드 리뷰·기술 설계 점검·"놓친 것 찾기" | **Codex** (GPT) | 종합 감사에 강함, 신뢰 높음 |
 | 빠른 다각 점검·문서 검토·아이디어 브레인스토밍·볼륨 호출 | **Antigravity** (Gemini 3.1 Pro High) | 저비용·병렬 가능 |
 | 최대 신뢰가 필요한 판단 | 둘 다 병렬 → 결과 대조 | 교차 확인 |
-| 이미지 생성 (사용자가 요청한 경우) | 둘 다 가능 (실측 2026-07-03) | 아래 "파일 산출물 과업" — 채널별 조건 상이 |
+| 이미지 생성 (사용자가 요청한 경우) | 둘 다 가능 | 아래 "파일 산출물 과업" — 채널별 조건 상이 |
 
 ## 공통: brief 파일 먼저
 
@@ -173,7 +172,7 @@ mode로 얻을 게 없다. 그래서 **mode를 빼고 격리를 직접 준다** 
   - 스필 파일은 안전한 임시 디렉토리(OS temp/스크래치)에 만들고 호출 후 정리한다 — 시크릿이 실릴 수 있으니 레포 tracked·월드읽기 위치에 두지 않는다.
   - 데이터 경계는 그대로다: 파일이든 인라인이든 "시크릿 금지·필요한 부분만 큐레이션"이 적용된다(파일로 넘기는 건 전달 방식일 뿐 "다 퍼줘라"가 아니다).
 
-## 호출 fast-path (실측 검증된 채널 — 2026-07-03, Codex Desktop 실측 추가 2026-07-08)
+## 호출 fast-path
 
 소비 애플리케이션의 텍스트 생성은 `dispatch.mjs --request-json <파일>
 --response-json <파일>` 통합 경로를 쓸 수 있다. request schema v1은 `operation=generate`,
@@ -210,16 +209,12 @@ HTTP 실패 response와 raw 영수증은 `retryAfter: { observed, value }`를 �
 `observed: true, value: null`은 `Retry-After` 헤더 부재, `observed: false`는 응답 헤더
 미관측이며, 문자열 값은 수신 원문 그대로다.
 
-**이관 공시:** 0.9.8 실패 어휘를 상수로 고정한 소비자는 갱신이 필요하다.
-`no-output-timeout` class는 늘지 않았지만 payload 침묵 초과 actor는 `vendor`, 호출자가 명시한
-전체 마감은 `caller`, 3600초 비용 상한은 `dispatcher`다. full jitter 때문에 재시도 대기도
-호출마다 달라진다.
+실패 어휘에서 payload 침묵 초과의 actor는 `vendor`, 호출자가 명시한 전체 마감 초과는 `caller`,
+3600초 비용 상한 도달은 `dispatcher`다. full jitter 때문에 재시도 대기도 호출마다 달라진다.
 
-작은 `max_completion_tokens`는 빈 텍스트와 재시도 소진을 부를 수 있다(Zhipu 16 token 실측).
-`gemini-2.5-flash`에서는 thinking 토큰이 16-token completion 예산을 먼저 잠식해 보이는
-텍스트가 남지 않았다. subscription의 빈 출력 재시도는 실제 CLI를
-다시 띄워 최대 `1 + max_retries`회(기본값이면 6회) spawn하므로, 반복 실행 비용이 진단 가치보다
-크면 CLI transport의 `max_retries`를 낮춘다.
+작은 `max_completion_tokens`는 빈 텍스트와 재시도 소진을 부를 수 있다. subscription의 빈 출력
+재시도는 실제 CLI를 다시 띄워 최대 `1 + max_retries`회(기본값이면 6회) spawn하므로, 반복 실행
+비용이 진단 가치보다 크면 CLI transport의 `max_retries`를 낮춘다.
 
 영수증은 요청과 실행을 나란히 비교할 수 있도록 `modelReported`·`effortRequested`·
 `truncatedSuspected`·원본 stop 신호·`promptSource`·실측 `promptBytes`를 기록한다. raw CLI의
@@ -283,14 +278,13 @@ effort·속도 꼬리는 새 버전이 아니고, 같은 버전에 변형 라인
 다른 라인과 버전을 견주지 않고 그 모델로 나간다.
 
 **opencodex 경유 항목으로는 어떤 이름도 해석·라우팅하지 않는다.** Codex의
-`models_cache.json`에는 opencodex가 넣은 프록시 항목이 Codex 자체 모델과 함께 있다(2026-09-24
-실측 38개 중 31개) — 슬러그가 `anthropic/…`·`google-antigravity/…`·`xai/…`처럼 공급자
+`models_cache.json`에는 opencodex가 넣은 프록시 항목이 Codex 자체 모델과 함께 있다 —
+슬러그가 `anthropic/…`·`google-antigravity/…`·`xai/…`처럼 공급자
 네임스페이스를 달고, 설명이 「Routed via opencodex → <공급자>」다. 디스패처는 슬러그의 `/`나 그
 설명 문구로 이 항목을 알아보고 Codex 카탈로그에서 뺀다. 그래서 `--vendor`를 박았든
 생략했든, 버전 없는 이름이든 버전을 적은 이름이든 결과가 이 항목이 되지 않는다. 이 항목만
 가리키던 이름은 `--vendor codex`에서 쓴 그대로 나가고(`claude-opus-4-6`은 `claude-opus-4-6`,
-`pro`는 `pro` — 0.9.18~0.9.20은 네임스페이스 해석으로 `anthropic/claude-opus-4-6`·
-`google-antigravity/gemini-3.1-pro`로 바꿨다), 자동 라우팅에서는 Codex 후보가 아니다. `--request-json` 경로의 Codex 이름 해석도 같은
+`pro`는 `pro`), 자동 라우팅에서는 Codex 후보가 아니다. `--request-json` 경로의 Codex 이름 해석도 같은
 카탈로그를 읽으므로 이 항목으로 가지 않는다.
 
 대소문자와 공백·점·하이픈은 같은 이름으로 본다. 정확한 카탈로그 항목이 family/version
@@ -318,7 +312,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor codex --operation text 
 ⚠ **Codex의 `--mode review`는 권한을 제한하지 않는다** — 리뷰 워크플로를 고를 뿐이다.
 Codex CLI가 제공하는 권한 축소 수단은 샌드박스(`-s read-only`)뿐인데 이 프로젝트는 그걸
 쓰지 않으므로, Codex 리뷰는 실제로는 `~/.codex/config.toml`의 `sandbox_mode` 그대로
-돈다(실측: 영수증에 `danger-full-access`). 쓰기를 막는 것은 brief의 금지 지시뿐이다.
+돈다. 쓰기를 막는 것은 brief의 금지 지시뿐이다.
 Claude·AGY의 review와 강도가 다르니 같은 안전장치로 취급하지 말 것.
 
 이미지 과업은 `--operation image-analyze`(입력 `--input <파일>`)·`--operation image-generate` — 상세는 `references/adapter-codex.md`.
@@ -335,9 +329,9 @@ timeout은 직접 자식에 `child.kill()`만 수행하므로 벤더가 만든 �
   논리 별칭과 대조한다 — opencodex 경유 항목은 대조하지 않는다(위 「opencodex 경유 항목으로는
   어떤 이름도 해석·라우팅하지 않는다」). receipt의 `modelRequested`는 입력 원문, `model`은 실행에 전달한
   정규화 결과다.
-- codex는 로컬 파일을 읽는다(전 sandbox 모드 실측). 큰 내용은 파일로 두고 경로를 지시할 수 있다.
-  과거 CryptUnprotectData 오류는 elevated sandbox 계정의 DPAPI stale 버그로 상위 수정됐다 —
-  재발 시 `references/adapter-codex.md`의 우회를 따르고, 내용 발췌 동봉은 안전 폴백으로 쓴다.
+- codex는 sandbox 모드와 무관하게 로컬 파일을 읽는다. 큰 내용은 파일로 두고 경로를 지시할 수 있다.
+  파일 읽기 오류가 발생하면 `references/adapter-codex.md`의 우회를 따르고, 내용 발췌 동봉은
+  안전 폴백으로 쓴다.
 - 비-git cwd는 디스패처가 `--skip-git-repo-check`를 자동 판정·삽입한다.
 → 호출 전 필수: `references/adapter-codex.md` 를 반드시 읽을 것 (Windows 호스트 주의·이미지 생성·복구·기타 함정)
 
@@ -360,11 +354,12 @@ AGY headless는 command permission을 물을 수 없으므로 dispatcher가 expl
 
 정본은 `scripts/vendor-policy.mjs`다. 아래 raw 벤더 커맨드 언급은 비정본인 내부 동작 설명·수동 디버깅용이다.
 
-- brief는 무-플래그 stdin으로 넣는다. `-p -`는 agy 1.1.1에서 `-`가 리터럴 프롬프트로
-  바뀌어 깨졌다. stdin은 미문서화(#525/#542)라 자동업데이트로 다시 깨질 수 있으므로,
-  대형 입력이나 재파손 시 `--add-dir`로 디렉토리를 허용하고 파일 경로를 읽게 하는 폴백을 쓴다.
-- 디스패처는 요청 `--cwd`를 AGY의 `--add-dir`로 항상 결속한다. process cwd와 영수증 cwd만
-  맞고 AGY가 이전 host workspace를 읽던 0.8.3 결함을 막는다.
+- brief는 무-플래그 stdin으로 넣는다. stdin은 미문서화(#525/#542)라 자동업데이트로 다시 깨질
+  수 있으므로, 대형 입력이나 재파손 시 `--add-dir`로 디렉토리를 허용하고 파일 경로를 읽게 하는
+  폴백을 쓴다.
+- 디스패처는 요청 `--cwd`를 AGY의 `--add-dir`로 항상 결속한다. AGY는 process cwd와 무관하게
+  이전 host workspace를 읽을 수 있어, spawn cwd와 영수증 cwd만으로는 파일 접근 대상을
+  결속하지 못한다.
 - 파일 읽기 성공을 hidden token으로 확인해야 하는 호출은 `--out <path>`와
   `--expect-output <ASCII-token, 최대 1024자>`을 함께 쓴다. 이 flag는 최대 12회 반복할 수 있으며 준
   순서대로 모든 token을 stdout에서 literal 검사한다. token은 brief나 vendor argv로 보내지 않고,
@@ -381,8 +376,8 @@ AGY headless는 command permission을 물을 수 없으므로 dispatcher가 expl
   부분 등록이 항상 같아져 이 값이 가르려던 구별이 사라진다). 판정에 쓰지 않고 영수증 `expectedTotal`에만 남으며 exit code를 바꾸지 않는다. **읽는 법은 셋이다** —
   `expectedTotal`이 `null`이면 **미신고**라 부분 등록 여부를 알 수 없고, `outputChecks.length`와 **같으면 전건 등록**,
   **크면 부분 등록**이다. 신고가 없으면 `outputCheckStatus: matched`만으로는 전 구획이 돌았는지 알 수 없다.
-- `--model`은 디스플레이 라벨(`"Gemini 3.1 Pro (High)"`)이나 `agy models`가 출력하는 정규 slug(`gemini-3.1-pro-high`) 둘 다 유효하다. `agy models`는 slug를, 모델 피커 화면은 라벨을 보여준다. 형식이 깨졌거나 모르는 이름은 exit 1로 거부되니(구버전의 silent-downgrade 아님) 호출 후 exit code를 확인할 것.
-- ⚠ **agy 1.1.26부터 reasoning effort가 별도 축이다**(실측 2026-08-31). `--model gemini-3.8-flash --effort low|medium|high`가 정식형이고, dispatcher가 `--effort`를 그대로 전달한다. 옛 접미사(`gemini-3.8-flash-low`)는 **단독으로는 아직 통한다.** 다만 **둘을 섞으면 exit 1**이고(`--model gemini-3.8-flash-low conflicts with --effort=high`), **접미사 없는 이름을 effort 없이 주면 그것도 exit 1**이다(`requires --effort`). 어느 쪽도 조용히 한쪽을 고르지 않는다 — 이긴 값을 추측하지 말고 exit code를 읽어라. 버전 없는 `--model gemini`는 디스패처가 최신 slug의 꼬리 없는 형태(`gemini-3.8-flash`)로 바꿔 넘기므로 같은 규칙을 따른다 — `--effort`를 함께 준다.
+- `--model`은 디스플레이 라벨(`"Gemini 3.1 Pro (High)"`)이나 `agy models`가 출력하는 정규 slug(`gemini-3.1-pro-high`) 둘 다 유효하다. `agy models`는 slug를, 모델 피커 화면은 라벨을 보여준다. 형식이 깨졌거나 모르는 이름은 exit 1로 거부되니 호출 후 exit code를 확인할 것.
+- ⚠ **agy 1.1.26 이상에서는 reasoning effort가 별도 축이다.** `--model gemini-3.8-flash --effort low|medium|high`가 정식형이고, dispatcher가 `--effort`를 그대로 전달한다. 옛 접미사(`gemini-3.8-flash-low`)는 **단독으로는 아직 통한다.** 다만 **둘을 섞으면 exit 1**이고(`--model gemini-3.8-flash-low conflicts with --effort=high`), **접미사 없는 이름을 effort 없이 주면 그것도 exit 1**이다(`requires --effort`). 어느 쪽도 조용히 한쪽을 고르지 않는다 — 이긴 값을 추측하지 말고 exit code를 읽어라. 버전 없는 `--model gemini`는 디스패처가 최신 slug의 꼬리 없는 형태(`gemini-3.8-flash`)로 바꿔 넘기므로 같은 규칙을 따른다 — `--effort`를 함께 준다.
 - **agy 영수증 한계**: 영수증의 `model`·`invoked`는 agy에도 기록되지만(요청 모델·실행 여부), 실측 토큰(`vendorUsage`)과 실제 응답 backend 확인은 **Codex 전용**이다. agy는 응답에 모델·session id를 안 실어(헤더 없음) 요청과 실제 실행 모델을 묶을 앵커가 없다. 대신 unknown 모델을 loud reject하므로 강등 위험은 낮다.
 → 호출 전 필수: `references/adapter-antigravity.md` 를 반드시 읽을 것 (Windows 호스트 주의·모델 라벨·이미지 생성·복구·기타 함정)
 
@@ -421,20 +416,26 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor claude --operation text
   OAuth와 명시한 model·effort는 어느 쪽이든 유지된다. 이것은 **구성 격리이지 filesystem
   sandbox가 아니며** default의 full-access와 공존한다.
 - 읽기 전용 mode의 claude 리뷰어에게 **git 이력을 읽고 시험을 돌릴 셸**을 준다. ⚠ **셸을 묶는
-  목록은 붙이지 않는다** — 허용 목록이 도구를 전혀 묶지 못하는 것을 실측했고, 금지 목록은 이름을 아무리 채워도
-  같은 효과를 내는 다른 이름·별칭·셸 래퍼가 남아 증명이 될 수 없다. 싣는 규칙은 허용 규칙
-  `Bash(node *)`·`PowerShell(node *)` 하나뿐이며, 자식이 `dontAsk`에서 거부하던 `node`를 **연다**
-  (2026-09-13·2026-09-26 실측: `node --version`·`node --test` 거부). 셸이 도는 이상 리뷰어는
+  목록은 붙이지 않는다.** 싣는 규칙은 허용 규칙
+  `Bash(node *)`·`PowerShell(node *)` 하나뿐이며, `node`를 **연다**. 셸이 도는 이상 리뷰어는
   파일도 쓰고 `node`는 스크립트를 무엇이든 실행한다. 리뷰어를 붙잡는 것은 brief의 금지 지시다.
   엄격한 읽기 전용이 필요하면 `--no-host-shell`로 셸을 **닫는다** — 좁히는 것이 아니라 없애며,
   `node` 규칙도 함께 빠진다.
+- ⚠ **리뷰어 셸은 명령을 모양으로 거른다**(claude 2.1.283 기준). 평범한 읽기 명령은 `;`로
+  잇거나 파이프·`2>&1`을 붙이거나 cwd 밖 경로를 줘도 돌고 `node`도 돈다. `git -C`와 PowerShell 스크립트
+  문법(변수 대입 `$x = …`·`foreach`·괄호식 `(…).Count`·`$()` 치환)은 거부되며, 한 줄에 하나라도 섞이면
+  줄 전체가 거부된다. 디스패처는 이 안내를 넣지 않으므로 **claude 리뷰어 brief에 아래 문장을 싣는다**:
+  「셸에서 평범한 읽기 명령(`git rev-parse`·`git status`·`git diff`, `Get-FileHash`·`Get-ChildItem`·
+  `Get-Content`)과 `node`는 실행된다. `;`로 잇거나 파이프를 써도 된다. `git -C`와 PowerShell 스크립트
+  문법(변수 대입, `foreach`, 괄호식, `$()` 치환)은 거부되고, 한 줄에 하나라도 섞이면 줄 전체가 거부된다.
+  거부되면 셸이 막힌 것이 아니라 그 명령만 문제이니 평범한 형태로 다시 시도하고, 해시·줄 수 같은 계산은
+  `node -e`로 한다.」 표와 예시는 `references/adapter-claude.md` 「리뷰어 셸에서 거부되는 명령 모양」.
 - Claude Code 부모의 session marker인 `CLAUDECODE`는 child에 전달하지 않는다. 이는
   same-host 실행을 가능하게 하는 프로세스 격리이며 리뷰 독립성 판정이나 우회가 아니다.
 - exit 0이어도 result JSON이 비었거나 실제 모델명이 요청 별칭/정식명과 다르면 exit 4다.
-- default 호출은 파일 경로와 전체 repository 조사·수정 지시를 그대로 줄 수 있다. 실측:
-  임시 디렉터리에서 default 호출 한 번으로 파일 생성·수정·명령 실행이 모두 성공했다
-  (영수증 `default/default`·`invoked=true`·`exit=0`). 결과를 출력 텍스트로 실어 나를 필요가
-  없다. `--mode plan|review`도 실제 project cwd를 탐색하며 Write·Edit는 없지만 git 셸은 기본으로 남는다.
+- default 호출은 파일 경로와 전체 repository 조사·수정 지시를 그대로 줄 수 있다. 결과를 출력
+  텍스트로 실어 나를 필요가 없다. `--mode plan|review`도 실제 project cwd를 탐색하며 Write·Edit는
+  없지만 git 셸은 기본으로 남는다.
 → 호출 전 필수: `references/adapter-claude.md` 를 반드시 읽을 것 (리뷰 독립성·비용·도구경계·Windows 함정)
 
 ### Grok (SuperGrok 구독)
@@ -455,7 +456,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor grok --operation text \
 - Windows에서 PATH에 `grok`가 없으면 `%USERPROFILE%\.grok\bin\grok.exe` fallback.
 - 인증은 `grok login` (OAuth). API key 경로는 이 vendor 범위 밖이다.
 - JSON `usage` 토큰이 없으면 subscription fail-closed. 전역 규율을 풀지 않는다.
-- plan/review는 `--permission-mode plan` + `--tools read_file,grep,list_dir`. `--tools` 이름이 전부 틀리면 grok은 에러 없이 도구를 연다(실측). native `plan`이 그 바닥이다.
+- plan/review는 `--permission-mode plan` + `--tools read_file,grep,list_dir`. `--tools` 이름이 전부 틀리면 grok은 에러 없이 도구를 연다. native `plan`이 그 바닥이다.
 - **Linked Git worktree의 exact-diff 리뷰:** 이 mode에는 terminal·`git diff`가 없다. worktree의
   `.git`이 파일이면 `list_dir .git`은 실패하고 Grok이 부모 Git 관리 경로로 샐 수 있다. caller는
   brief의 `대상 내용`에 변경 파일 목록과 **exact unified diff 전문**을 넣고, `.git`·부모 repo·
@@ -484,7 +485,7 @@ config의 전권 자세다. 세 호출 모두 비대화형 `dangerous`를 써 �
   session ID를 `vendorUsage`에 남긴다. 읽지 못하면 `vendorUsageStatus`로 구분하고 호출 성공을 꾸미지 않는다.
 - 이미지 operation과 `--effort`는 호출 전에 거부한다. 모델 카탈로그·클라우드 세션·ACP는 이 경로에 없다.
 - **모델 — effort는 슬러그 끝으로 고른다.** SWE-2: `swe-2-high` · `swe-2-medium` · `swe-2-max`
-  (Free, 262K). 별칭 `swe`는 `SWE-2 High`로 돈다(2026-09-24 실측). 실제로 돈 모델은 영수증
+  (Free, 262K). 별칭 `swe`는 `SWE-2 High`로 돈다. 실제로 돈 모델은 영수증
   `vendorUsage.actualModels`에 남고, 목록 변경은 `devin models list`로 확인한다. 표는 adapter-devin.md 「모델」 절.
 - Windows PATH에서 못 찾으면 `%LOCALAPPDATA%\devin\cli\bin\devin.exe`를 찾는다.
 → 호출 전 필수: `references/adapter-devin.md`
@@ -497,7 +498,7 @@ Bash `run_in_background`로 띄우고 완료 알림 후 결과 수합. 사용자
 대조한다. `exit 124`·빈 출력·영수증 부재는 **리뷰 없음이 아니라 실패**이며 findings나 패널 증거로
 바꾸지 않는다.
 
-## 파일 입력 과업 — 대용량·멀티모달 (실측 2026-07-11)
+## 파일 입력 과업 — 대용량·멀티모달
 
 대용량 텍스트는 파일로 두고 읽을 경로를 지시한다. codex는 로컬 파일을 직접 읽고, agy는
 `--add-dir`로 디렉토리를 허용해 경로를 참조하거나 무-플래그 stdin으로 받는다. 이미지·영상
@@ -508,7 +509,7 @@ ffmpeg로 프레임을 추출한 뒤 그 프레임들을 `-i`로 전달한다(�
 - **입력 과업의 성공 판정은 회신이 실제 파일 내용을 반영하는지로** 한다. 파일명만 읊거나
   "파일을 볼 수 없다"고 답한 것은 실패이며, 산출 과업의 파일 존재 판정과 구분한다
 
-## 파일 산출물 과업 — 공통 규칙만 (실측 2026-07-03 — 벤더 행동은 바뀔 수 있으니 이상하면 재실측)
+## 파일 산출물 과업 — 공통 규칙만 (벤더 행동은 바뀔 수 있으니 이상하면 재확인)
 
 텍스트가 아니라 **파일**을 만들어야 하는 과업. 채널별 호출 조건과 산출물 위치는 각 어댑터를 따른다.
 

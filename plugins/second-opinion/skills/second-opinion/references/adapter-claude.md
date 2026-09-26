@@ -1,7 +1,5 @@
 # adapter-claude — Claude Code reverse channel
 
-> dispatcher bridge 실측 기준 2026-07-28.
-
 ## 리뷰 독립성과 중립 broker
 
 dispatcher는 호출자의 실행 요청을 중립적으로 중계하며, 동일 호스트/벤더 호출 여부를 기계적으로 차단하지 않는다. 동일 벤더 호출 시 독립 리뷰 인정 여부는 caller(Madi 등)가 실제 기록된 영수증과 역할을 대조해 판정한다.
@@ -43,7 +41,7 @@ PowerShell도 동일한 `node ... dispatch.mjs` argv를 사용한다. brief 내�
   Claude Code를 원하면 `--vendor`를 생략한 `Claude Code opus 4.6`, 또는
   `--vendor claude --model claude-opus-4-6`처럼 벤더를 고정한다. `Claude Code` 접두사는
   자동 라우팅 힌트이므로 명시적 `--vendor`의 `--model` 값에는 붙이지 않는다.
-- `--model`과 `--effort`는 필수다. Claude CLI 2.1.215 실측 effort는
+- `--model`과 `--effort`는 필수다. Claude CLI 2.1.215 기준 effort는
   `low | medium | high | xhigh | max`다.
 - `--out`과 `--err`도 필수다. raw JSON·stderr가 증거 봉투의 backend output이 된다.
 - `SECOND_OPINION_RECEIPT=<JSONL 경로>`를 설정하면 요청 모델·실제 model family·token
@@ -76,9 +74,6 @@ Windows에서는 `taskkill /T /F`, POSIX에서는 강제 종료로 자식 트리
 exit를 `timeout`으로 기록한다. 중단된 리뷰는 resume하지 않고 같은 brief로 처음부터 다시
 실행한다. `exit 124`·빈 출력·영수증 부재는 리뷰 결과가 아니라 실패다.
 
-실측: 46,446-byte·1,010-line Opus high 리뷰는 raw 280초 제한에서 빈 출력으로 종료됐지만,
-dispatcher 규율에서는 303.92초에 exit 0·실제 `claude-opus-4-8`·유효 리뷰를 반환했다.
-
 ## 도구 경계
 
 | 호출 | requested/effective | 권한 | cwd |
@@ -90,9 +85,7 @@ dispatcher 규율에서는 303.92초에 exit 0·실제 `claude-opus-4-8`·유효
 default Claude child는 `--safe-mode --disable-slash-commands
 --dangerously-skip-permissions --tools=default`인 **full-access 호출**이다. 기본 도구
 전체(읽기·쓰기·편집·명령 실행)를 쓸 수 있고, headless라 권한을 물을 수 없으므로 비대화형
-실행을 허용한다. 실측: 격리된 임시 디렉터리에서 default 호출 한 번으로 파일 생성·수정·명령
-실행이 모두 성공했고 영수증은 `default/default`·`invoked=true`·`exit=0`·
-`vendorUsageStatus=ok`였다. 따라서 brief에 파일 경로와 저장소 조사 지시를 그대로 줄 수
+실행을 허용한다. 따라서 brief에 파일 경로와 저장소 조사 지시를 그대로 줄 수
 있으며, 결과를 출력 텍스트에 실어 나를 필요가 없다.
 
 제한된 도구 구성은 명시적 `--mode plan|review`뿐이다. 두 mode는
@@ -101,12 +94,12 @@ default Claude child는 `--safe-mode --disable-slash-commands
 `--allowed-tools "Bash(node *)" "PowerShell(node *)"`를 붙인다.
 Write·Edit·Agent는 제공하지 않지만 셸은 파일을 쓸 수 있으므로 filesystem 읽기 전용은 아니다.
 
-### 리뷰어의 git 조회 (R033-H16, 2026-09-06 실측)
+### 리뷰어의 git 조회
 
 리뷰어가 변경 이력을 못 읽으면 diff를 산문으로 떠먹여야 한다. 그래서 읽기 전용 mode에도 셸을
 연다. 무엇이 그 셸을 붙잡는지는 **재본 대로만** 적는다.
 
-| 넣은 것 | 실측 결과 |
+| 넣은 것 | 결과 |
 |---|---|
 | `--tools`에 `Bash`만 | 자식 도구 목록에 셸이 **없다**. Windows에서 등록되는 셸은 `PowerShell`이다 |
 | `--tools`에 두 이름 다 | `SHELL=PowerShell` · `git status --short`가 돈다 |
@@ -121,17 +114,10 @@ Write·Edit·Agent는 제공하지 않지만 셸은 파일을 쓸 수 있으므�
 자세다. 엄격한 읽기 전용이 필요하면 `--no-host-shell`로 셸을 **없앤다** — `--tools=Read,Glob,Grep`
 으로 돌아가고 아래 `node` 규칙도 함께 빠진다.
 
-### 리뷰어의 시험 실행 (R033-H22)
+### 리뷰어의 시험 실행
 
-셸이 열려 있어도 자식 정책은 `dontAsk`에서 `node`를 거부했다. 리뷰어가 판정하는 스위트를 스스로
-돌리지 못하고 호출자가 잰 값에 기대야 했다.
-
-| 관측 | 결과 |
-|---|---|
-| claude 2.1.25x, 2026-09-13 (`--mode review`) | `node --test`(파이프 있는 형태·없는 형태)·`node --version` 거부, `git diff`·`git rev-parse`는 실행 |
-| claude 2.1.283, 2026-09-26 (`--mode review --model sonnet --effort medium`) | `node --version`·`node --test t.test.mjs` 거부(「don't ask mode」), `Get-ChildItem -Name` 실행. 영수증 `permission_denials`에 두 node 명령 |
-
-그래서 **허용 규칙 하나** — `Bash(node *)`·`PowerShell(node *)` — 를 셸과 함께 싣는다. 이 규칙은
+셸이 열려 있어도 자식 정책 `dontAsk`는 이름만으로 `node`를 거부할 수 있다. 그래서 **허용 규칙
+하나** — `Bash(node *)`·`PowerShell(node *)` — 를 셸과 함께 싣는다. 이 규칙은
 **묶지 않고 연다.** 위 표의 「allow는 안 묶는다」는 그대로이며, 이 규칙은 자식이 거부하던 프로그램
 하나를 사전 승인하는 방향으로만 쓴다. 쓰기를 자동 승인하는 permission mode(`plan`·`acceptEdits`·
 `bypassPermissions`·`auto`)는 여전히 쓰지 않는다. `--allowed-tools`는 가변 인자라 argv 맨 끝에 둔다.
@@ -140,10 +126,39 @@ Write·Edit·Agent는 제공하지 않지만 셸은 파일을 쓸 수 있으므�
 넓힌다. 붙잡는 것은 여전히 brief의 금지 지시이고, `--no-host-shell`은 셸과 이 규칙을 함께 없앤다.
 mode 생략 호출은 원래 모든 도구를 가지므로 이 규칙을 받지 않는다.
 
-**규칙이 거부를 실제로 푼다**(2026-09-26 실측, claude 2.1.283, `--mode review`) — 같은 탐침에서 규칙
-없이는 `node --version`·`node --test`가 「don't ask mode」로 거부돼 `permission_denials` 2건이었고,
-규칙을 실은 판에서는 둘 다 실행되고(`node --test` 1 통과) `permission_denials` 0건이었다.
-`Get-ChildItem`은 두 판 모두 실행됐다.
+### 리뷰어 셸에서 거부되는 명령 모양
+
+셸이 열려 있어도 `dontAsk`는 명령을 **모양으로** 판정해 통과시킨다(claude 2.1.283 기준,
+`--mode review --model sonnet --effort medium`).
+
+| 명령 모양 | 예 | 결과 |
+|---|---|---|
+| 평범한 읽기 명령 | `git rev-parse --show-toplevel`·`git status --short`·`git diff --stat HEAD -- .`·`Get-FileHash t.test.mjs`·`Get-ChildItem -Name`·`Get-Content <파일>` | 실행 |
+| `;`로 이은 평범한 명령 | `git rev-parse HEAD; git status --short` | 실행 |
+| 파이프·리다이렉트 | `Get-ChildItem -Name \| Select-Object -First 3`·`git rev-parse --show-toplevel 2>&1` | 실행 |
+| cwd 밖 경로 | `Get-ChildItem -Name <다른 폴더>`·`Get-Content <다른 폴더의 파일>` | 실행 |
+| `node` | `node --version`·`node --test` | 실행 |
+| `git -C` | `git -C . rev-parse --show-toplevel` | **거부** |
+| 변수 대입 | `$h = (Get-FileHash t.test.mjs -Algorithm SHA256).Hash; $h` | **거부** |
+| `foreach` | `foreach ($f in 't.test.mjs') { $f }` | **거부** |
+| 괄호식 | `(Get-Content t.test.mjs).Count` | **거부** |
+| `$()` 치환 | `"$(git rev-parse HEAD)"` | **거부** |
+
+거부되는 조각이 **한 줄에 하나라도 섞이면 그 줄 전체가 거부된다.** 거부는 그 명령 하나에 대한
+것이지 셸이 닫힌 것이 아니다 — 평범한 형태로 다시 쓰면 돈다. 해시·줄 수 같은 계산은 `node -e`로 한다.
+
+⚠ **리뷰어는 이것을 모른 채 시작할 수 있다.** 거부는 그 명령 하나에 대한 것이고 다른 방법을 쓰면
+되지만, 리뷰어가 그 사실을 모르면 첫 거부 1건만으로 셸 전체가 막혔다고 보고 명령을 더 돌리지
+않을 수 있다. 디스패처는 이 안내를 자식에게 넣지 않는다 — **claude 리뷰어의 brief에 싣는 것은
+brief를 쓰는 쪽의 몫이다.** 실을 문장:
+
+> 셸에서 평범한 읽기 명령(`git rev-parse`·`git status`·`git diff`, `Get-FileHash`·`Get-ChildItem`·
+> `Get-Content`)과 `node`는 실행된다. `;`로 잇거나 파이프를 써도 된다. `git -C`와 PowerShell 스크립트
+> 문법(변수 대입, `foreach`, 괄호식, `$()` 치환)은 거부되고, 한 줄에 하나라도 섞이면 줄 전체가
+> 거부된다. 거부되면 셸이 막힌 것이 아니라 그 명령만 문제이니 평범한 형태로 다시 시도하고,
+> 해시·줄 수 같은 계산은 `node -e`로 한다.
+
+이 판정은 claude 자체 규칙이다. claude 버전이 바뀌면 달라질 수 있으므로 위 버전을 함께 읽는다.
 
 `--safe-mode`는 **`--host-skills`를 주지 않은 모든 호출**에 남는다. 이것은 **구성 격리**
 (대상 프로젝트의 CLAUDE.md·hook·plugin·MCP 비활성)이지 filesystem sandbox가 아니며,
@@ -173,9 +188,9 @@ user settings가 로드되고, 거기 `permissions.allow`가 있으면 그 규�
 사라지므로, 닫지 않고 공시한다. **이것은 enabledPlugins가 같은 경로로 살아나는 것을 프로브로
 확인한 데서 나온 추론이고, 권한 규칙이 실제로 상속되는지는 아직 직접 재지 않았다.**
 
-켤 때 무엇이 함께 들어오는지 재두었다(2026-09-06 실측): 개인 스킬 219개, 설명줄만 68,961 B.
-호출당 범위를 좁히는 스위치는 없다 — `strictPluginOnlyCustomization`은 machine 단위
-`managed-settings.json` 키라 호출마다 지정할 수 없다. 그래서 기본값은 off다.
+켤 때는 개인 스킬과 그 설명 텍스트도 함께 들어온다. 호출당 범위를 좁히는 스위치는 없다 —
+`strictPluginOnlyCustomization`은 machine 단위 `managed-settings.json` 키라 호출마다 지정할 수
+없다. 그래서 기본값은 off다.
 
 권한 모델로 sandbox·worktree·snapshot·packet 분리·cwd 재작성은 사용하지 않는다.
 권한은 오직 위 표의 mode별 flag 조합으로 결정되며, 자식은 항상 caller가 준 실제 cwd에서
@@ -183,8 +198,7 @@ user settings가 로드되고, 거기 `permissions.allow`가 있으면 그 규�
 
 ## 비용
 
-nested Claude 호출은 풀 세션이다. 2026-07-28 Opus high 46KB 실측은 cache creation
-41,807·output 21,923 tokens, 약 $0.97였다. 모델과 effort를 생략하지 말고, 현재 검증에
+nested Claude 호출은 풀 세션이다. 모델과 effort를 생략하지 말고, 현재 검증에
 필요한 최소 brief만 보낸다.
 
 ## 설치·복구

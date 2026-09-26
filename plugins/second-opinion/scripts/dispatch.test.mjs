@@ -592,7 +592,7 @@ test("generation help and documentation teach the repaired safety contracts", ()
     assert.match(text, /silence_timeout_seconds/);
     assert.match(text, /600/);
     assert.match(text, /Retry-After[\s\S]{0,200}3600/);
-    assert.match(text, /0\.9\.8.*상수|0\.9\.8 failure vocabulary.*constant/is);
+    assert.match(text, /vendor[\s\S]{0,200}caller[\s\S]{0,200}dispatcher/is);
   }
   assert.match(codexAdapter, /usage.*검증된 뒤/s);
   assert.match(codexAdapter, /shipped closed portable emitter/);
@@ -607,8 +607,7 @@ test("generation help and documentation teach the repaired safety contracts", ()
   assert.match(readme, /HTTP responses may succeed with `usage: null`.*subscription adapters still fail closed/is);
   assert.match(koreanReadme, /HTTP는 응답 model이 귀속을 증명하면\s*`usage: null`이어도 성공.*subscription adapter는\s*usage가 없으면 계속 실패/s);
   for (const text of [readme, koreanReadme, skill]) {
-    assert.match(text, /Zhipu.*16/is);
-    assert.match(text, /gemini-2\.5-flash.*16/is);
+    assert.match(text, /max_completion_tokens[\s\S]{0,80}(?:no text|텍스트)/is);
     assert.match(text, /1 \+ max_retries.*6/is);
     assert.match(text, /provider-probe\.mjs/);
   }
@@ -677,12 +676,12 @@ test("skill resolves the catalog path directly before declaring it missing", () 
   assert.match(skill, /검색 결과가 비었다는 이유만으로 설치 누락이나 카탈로그 오류라고 단정하지 않는다/);
 });
 
-test("0.9.23 public help and documentation describe cache-first ranked routing", () => {
+test("0.9.24 public help and documentation describe cache-first ranked routing", () => {
   const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
   const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
   const publicReadmeUrls = [new URL("../../../README.md", import.meta.url), new URL("../../../README.ko.md", import.meta.url)];
   const publicReadmes = publicReadmeUrls.filter((url) => existsSync(url)).map((url) => readFileSync(url, "utf8"));
-  assert.equal(plugin.version, "0.9.23");
+  assert.equal(plugin.version, "0.9.24");
   assert.ok(publicReadmes.length === 0 || publicReadmes.length === 2, "public snapshot must carry both README files");
   // Derived from plugin.json rather than written out again: the literal was a
   // third place a release had to edit, and a bump that missed it failed here
@@ -1062,10 +1061,10 @@ test("Devin config-hook unit: each configured name returns a block reason; remov
   }
 });
 
-test("the 0.9.23 plugin bundle carries every Devin runtime and adapter asset", () => {
+test("the 0.9.24 plugin bundle carries every Devin runtime and adapter asset", () => {
   const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
   const marketplace = JSON.parse(readFileSync(new URL("../../../.claude-plugin/marketplace.json", import.meta.url), "utf8"));
-  assert.equal(plugin.version, "0.9.23");
+  assert.equal(plugin.version, "0.9.24");
   assert.match(plugin.description, /Devin/);
   assert.match(marketplace.plugins.find(({ name }) => name === "second-opinion")?.description ?? "", /Grok, Devin/);
   for (const asset of [
@@ -2708,7 +2707,7 @@ test("agy carries reasoning effort as its own flag", () => {
   const conflictAt = conflictArgv.indexOf("--effort");
   assert.notEqual(conflictAt, -1, "the separate effort flag survives too");
   assert.equal(conflictArgv[conflictAt + 1], "high");
-  assert.match(usageText(), /AGY reasoning effort is its own axis since agy 1.1.26/);
+  assert.match(usageText(), /On agy 1\.1\.26 or later, reasoning effort is its own axis/);
 });
 
 test("unsupported and ambiguous CLI inputs exit 2", async () => {
@@ -5159,6 +5158,23 @@ test("claude help and public docs say plan/review pre-approve node and nothing c
     for (const rule of rules) assert.ok(text.includes(rule), `${name} names ${rule}`);
     for (const pattern of patterns) assert.match(text, pattern, `${name} lacks ${pattern}`);
     assert.doesNotMatch(text, stale, `${name} still says the claude shell carries no rule`);
+  }
+});
+
+test("claude help and public docs say which shell command shapes the reviewer is refused", () => {
+  const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
+  const changelog = read("../../../CHANGELOG.md");
+  const release = changelog.match(/^## 0\.9\.24 — [^\n]*\n([\s\S]*?)(?=^## )/m)?.[1] ?? "";
+  const surfaces = [
+    ["help", usageText(), [/git -C and PowerShell script\s+syntax/, /refuses the whole\s+line/, /node -e/, /Tell a claude reviewer this in the brief/]],
+    ["SKILL", read("../skills/second-opinion/SKILL.md"), [/리뷰어 셸은 명령을 모양으로 거른다/, /문법\(변수 대입 `\$x = …`·`foreach`·괄호식 `\(…\)\.Count`·`\$\(\)` 치환\)은 거부되며, 한 줄에 하나라도 섞이면\s+줄 전체가 거부된다/, /claude 리뷰어 brief에 아래 문장을 싣는다/, /거부되면 셸이 막힌 것이 아니라 그 명령만 문제이니 평범한 형태로 다시 시도하고, 해시·줄 수 같은 계산은\s+`node -e`로 한다/]],
+    ["adapter", read("../skills/second-opinion/references/adapter-claude.md"), [/### 리뷰어 셸에서 거부되는 명령 모양/, /\| `git -C` \| `git -C \. rev-parse --show-toplevel` \| \*\*거부\*\* \|/, /\| `foreach` \|[^\n]*\| \*\*거부\*\* \|/, /brief를 쓰는 쪽의 몫이다/, /`node -e`로 한다/]],
+    ["README", read("../../../README.md"), [/`node`; `git -C` and PowerShell script syntax \(variable assignment, `foreach`, a\s+parenthesized expression, `\$\(\)` substitution\) are refused, and one such piece\s+refuses the whole line/, /rewrite it in plain form and do sums such as hashes\s+and line counts with `node -e`/]],
+    ["README.ko", read("../../../README.ko.md"), [/`git -C`와 PowerShell 스크립트 문법\(변수 대입, `foreach`, 괄호식, `\$\(\)` 치환\)은 거부되고, 한 줄에\s+하나라도 섞이면 줄 전체가 거부된다/, /계산은 `node -e`로 하라/]],
+    ["CHANGELOG 0.9.24", release, [/모양으로\*\* 거른다/, /`git -C`와 PowerShell/, /디스패처는 이 안내를 자식에게\s+넣지 않는다/]],
+  ];
+  for (const [name, text, patterns] of surfaces) {
+    for (const pattern of patterns) assert.match(text, pattern, `${name} lacks ${pattern}`);
   }
 });
 

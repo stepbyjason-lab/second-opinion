@@ -4,6 +4,20 @@
 > add `Planned release version: <plugin.json version>` under `## Unreleased`.
 > Replace it with the matching release heading when releasing.
 
+## 0.9.24 — 2026-09-26
+
+- 공개 문서에서 이력을 뺐다(동작 변경 없음). `--help`·SKILL.md·`references/*.md`·README 2종에 섞여 있던
+  날짜 붙은 실측, 라운드·버전 이력, 사고 경위, 결정 근거, 옛 동작 비교를 걷어내고 현재 동작과 사용자가 할
+  일만 남겼다. 벤더 CLI 버전 조건, 사용 규칙이 되는 표, 호출자가 고르는 모델 목록(SWE-2 슬러그 표 포함),
+  지원 범위 문장은 남긴다. 이력 문구를 박던 시험 셋은 같은 자리의 현재 동작 문구를 검사하도록 바꿨다.
+- 문서만 보강했다(동작 변경 없음). claude plan/review 리뷰어 셸이 명령을 **모양으로** 거른다는 실측
+  (claude 2.1.283, 2026-09-26)을 `--help`·SKILL.md·adapter-claude.md·README 2종에 같은 말로 싣는다 —
+  평범한 읽기 명령은 `;`·파이프·`2>&1`·cwd 밖 경로와 함께도 돌고 `node`도 돌지만, `git -C`와 PowerShell
+  스크립트 문법(변수 대입·`foreach`·괄호식·`$()` 치환)은 거부되고 한 줄에 하나라도 섞이면 줄 전체가
+  거부된다. 리뷰어는 이를 모른 채 시작해 madi 리뷰게이트 두 번에서 첫 거부 1건 뒤 멈췄으므로, claude
+  리뷰어 brief에 실을 안내 문장을 SKILL.md·adapter-claude.md에 둔다. 디스패처는 이 안내를 자식에게
+  넣지 않는다.
+
 ## 0.9.23 — 2026-09-26
 
 - claude plan/review 리뷰어가 **`node`를 직접 돌린다** — 허용 규칙 `Bash(node *)`·`PowerShell(node *)`
