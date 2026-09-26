@@ -4,6 +4,17 @@
 > add `Planned release version: <plugin.json version>` under `## Unreleased`.
 > Replace it with the matching release heading when releasing.
 
+## 0.9.23 — 2026-09-26
+
+- claude plan/review 리뷰어가 **`node`를 직접 돌린다** — 허용 규칙 `Bash(node *)`·`PowerShell(node *)`
+  하나를 셸과 함께 싣는다. 0.9.22까지는 셸이 열려 있어도 자식 정책이 `dontAsk`에서 `node --version`·
+  `node --test`를 거부해(claude 2.1.25x·2.1.283 실측) 리뷰어가 판정하는 스위트를 스스로 돌리지 못했다.
+  이 규칙은 여는 것이지 셸을 묶는 것이 아니다 — 셸을 묶는 목록은 여전히 싣지 않고(allow는 안 묶는다는
+  R033-H16 실측 그대로), 쓰기를 자동 승인하는 permission mode도 쓰지 않는다. Write·Edit는 계속 없고
+  `--no-host-shell`은 셸과 이 규칙을 함께 없앤다(`--tools=Read,Glob,Grep`). `node`는 스크립트를 무엇이든
+  실행하므로 쓰기를 붙잡는 것은 여전히 brief의 금지 지시다. mode 생략 호출과 codex·agy·grok·devin
+  argv는 바뀌지 않는다. `--help`·SKILL.md·adapter-claude.md·README 2종에 같은 말로 적는다.
+
 ## 0.9.22 — 2026-09-26
 
 - Devin plan/review에서 명령 실행(`exec`)을 연다 — 리뷰어가 `git diff`·`git log`·시험을 직접 돌린다.

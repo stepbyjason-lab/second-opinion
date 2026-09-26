@@ -5,7 +5,7 @@
 Claude Code 안에서 **다른 벤더의 AI**(Codex/GPT, Antigravity/Gemini, Grok, Devin)를 일상어로 부려 쓰는
 어댑터 스킬 — 점검·리뷰·의견부터 작업 오프로드, 이미지 생성까지.
 
-**버전 0.9.22**
+**버전 0.9.23**
 
 > "이 설계 코덱스로 점검받고 싶어" / "안티그래비티한테 물어봐" / "그록으로 봐줘" / "데빈으로 봐줘" / "교차 검증해줘"
 > "코덱스한테 로고 시안 이미지 만들어달라고 해줘" / "클로드 사용량 아끼게 이 번역은 제미나이로"
@@ -95,7 +95,7 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
 | AGY 호출이 effort를 모델 slug 안에 넣음 | agy 1.1.26부터 effort가 별도 축(`--effort low|medium|high`)이다. 옛 `-high` 접미사는 단독으로는 아직 통하지만 `--effort`와 섞으면 **한쪽을 고르는 게 아니라 exit 1**이고, 접미사 없는 이름을 effort 없이 주면 그것도 거부된다. dispatcher는 두 표기를 그대로 전달해 벤더가 실제로 받은 것이 영수증에 남게 한다. 버전이 아예 없는 이름(`gemini`)만 최신 slug의 effort 꼬리 없는 형태로 바꾸며, 같은 규칙대로 `--effort`를 함께 준다 — 대신 채워 주지 않는다 |
 | 로컬을 안 건드렸는데 AGY 기본 모델이 바뀜 | 기본값이 설정 파일이 아니라 Antigravity 계정 쪽에 있다. 실측 — 아무것도 안 고쳤는데 `gemini-3.7-flash`에서 `gemini-3.8-flash-high`로 옮겨갔다. **재현이 필요한 호출은 `--model`을 박을 것** |
 | Grok 리뷰 예시가 reasoning effort를 빼면 벤더 기본값으로 조용히 실행됨 | 표준 리뷰 예시는 가성비 기준 `--effort medium`을 명시. dispatch가 그대로 전달하고 영수증의 `effortRequested`에 요청값을 남김 |
-| 리뷰어에게 exact current diff 확인이나 스위트 실행을 시킴 | Claude plan/review에는 `git diff`와 이력 조회용 Bash/PowerShell이 있고 `--no-host-shell`로 제거할 수 있다. Devin plan/review는 `exec`를 열어 두어 같은 명령을 직접 돌린다. Grok·AGY explicit mode에는 git shell이 없으므로 linked-worktree 리뷰는 **변경 파일 목록과 unified diff 전문**을 brief에 넣고, 스위트 결과는 **호출자가 직접 재서 값으로** 준다 |
+| 리뷰어에게 exact current diff 확인이나 스위트 실행을 시킴 | Claude plan/review에는 `git diff`와 이력 조회용 Bash/PowerShell과 `node` 허용 규칙 하나가 있어 리뷰어가 `node --test`를 직접 돌리고, `--no-host-shell`로 둘 다 제거할 수 있다. Devin plan/review는 `exec`를 열어 두어 같은 명령을 직접 돌린다. Grok·AGY explicit mode에는 git shell이 없으므로 linked-worktree 리뷰는 **변경 파일 목록과 unified diff 전문**을 brief에 넣고, 스위트 결과는 **호출자가 직접 재서 값으로** 준다 |
 | Devin이 호출자 agent/editor 스킬과 MCP 설정을 가져옴 | 모든 Devin 호출에 `read_config_from` 여덟 축을 끈 bundled config를 전달. default는 전권, plan/review는 쓰기 도구를 막는 PreToolUse hook을 더해 거절 이유를 자식이 관측한 뒤 계속 실행하되 `exec`는 열어 둠 — 셸이 도는 이상 셸로 파일을 쓸 수 있어 쓰기를 붙잡는 것은 brief의 금지 지시 |
 
 - **실행 영수증** — 벤더를 부른 뒤 관측한 것을 한 줄로 남긴다: 요청한 벤더·모델,
@@ -174,10 +174,13 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
   실패 행은 **빈 배열**로 적는다. 자식이 그것을 어떻게 집행했는지는 적지 않는다. **codex
   홈에 놓인 `AGENTS.md`는 문서 스위치로 걷히지 않는다.** `--host-skills`(claude 전용)는
   자식이 스킬·플러그인을 쓰게 하며, 구성을 통째로 닫던 스위치 하나를 대신하므로 훅·MCP·
-  CLAUDE.md는 그 경우 모든 mode에서 기본 차단이 된다. claude 리뷰어에게는 **git 이력을 읽도록
-  셸도 준다** — 명령 규칙 목록은 붙이지 않는다. 허용 목록이 도구를 묶지 못하는 것을 실측했고,
-  금지 목록은 같은 효과를 내는 다른 이름이 남아 증명이 될 수 없다. 리뷰어를 실제로 붙잡는 것은
-  brief의 금지 지시이며, `--no-host-shell`로 셸을 아예 닫을 수 있다. 이것은 **구성 격리이지 filesystem
+  CLAUDE.md는 그 경우 모든 mode에서 기본 차단이 된다. claude 리뷰어에게는 **git 이력을 읽고
+  시험을 돌리도록 셸도 준다** — 허용 규칙 `Bash(node *)`·`PowerShell(node *)` 하나를 함께 싣는다.
+  자식 정책이 `dontAsk`에서 `node`를 거부했기 때문이며, 이 규칙은 여는 것이지 묶는 것이 아니다.
+  셸을 묶는 목록은 붙이지 않는다. 허용 목록이 도구를 묶지 못하는 것을 실측했고,
+  금지 목록은 같은 효과를 내는 다른 이름이 남아 증명이 될 수 없다. `node`는 스크립트를 무엇이든
+  실행하므로 리뷰어를 실제로 붙잡는 것은 brief의 금지 지시이며, `--no-host-shell`로 셸과 규칙을
+  함께 닫을 수 있다. 이것은 **구성 격리이지 filesystem
   sandbox가 아니며** full-access와 공존한다. 부모 전용 `CLAUDECODE` marker는 child
   환경에서 제거해 의도한 nested 호출이 vendor CLI에서 다시 거부되지 않게 한다.
   기본값은 꺼짐이며, 설정 안 하면 아무것도 쓰지 않는다.
@@ -185,8 +188,8 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
   text 호출에는 caller가 `--mode plan` 또는 `--mode review`를 명시할 수 있다. 두 mode는
   같은 실제 project cwd 전체를 유지한다. Claude는 plan/review identity를 receipt에 각각
   보존하고, native plan workflow 없이 기본 `Read,Glob,Grep,Bash,PowerShell`과
-  `--permission-mode dontAsk`를 사용한다. 스킬·플러그인은 기본 제외되며 `--host-skills`가
-  `Skill` 도구를 추가하고, `--no-host-shell`은 Bash/PowerShell을 제거한다.
+  `--permission-mode dontAsk`, `node` 허용 규칙을 사용한다. 스킬·플러그인은 기본 제외되며 `--host-skills`가
+  `Skill` 도구를 추가하고, `--no-host-shell`은 Bash/PowerShell과 그 규칙을 제거한다.
   sandbox·worktree·snapshot·축약 packet을 만들지 않는다.
 
   **mode가 실제로 얼마나 조이는지는 벤더마다 다르고, Codex에서는 아무것도 조이지 않는다.**

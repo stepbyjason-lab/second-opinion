@@ -316,7 +316,7 @@ export function applyVendorHostIsolationEnv(env = {}, options = {}) {
 // permission model — the vendor runs in the caller's real --cwd, and this
 // allowlist is what narrows the built-in tools.
 //
-// No command rule list is shipped with the shell. One was carried for several
+// No list that confines the shell is shipped. One was carried for several
 // passes and measurement (probe-pwsh.json, probe-norules.json) took it apart:
 // the allow rules did not confine the tool at all, and the denials attributed to
 // our list happen the same way without it, because the child's own policy sorts
@@ -324,6 +324,16 @@ export function applyVendorHostIsolationEnv(env = {}, options = {}) {
 // — `git checkout` needed `restore` and `switch`, and aliases and `git -C`
 // remained outside. A caller who needs the shell gone uses --no-host-shell,
 // which removes it rather than narrowing it.
+//
+// One allow rule is shipped, and it grants rather than confines. The child's own
+// policy refuses `node` under dontAsk. Measured twice: claude 2.1.25x
+// (2026-09-13) denied `node --test` and `node --version` while `git diff` ran,
+// and 2.1.283 (2026-09-26) denied both while `Get-ChildItem` ran — so a
+// reviewer could not run the suite it was judging.
+// The rule pre-approves that one program. Node runs any script it is given, so
+// this widens what a running shell can already write; the brief's prohibitions
+// stay the guard, and --no-host-shell drops the rule with the shell.
+const CLAUDE_REVIEW_ALLOWED_COMMANDS = Object.freeze(["Bash(node *)", "PowerShell(node *)"]);
 export function claudeToolArgv(options) {
   if (!isReadOnlyMode(options)) return ["--dangerously-skip-permissions", "--tools=default"];
   const shell = options.hostShell ?? "open";
@@ -339,6 +349,9 @@ export function claudeToolArgv(options) {
   // `dontAsk` never prompts. Measured: read-oriented git runs under it and mutating
   // git is refused by the child itself.
   if (shell === "open") argv.push("--permission-mode", "dontAsk");
+  // --allowed-tools takes a variadic list, so it goes last: nothing after it in
+  // the claude argv can be swallowed as another rule.
+  if (shell === "open") argv.push("--allowed-tools", ...CLAUDE_REVIEW_ALLOWED_COMMANDS);
   return argv;
 }
 

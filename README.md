@@ -2,7 +2,7 @@
 
 **English** | [한국어](./README.ko.md)
 
-![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.22-informational)
+![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.23-informational)
 
 **Use other AI vendors from inside Claude Code — in plain language.**
 Second opinions, task offloading, and vendor capabilities like image generation.
@@ -121,7 +121,7 @@ CLI launches are not worth that diagnostic cost.
 | An AGY call sets reasoning effort inside the model slug | agy 1.1.26 split effort onto its own `--effort low|medium|high`; the old `-high` suffix still resolves alone, but pairing it with `--effort` exits 1 instead of choosing, and a bare model name without `--effort` is rejected — the dispatcher forwards both spellings untouched so the receipt shows what the vendor actually received. Only a name with no version at all (`gemini`) is rewritten, to the newest slug without an effort tail, and it takes `--effort` the same way; none is filled in for you |
 | AGY's default model moves without any local change | it lives on the Antigravity account, not in a config file; measured moving from `gemini-3.7-flash` to `gemini-3.8-flash-high` with nothing edited locally, so pin `--model` on any call whose result must be reproducible |
 | Grok review examples that omit reasoning effort silently use the vendor default | the standard review example explicitly uses `--effort medium` for cost/quality balance; dispatch forwards it unchanged and the receipt retains `effortRequested` |
-| A review must inspect the exact current diff, or run the suite, to judge | Claude plan/review includes Bash/PowerShell for `git diff` and history; `--no-host-shell` removes it. Devin plan/review leaves `exec` open for the same commands. Grok/AGY explicit modes still have no git shell, so linked-worktree reviews must put the changed-file list and full unified diff in the brief and state any suite result the caller measured |
+| A review must inspect the exact current diff, or run the suite, to judge | Claude plan/review includes Bash/PowerShell for `git diff` and history, plus one allow rule for `node` so the reviewer runs `node --test` itself; `--no-host-shell` removes both. Devin plan/review leaves `exec` open for the same commands. Grok/AGY explicit modes still have no git shell, so linked-worktree reviews must put the changed-file list and full unified diff in the brief and state any suite result the caller measured |
 | Devin can import the caller's agent/editor skills and MCP configuration | every Devin call receives a bundled config with all eight `read_config_from` sources disabled; default is unrestricted, while plan/review add a PreToolUse hook that blocks the write tools and returns the reason to the child so execution continues — `exec` stays open, so a running shell can still write and the brief's prohibitions are the guard |
 
 - **Execution receipts** — after every vendor call the skill states what was
@@ -215,10 +215,13 @@ CLI launches are not worth that diagnostic cost.
   lets the child run skills and plugins; it replaces the one switch that had been
   closing configuration wholesale, so hooks, MCP, and `CLAUDE.md` then block by
   default in every mode. A claude reviewer also gets a shell so it can read git
-  history, and no command rule list is shipped with it: allow rules were measured
-  not to confine the tool at all, and a deny list of subcommand names can never
-  cover the effects it is named for. The brief's own prohibitions are the guard,
-  and `--no-host-shell` removes the shell rather than narrowing it. None of this is a
+  history and run tests. One allow rule rides with it, `Bash(node *)` /
+  `PowerShell(node *)`, because the child's own `dontAsk` policy refused `node`;
+  that rule grants and does not confine. No rule list confines the shell: allow
+  rules were measured not to confine the tool at all, and a deny list of subcommand
+  names can never cover the effects it is named for. `node` runs any script, so the
+  brief's own prohibitions are the guard, and `--no-host-shell` removes the shell
+  and the rule rather than narrowing them. None of this is a
   filesystem sandbox — it is configuration isolation and coexists with tool access.
   The dispatcher operates as a neutral broker and does not
   hard-block same-vendor calls; it removes the parent-only `CLAUDECODE` marker
@@ -230,9 +233,9 @@ CLI launches are not worth that diagnostic cost.
   These modes keep the same real project cwd; they do not create a sandbox,
   worktree, snapshot, or reduced review packet. For Claude, plan/review identities
   remain distinct in the receipt and both use `Read,Glob,Grep,Bash,PowerShell` plus
-  `--permission-mode dontAsk` by default, without native plan workflow. Skills and
-  plugins stay off unless `--host-skills` adds the `Skill` tool; `--no-host-shell`
-  removes Bash/PowerShell instead.
+  `--permission-mode dontAsk` and the `node` allow rule by default, without native
+  plan workflow. Skills and plugins stay off unless `--host-skills` adds the `Skill`
+  tool; `--no-host-shell` removes Bash/PowerShell and the rule instead.
 
   **How much a mode actually restricts depends on the vendor, and for Codex it
   restricts nothing.** Claude removes the built-in Write/Edit tools through its

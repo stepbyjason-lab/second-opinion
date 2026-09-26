@@ -23,7 +23,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor claude --operation text
 ```
 
 같은 실제 project cwd를 읽는 plan/review는 각각 `--mode plan|review`를 추가한다. 둘 다
-native plan workflow를 켜지 않고 `Read,Glob,Grep` + 읽기용 셸로 번역되며, receipt의
+native plan workflow를 켜지 않고 `Read,Glob,Grep` + 셸(git 조회·`node` 실행)로 번역되며, receipt의
 `requestedMode`·`effectiveMode`는 각각 plan/review로 보존된다. mode 생략은 아래 full-access
 default 호출이며 자동으로 plan/review가 되지 않는다. 즉 읽기 전용은 명시적
 `--mode plan|review`뿐이고, 권한을 좁히려면 반드시 mode를 명시해야 한다.
@@ -84,8 +84,8 @@ dispatcher 규율에서는 303.92초에 exit 0·실제 `claude-opus-4-8`·유효
 | 호출 | requested/effective | 권한 | cwd |
 |---|---|---|---|
 | mode 생략 | `default/default` | 모든 기본 도구 + 비대화형 실행 | caller가 준 실제 cwd |
-| `--mode plan` | `plan/plan` | `Read,Glob,Grep` + 셸(명령 규칙 없음) | 같은 실제 cwd |
-| `--mode review` | `review/review` | `Read,Glob,Grep` + 셸(명령 규칙 없음) | 같은 실제 cwd |
+| `--mode plan` | `plan/plan` | `Read,Glob,Grep` + 셸(허용 규칙은 `node` 하나) | 같은 실제 cwd |
+| `--mode review` | `review/review` | `Read,Glob,Grep` + 셸(허용 규칙은 `node` 하나) | 같은 실제 cwd |
 
 default Claude child는 `--safe-mode --disable-slash-commands
 --dangerously-skip-permissions --tools=default`인 **full-access 호출**이다. 기본 도구
@@ -97,7 +97,8 @@ default Claude child는 `--safe-mode --disable-slash-commands
 
 제한된 도구 구성은 명시적 `--mode plan|review`뿐이다. 두 mode는
 `--tools=Read,Glob,Grep,Bash,PowerShell`로 실제 project cwd를 탐색한다. native plan workflow와
-`--dangerously-skip-permissions`는 사용하지 않고 `--permission-mode dontAsk`를 붙인다.
+`--dangerously-skip-permissions`는 사용하지 않고 `--permission-mode dontAsk`와
+`--allowed-tools "Bash(node *)" "PowerShell(node *)"`를 붙인다.
 Write·Edit·Agent는 제공하지 않지만 셸은 파일을 쓸 수 있으므로 filesystem 읽기 전용은 아니다.
 
 ### 리뷰어의 git 조회 (R033-H16, 2026-09-06 실측)
@@ -112,13 +113,37 @@ Write·Edit·Agent는 제공하지 않지만 셸은 파일을 쓸 수 있으므�
 | `--permission-mode dontAsk` | 없으면 셸이 통째로 사라진다. 헤드리스에서 승인 주체가 없어서다 |
 | `--allowed-tools` 읽기용 git 규칙 | **안 묶는다.** 목록에 없는 `git remote -v`가 그대로 실행됐다 |
 
-⚠ **그래서 어느 목록도 싣지 않는다.** allow는 도구를 안 묶고, deny는 이름을 채워도 증명이 되지
+⚠ **그래서 셸을 묶는 목록은 싣지 않는다.** allow는 도구를 안 묶고, deny는 이름을 채워도 증명이 되지
 않는다 — `checkout`을 막으면 `restore`·`switch`가 남고, 그 뒤로 `branch -D`·`worktree`·
 `update-ref`·별칭·`git -C`가 계속 남는다. 매번 옳게 채워도 다음이 항상 기다리는 모양이라,
 목록을 들고 있는 것 자체가 없는 보증을 있는 것처럼 읽히게 한다. 셸이 도는 이상 리뷰어는 파일도
 쓴다. 실제로 붙잡는 것은 **brief의 금지 지시**이며, 이는 codex adapter가 이미 문서화한 것과 같은
 자세다. 엄격한 읽기 전용이 필요하면 `--no-host-shell`로 셸을 **없앤다** — `--tools=Read,Glob,Grep`
-으로 돌아간다.
+으로 돌아가고 아래 `node` 규칙도 함께 빠진다.
+
+### 리뷰어의 시험 실행 (R033-H22)
+
+셸이 열려 있어도 자식 정책은 `dontAsk`에서 `node`를 거부했다. 리뷰어가 판정하는 스위트를 스스로
+돌리지 못하고 호출자가 잰 값에 기대야 했다.
+
+| 관측 | 결과 |
+|---|---|
+| claude 2.1.25x, 2026-09-13 (`--mode review`) | `node --test`(파이프 있는 형태·없는 형태)·`node --version` 거부, `git diff`·`git rev-parse`는 실행 |
+| claude 2.1.283, 2026-09-26 (`--mode review --model sonnet --effort medium`) | `node --version`·`node --test t.test.mjs` 거부(「don't ask mode」), `Get-ChildItem -Name` 실행. 영수증 `permission_denials`에 두 node 명령 |
+
+그래서 **허용 규칙 하나** — `Bash(node *)`·`PowerShell(node *)` — 를 셸과 함께 싣는다. 이 규칙은
+**묶지 않고 연다.** 위 표의 「allow는 안 묶는다」는 그대로이며, 이 규칙은 자식이 거부하던 프로그램
+하나를 사전 승인하는 방향으로만 쓴다. 쓰기를 자동 승인하는 permission mode(`plan`·`acceptEdits`·
+`bypassPermissions`·`auto`)는 여전히 쓰지 않는다. `--allowed-tools`는 가변 인자라 argv 맨 끝에 둔다.
+
+⚠ `node`는 받은 스크립트를 무엇이든 실행하므로(`node -e`·시험 파일 자체) 셸이 이미 가진 쓰기 능력을
+넓힌다. 붙잡는 것은 여전히 brief의 금지 지시이고, `--no-host-shell`은 셸과 이 규칙을 함께 없앤다.
+mode 생략 호출은 원래 모든 도구를 가지므로 이 규칙을 받지 않는다.
+
+**규칙이 거부를 실제로 푼다**(2026-09-26 실측, claude 2.1.283, `--mode review`) — 같은 탐침에서 규칙
+없이는 `node --version`·`node --test`가 「don't ask mode」로 거부돼 `permission_denials` 2건이었고,
+규칙을 실은 판에서는 둘 다 실행되고(`node --test` 1 통과) `permission_denials` 0건이었다.
+`Get-ChildItem`은 두 판 모두 실행됐다.
 
 `--safe-mode`는 **`--host-skills`를 주지 않은 모든 호출**에 남는다. 이것은 **구성 격리**
 (대상 프로젝트의 CLAUDE.md·hook·plugin·MCP 비활성)이지 filesystem sandbox가 아니며,

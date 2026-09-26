@@ -14,7 +14,7 @@ description: >
 
 # second-opinion — 외부 AI 어댑터
 
-**버전 0.9.22** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). SuperGrok 구독 CLI `grok`과 Devin CLI `devin`. (정본 버전은 `plugin.json`.)
+**버전 0.9.23** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). SuperGrok 구독 CLI `grok`과 Devin CLI `devin`. (정본 버전은 `plugin.json`.)
 
 이 스킬은 **아무것도 차단하지 않는다** — 중개(relay)만 한다. 디스패처는 커맨드 정합성을 위한 도구일 뿐이다. "Claude가 디스패처를 반드시 거치게" 강제하는 것은 **부르는 쪽(caller)의 책임**이다 → [references/enforcement.md](references/enforcement.md).
 
@@ -44,13 +44,15 @@ plan/review 권한을 자동 적용하지 않는다. **`--mode`가 받는 값은
 | 호출 | 의미 | provider translation |
 |---|---|---|
 | mode 생략 | 기존 범용 호출 | AGY·Codex argv 불변; Claude는 모든 기본 도구; Devin은 `dangerous`로 승인 대기 없는 전권 실행 |
-| `--mode plan` | 같은 실제 project cwd를 전체 탐색하는 제한된 계획 | AGY native plan; Claude는 `Read,Glob,Grep` + git 셸; Grok plan; Devin은 PreToolUse로 쓰기 차단(명령 실행은 허용); Codex는 호출 전 실패 |
-| `--mode review` | 같은 실제 project cwd를 전체 탐색하는 리뷰 | AGY native plan; Claude review; Grok plan; Devin은 PreToolUse로 쓰기 차단(명령 실행은 허용); Codex native `exec review` — **권한 제한 없음(아래 주의)** |
+| `--mode plan` | 같은 실제 project cwd를 전체 탐색하는 제한된 계획 | AGY native plan; Claude는 `Read,Glob,Grep` + git 셸 + `node` 허용 규칙; Grok plan; Devin은 PreToolUse로 쓰기 차단(명령 실행은 허용); Codex는 호출 전 실패 |
+| `--mode review` | 같은 실제 project cwd를 전체 탐색하는 리뷰 | AGY native plan; Claude review(plan과 같은 `Read,Glob,Grep` + git 셸 + `node` 허용 규칙); Grok plan; Devin은 PreToolUse로 쓰기 차단(명령 실행은 허용); Codex native `exec review` — **권한 제한 없음(아래 주의)** |
 
 - 이번 mode는 text operation 전용이다.
 - Claude plan/review에는 `Bash,PowerShell`과 `--permission-mode dontAsk`가 있어 `git diff`와
-  변경 이력을 직접 읽는다. 명령 규칙 목록은 전달하지 않으므로 셸은 filesystem sandbox가 아니며,
-  엄격히 닫아야 할 때만 `--no-host-shell`을 쓴다. 스킬·플러그인은 기본 제외되고
+  변경 이력을 직접 읽고, 허용 규칙 `Bash(node *)`·`PowerShell(node *)` 하나가 있어 `node --test`를
+  직접 돌린다. 이 규칙은 자식이 거부하던 `node`를 여는 것이지 셸을 묶는 것이 아니므로 셸은
+  filesystem sandbox가 아니며(`node`는 스크립트를 무엇이든 실행한다), 엄격히 닫아야 할 때만
+  `--no-host-shell`을 쓴다 — 셸과 규칙이 함께 빠진다. 스킬·플러그인은 기본 제외되고
   `--host-skills`를 명시한 호출에서만 `Skill` 도구가 추가된다.
 - Grok·AGY의 explicit plan/review에는 git shell이 없다. linked worktree 리뷰는 호출자가
   **변경 파일 목록과 unified diff 전문, 인용할 정본 전문을 brief 본문에 인라인**하고,
@@ -392,7 +394,8 @@ raw `claude -p`를 직접 실행하지 않고 같은 디스패처를 쓴다. Cla
 **full-access**다 — 모든 기본 도구와 비대화형 실행을 갖고 caller가 준 실제 cwd에서 돈다.
 model·effort·out·err는 모두 명시해야 한다. `--mode plan|review`를
 명시하면 requested/effective identity를 plan 또는 review로 보존하고, native plan workflow를 켜지 않은 채
-`Read,Glob,Grep,Bash,PowerShell`과 `--permission-mode dontAsk`로 같은 project cwd를 읽는다.
+`Read,Glob,Grep,Bash,PowerShell`과 `--permission-mode dontAsk`로 같은 project cwd를 읽고,
+허용 규칙 `Bash(node *)`·`PowerShell(node *)`로 `node`를 돌린다.
 Write·Edit는 없지만 셸은 파일을 쓸 수 있으므로 filesystem sandbox나 엄격한 읽기 전용으로 계산하지 않는다.
 스킬·플러그인은 기본 제외되며 `--host-skills`를 명시해야 `Skill` 도구가 추가된다.
 
@@ -417,11 +420,14 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor claude --operation text
   기본 차단된다. 켜지 않으면 지금까지와 똑같이 `--safe-mode`가 그대로 남는다.
   OAuth와 명시한 model·effort는 어느 쪽이든 유지된다. 이것은 **구성 격리이지 filesystem
   sandbox가 아니며** default의 full-access와 공존한다.
-- 읽기 전용 mode의 claude 리뷰어에게 **git 이력을 읽을 셸**을 준다. ⚠ **명령 목록은 붙이지
-  않는다** — 허용 목록이 도구를 전혀 묶지 못하는 것을 실측했고, 금지 목록은 이름을 아무리 채워도
-  같은 효과를 내는 다른 이름·별칭·셸 래퍼가 남아 증명이 될 수 없다. 셸이 도는 이상 리뷰어는
-  파일도 쓴다. 리뷰어를 붙잡는 것은 brief의 금지 지시다. 엄격한 읽기 전용이 필요하면
-  `--no-host-shell`로 셸을 **닫는다** — 좁히는 것이 아니라 없앤다.
+- 읽기 전용 mode의 claude 리뷰어에게 **git 이력을 읽고 시험을 돌릴 셸**을 준다. ⚠ **셸을 묶는
+  목록은 붙이지 않는다** — 허용 목록이 도구를 전혀 묶지 못하는 것을 실측했고, 금지 목록은 이름을 아무리 채워도
+  같은 효과를 내는 다른 이름·별칭·셸 래퍼가 남아 증명이 될 수 없다. 싣는 규칙은 허용 규칙
+  `Bash(node *)`·`PowerShell(node *)` 하나뿐이며, 자식이 `dontAsk`에서 거부하던 `node`를 **연다**
+  (2026-09-13·2026-09-26 실측: `node --version`·`node --test` 거부). 셸이 도는 이상 리뷰어는
+  파일도 쓰고 `node`는 스크립트를 무엇이든 실행한다. 리뷰어를 붙잡는 것은 brief의 금지 지시다.
+  엄격한 읽기 전용이 필요하면 `--no-host-shell`로 셸을 **닫는다** — 좁히는 것이 아니라 없애며,
+  `node` 규칙도 함께 빠진다.
 - Claude Code 부모의 session marker인 `CLAUDECODE`는 child에 전달하지 않는다. 이는
   same-host 실행을 가능하게 하는 프로세스 격리이며 리뷰 독립성 판정이나 우회가 아니다.
 - exit 0이어도 result JSON이 비었거나 실제 모델명이 요청 별칭/정식명과 다르면 exit 4다.

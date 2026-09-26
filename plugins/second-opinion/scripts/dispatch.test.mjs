@@ -677,12 +677,12 @@ test("skill resolves the catalog path directly before declaring it missing", () 
   assert.match(skill, /검색 결과가 비었다는 이유만으로 설치 누락이나 카탈로그 오류라고 단정하지 않는다/);
 });
 
-test("0.9.22 public help and documentation describe cache-first ranked routing", () => {
+test("0.9.23 public help and documentation describe cache-first ranked routing", () => {
   const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
   const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
   const publicReadmeUrls = [new URL("../../../README.md", import.meta.url), new URL("../../../README.ko.md", import.meta.url)];
   const publicReadmes = publicReadmeUrls.filter((url) => existsSync(url)).map((url) => readFileSync(url, "utf8"));
-  assert.equal(plugin.version, "0.9.22");
+  assert.equal(plugin.version, "0.9.23");
   assert.ok(publicReadmes.length === 0 || publicReadmes.length === 2, "public snapshot must carry both README files");
   // Derived from plugin.json rather than written out again: the literal was a
   // third place a release had to edit, and a bump that missed it failed here
@@ -827,14 +827,14 @@ const MODE_FIXTURES = [
     inputs: [], cwd: root,
     effectiveMode: "plan",
     inputProfile: "none",
-    argv: ["-p", "--model", "opus", "--effort", "high", "--output-format", "json", "--no-session-persistence", "--safe-mode", "--disable-slash-commands", "--tools=Read,Glob,Grep,Bash,PowerShell", "--permission-mode", "dontAsk"],
+    argv: ["-p", "--model", "opus", "--effort", "high", "--output-format", "json", "--no-session-persistence", "--safe-mode", "--disable-slash-commands", "--tools=Read,Glob,Grep,Bash,PowerShell", "--permission-mode", "dontAsk", "--allowed-tools", "Bash(node *)", "PowerShell(node *)"],
   },
   {
     vendor: "claude", operation: "text", mode: "review", model: "opus", effort: "high",
     inputs: [], cwd: root,
     effectiveMode: "review",
     inputProfile: "none",
-    argv: ["-p", "--model", "opus", "--effort", "high", "--output-format", "json", "--no-session-persistence", "--safe-mode", "--disable-slash-commands", "--tools=Read,Glob,Grep,Bash,PowerShell", "--permission-mode", "dontAsk"],
+    argv: ["-p", "--model", "opus", "--effort", "high", "--output-format", "json", "--no-session-persistence", "--safe-mode", "--disable-slash-commands", "--tools=Read,Glob,Grep,Bash,PowerShell", "--permission-mode", "dontAsk", "--allowed-tools", "Bash(node *)", "PowerShell(node *)"],
   },
   {
     vendor: "codex", operation: "text", mode: "review", model: "gpt model \"quoted\"",
@@ -1062,10 +1062,10 @@ test("Devin config-hook unit: each configured name returns a block reason; remov
   }
 });
 
-test("the 0.9.22 plugin bundle carries every Devin runtime and adapter asset", () => {
+test("the 0.9.23 plugin bundle carries every Devin runtime and adapter asset", () => {
   const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
   const marketplace = JSON.parse(readFileSync(new URL("../../../.claude-plugin/marketplace.json", import.meta.url), "utf8"));
-  assert.equal(plugin.version, "0.9.22");
+  assert.equal(plugin.version, "0.9.23");
   assert.match(plugin.description, /Devin/);
   assert.match(marketplace.plugins.find(({ name }) => name === "second-opinion")?.description ?? "", /Grok, Devin/);
   for (const asset of [
@@ -1395,13 +1395,11 @@ test("explicit plan and review modes map to provider-native argv", () => {
       for (const forbidden of ["plan", "acceptEdits", "bypassPermissions", "auto"]) {
         assert.equal(fixture.argv.includes(forbidden), false, `${fixture.vendor}/${fixture.mode} must not use ${forbidden}`);
       }
-      // The shell is here for git history only. Write and subagent tools stay
-      // out of --tools, and every rule naming a shell must name a git
-      // subcommand, so a non-git command can never be added as pre-approved.
+      // The shell is here for git history and the suite. Write and subagent
+      // tools stay out of --tools, and the only pre-approved commands are node,
+      // so no other program can be added as pre-approved.
       assert.equal(fixture.argv.some((value) => /(?:Write|Edit|Agent)/.test(value)), false, `${fixture.vendor}/${fixture.mode} must not expose write or subagent tools`);
-      for (const rule of fixture.argv.filter((value) => /^(?:Bash|PowerShell)\(/.test(value))) {
-        assert.match(rule, /^(?:Bash|PowerShell)\(git [a-z-]+:\*\)$/, `${fixture.mode} shell rules name git subcommands only`);
-      }
+      assert.deepEqual(fixture.argv.filter((value) => /^(?:Bash|PowerShell)\(/.test(value)), ["Bash(node *)", "PowerShell(node *)"], `${fixture.mode} shell rules name node only`);
       assert.deepEqual(fixture.argv.filter((value) => value.startsWith("--tools=")), ["--tools=Read,Glob,Grep,Bash,PowerShell"], `${fixture.vendor}/${fixture.mode} closed tool allowlist`);
     }
   }
@@ -4926,7 +4924,7 @@ test("the isolation plan is the flags this dispatcher hands each vendor", () => 
   // claude with skills closed carries the one wholesale switch, and states the
   // document variable rather than trusting that switch to set it.
   assert.deepEqual(hostIsolationRecord({ ...claude, mode: "review" }), {
-    argv: ["--safe-mode", "--disable-slash-commands", "--tools=Read,Glob,Grep,Bash,PowerShell", "--permission-mode", "dontAsk"],
+    argv: ["--safe-mode", "--disable-slash-commands", "--tools=Read,Glob,Grep,Bash,PowerShell", "--permission-mode", "dontAsk", "--allowed-tools", "Bash(node *)", "PowerShell(node *)"],
     env: ["CLAUDE_CODE_DISABLE_CLAUDE_MDS=1"],
   });
   // Opening skills drops that switch, so everything it was doing is restated one
@@ -5084,32 +5082,84 @@ test("host isolation flags reject conflicting forms and vendors that expose no s
 // R033-H16 reopen. A reviewer that cannot read change history has to be fed the
 // diff in prose, so the shell is opened deliberately. What holds it is measured,
 // not assumed: the allow rules did NOT confine the tool — an unlisted
-// `git remote -v` ran anyway — so no command list is carried. The shell is
+// `git remote -v` ran anyway — so no confining list is carried. The shell is
 // either handed over or taken away, and the brief's prohibitions are the guard.
-test("the claude reviewer gets a shell for git history, and --no-host-shell takes it away", () => {
+// R033-H22. The child's own dontAsk policy refused `node --version` and
+// `node --test`, so the reviewer could not run the suite. One allow rule grants
+// node; it is the only rule, it rides only with the shell, and it is last in
+// the argv because --allowed-tools is variadic.
+test("the claude reviewer gets a shell for git history and node, and --no-host-shell takes both away", () => {
   const base = { vendor: "claude", operation: "text", mode: "review", model: "opus", effort: "high" };
+  for (const mode of ["plan", "review"]) {
+    for (const hostSkills of [undefined, "enabled"]) {
+      const open = buildVendorArgv({ ...base, mode, hostSkills });
+      const label = `${mode}${hostSkills ? " with skills" : ""}`;
+      assert.deepEqual(open.slice(open.indexOf("--allowed-tools")), ["--allowed-tools", "Bash(node *)", "PowerShell(node *)"], `${label}: node is the only pre-approved command and ends the argv`);
+      assert.equal(open.filter((value) => value === "--allowed-tools").length, 1, `${label}: one rule flag`);
+      assert.equal(open.some((value) => value.startsWith("--allowed-tools=") || value.startsWith("--allowedTools")), false, `${label}: no second spelling`);
+    }
+  }
   const open = buildVendorArgv(base);
   // Both names are listed because the registered one is platform dependent:
   // naming only Bash left a Windows child with no shell at all.
   assert.ok(open.includes("--tools=Read,Glob,Grep,Bash,PowerShell"));
   assert.ok(open.includes("--permission-mode"), "without a permission mode the headless child drops the shell");
-  // A per-command rule list is deliberately absent: it never confined the tool,
-  // and carrying one made it read as a guarantee that had to grow every pass.
-  assert.equal(open.some((value) => /^(Bash|PowerShell)\(/.test(value)), false, "no command rules are shipped");
-  assert.equal(open.includes("--allowed-tools"), false);
+  // A confining list is deliberately absent: it never confined the tool, and
+  // carrying one made it read as a guarantee that had to grow every pass.
   assert.equal(open.includes("--disallowed-tools"), false);
 
   const closed = buildVendorArgv({ ...base, hostShell: "closed" });
   assert.ok(closed.includes("--tools=Read,Glob,Grep"), "closing the shell restores the read-only set");
   assert.equal(closed.includes("--permission-mode"), false, "and takes the permission mode with it");
+  assert.equal(closed.includes("--allowed-tools"), false, "and the node rule with it");
+  assert.equal(closed.some((value) => /^(Bash|PowerShell)\(/.test(value)), false, "no shell rule without a shell");
+
+  // The default call has every tool already; it gets no rule and no permission mode.
+  const full = buildVendorArgv({ ...base, mode: undefined });
+  assert.equal(full.includes("--allowed-tools"), false, "the default call is unchanged");
 
   // The record carries the tool line either way, so a reader sees which one the
   // child got rather than being told whether a shell "was open".
   assert.ok(hostIsolationRecord(base).argv.includes("--tools=Read,Glob,Grep,Bash,PowerShell"));
   assert.ok(hostIsolationRecord({ ...base, hostShell: "closed" }).argv.includes("--tools=Read,Glob,Grep"));
+  // The rule is handed over, so the record carries it too.
+  assert.deepEqual(hostIsolationRecord(base).argv.slice(-3), ["--allowed-tools", "Bash(node *)", "PowerShell(node *)"]);
   // codex has no tool allowlist to narrow, so nothing about its tools is handed
   // over and nothing about them is recorded.
   assert.equal(hostIsolationRecord({ vendor: "codex", mode: "review" }).argv.some((t) => t.startsWith("--tools")), false);
+});
+
+// R033-H22. --help is the routing canon, so every surface must name the node
+// rule the argv actually carries, say it grants rather than confines, and say
+// --no-host-shell takes it away with the shell. None may still say that no rule
+// is shipped with the claude shell.
+test("claude help and public docs say plan/review pre-approve node and nothing confines the shell", () => {
+  const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
+  const argv = buildVendorArgv({ vendor: "claude", operation: "text", mode: "review", model: "opus", effort: "high" });
+  const rules = argv.slice(argv.indexOf("--allowed-tools") + 1);
+  assert.deepEqual(rules, ["Bash(node *)", "PowerShell(node *)"]);
+  const skill = read("../skills/second-opinion/SKILL.md");
+  const skillClaudeStart = skill.indexOf("### Claude 채널");
+  assert.notEqual(skillClaudeStart, -1, "SKILL has a Claude section");
+  const skillClaude = skill.slice(skillClaudeStart, skill.indexOf("\n### ", skillClaudeStart + 1));
+  const changelog = read("../../../CHANGELOG.md");
+  const release = changelog.match(/^## 0\.9\.23 — [^\n]*\n([\s\S]*?)(?=^## )/m)?.[1] ?? "";
+  const surfaces = [
+    ["help", usageText(), [/One allow rule rides with it, node\s+\(Bash\(node \*\), PowerShell\(node \*\)\)/, /that rule grants and\s+does not confine/, /--no-host-shell, which removes it and the rule/]],
+    ["SKILL mode table", skill, [/^\| `--mode plan` \|[^\n]*Claude는 `Read,Glob,Grep` \+ git 셸 \+ `node` 허용 규칙;/m, /^\| `--mode review` \|[^\n]*Claude review\(plan과 같은 `Read,Glob,Grep` \+ git 셸 \+ `node` 허용 규칙\);/m]],
+    ["SKILL caution", skill, [/허용 규칙 `Bash\(node \*\)`·`PowerShell\(node \*\)` 하나가 있어 `node --test`를/, /셸을 묶는 것이 아니므로/, /셸과 규칙이 함께 빠진다/]],
+    ["SKILL Claude section", skillClaude, [/허용 규칙 `Bash\(node \*\)`·`PowerShell\(node \*\)`로 `node`를 돌린다/, /싣는 규칙은 허용 규칙\s+`Bash\(node \*\)`·`PowerShell\(node \*\)` 하나뿐/, /`node` 규칙도 함께 빠진다/]],
+    ["adapter", read("../skills/second-opinion/references/adapter-claude.md"), [/`--allowed-tools "Bash\(node \*\)" "PowerShell\(node \*\)"`/, /\| `--mode plan` \| `plan\/plan` \| `Read,Glob,Grep` \+ 셸\(허용 규칙은 `node` 하나\)/, /\| `--mode review` \| `review\/review` \| `Read,Glob,Grep` \+ 셸\(허용 규칙은 `node` 하나\)/, /\*\*묶지 않고 연다\.\*\*/, /`--no-host-shell`은 셸과 이 규칙을 함께 없앤다/]],
+    ["README", read("../../../README.md"), [/one allow rule for `node` so the reviewer runs `node --test` itself; `--no-host-shell` removes both/, /that rule grants and does not confine/, /`--no-host-shell` removes the shell\s+and the rule/, /removes Bash\/PowerShell and the rule/]],
+    ["README.ko", read("../../../README.ko.md"), [/`node` 허용 규칙 하나가 있어 리뷰어가 `node --test`를 직접 돌리고, `--no-host-shell`로 둘 다 제거/, /여는 것이지 묶는 것이 아니다/, /`--no-host-shell`로 셸과 규칙을\s+함께 닫을 수 있다/, /Bash\/PowerShell과 그 규칙을 제거한다/]],
+    ["CHANGELOG 0.9.23", release, [/claude plan\/review 리뷰어가 \*\*`node`를 직접 돌린다\*\*/, /여는 것이지 셸을 묶는 것이 아니다/, /`--no-host-shell`은 셸과 이 규칙을 함께 없앤다/]],
+  ];
+  const stale = /[Nn]o command rule list is shipped|명령 규칙 목록은 (?:붙이지 않는다|전달하지 않으므로)|\*\*명령 목록은 붙이지|셸\(명령 규칙 없음\)|읽기용 셸로 번역/;
+  for (const [name, text, patterns] of surfaces) {
+    for (const rule of rules) assert.ok(text.includes(rule), `${name} names ${rule}`);
+    for (const pattern of patterns) assert.match(text, pattern, `${name} lacks ${pattern}`);
+    assert.doesNotMatch(text, stale, `${name} still says the claude shell carries no rule`);
+  }
 });
 
 test("--host-shell/--no-host-shell is accepted only for claude", () => {
