@@ -5,7 +5,7 @@
 Claude Code 안에서 **다른 벤더의 AI**(Codex/GPT, Antigravity/Gemini, Grok, Devin)를 일상어로 부려 쓰는
 어댑터 스킬 — 점검·리뷰·의견부터 작업 오프로드, 이미지 생성까지.
 
-**버전 0.9.21**
+**버전 0.9.22**
 
 > "이 설계 코덱스로 점검받고 싶어" / "안티그래비티한테 물어봐" / "그록으로 봐줘" / "데빈으로 봐줘" / "교차 검증해줘"
 > "코덱스한테 로고 시안 이미지 만들어달라고 해줘" / "클로드 사용량 아끼게 이 번역은 제미나이로"
@@ -95,8 +95,8 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
 | AGY 호출이 effort를 모델 slug 안에 넣음 | agy 1.1.26부터 effort가 별도 축(`--effort low|medium|high`)이다. 옛 `-high` 접미사는 단독으로는 아직 통하지만 `--effort`와 섞으면 **한쪽을 고르는 게 아니라 exit 1**이고, 접미사 없는 이름을 effort 없이 주면 그것도 거부된다. dispatcher는 두 표기를 그대로 전달해 벤더가 실제로 받은 것이 영수증에 남게 한다. 버전이 아예 없는 이름(`gemini`)만 최신 slug의 effort 꼬리 없는 형태로 바꾸며, 같은 규칙대로 `--effort`를 함께 준다 — 대신 채워 주지 않는다 |
 | 로컬을 안 건드렸는데 AGY 기본 모델이 바뀜 | 기본값이 설정 파일이 아니라 Antigravity 계정 쪽에 있다. 실측 — 아무것도 안 고쳤는데 `gemini-3.7-flash`에서 `gemini-3.8-flash-high`로 옮겨갔다. **재현이 필요한 호출은 `--model`을 박을 것** |
 | Grok 리뷰 예시가 reasoning effort를 빼면 벤더 기본값으로 조용히 실행됨 | 표준 리뷰 예시는 가성비 기준 `--effort medium`을 명시. dispatch가 그대로 전달하고 영수증의 `effortRequested`에 요청값을 남김 |
-| 리뷰어에게 exact current diff 확인이나 스위트 실행을 시킴 | Claude plan/review에는 `git diff`와 이력 조회용 Bash/PowerShell이 있고 `--no-host-shell`로 제거할 수 있다. Grok·AGY explicit mode에는 git shell이 없으므로 linked-worktree 리뷰는 **변경 파일 목록과 unified diff 전문**을 brief에 넣고, 스위트 결과는 **호출자가 직접 재서 값으로** 준다 |
-| Devin이 호출자 agent/editor 스킬과 MCP 설정을 가져옴 | 모든 Devin 호출에 `read_config_from` 여덟 축을 끈 bundled config를 전달. default는 전권, plan/review는 쓰기·명령 도구를 막는 PreToolUse hook을 더해 거절 이유를 자식이 관측한 뒤 계속 실행 |
+| 리뷰어에게 exact current diff 확인이나 스위트 실행을 시킴 | Claude plan/review에는 `git diff`와 이력 조회용 Bash/PowerShell이 있고 `--no-host-shell`로 제거할 수 있다. Devin plan/review는 `exec`를 열어 두어 같은 명령을 직접 돌린다. Grok·AGY explicit mode에는 git shell이 없으므로 linked-worktree 리뷰는 **변경 파일 목록과 unified diff 전문**을 brief에 넣고, 스위트 결과는 **호출자가 직접 재서 값으로** 준다 |
+| Devin이 호출자 agent/editor 스킬과 MCP 설정을 가져옴 | 모든 Devin 호출에 `read_config_from` 여덟 축을 끈 bundled config를 전달. default는 전권, plan/review는 쓰기 도구를 막는 PreToolUse hook을 더해 거절 이유를 자식이 관측한 뒤 계속 실행하되 `exec`는 열어 둠 — 셸이 도는 이상 셸로 파일을 쓸 수 있어 쓰기를 붙잡는 것은 brief의 금지 지시 |
 
 - **실행 영수증** — 벤더를 부른 뒤 관측한 것을 한 줄로 남긴다: 요청한 벤더·모델,
   알 수 있으면 실제 응답 backend, exit/timeout 상태, 거부된 대체가 있었으면 그 사실.
@@ -199,7 +199,10 @@ spawn한다. 반복 CLI 호출 비용이 진단 가치보다 크면 `max_retries
   `~/.codex/config.toml`에서 온다. Codex 리뷰에서 파일을 지키는 것은 brief의 금지 지시뿐이니
   `--mode review`를 안전장치로 계산하지 말 것. Grok plan/review는 Codex보다 강하다 —
   `--permission-mode plan`과 닫힌 `--tools` allowlist. 도구 이름이 전부 틀리면
-  fail-open이므로 `plan`이 바닥이다. `--mode`를 생략하면 기존 default 호출이며, Claude에서는 이것이 **full-access**
+  fail-open이므로 `plan`이 바닥이다. Devin plan/review는 Claude 옆에 선다 — bundled PreToolUse
+  hook이 쓰기 도구를 막고 이유를 자식에게 돌려주되 `exec`는 열어 두어 리뷰어가 git과 시험을
+  직접 돌린다. 셸이 도는 이상 셸로 파일을 쓸 수 있으므로 붙잡는 것은 brief의 금지 지시뿐이라는
+  자세는 Claude의 셸과 같다. `--mode`를 생략하면 기존 default 호출이며, Claude에서는 이것이 **full-access**
   호출이다 — 모든 기본 도구와 비대화형 실행을 caller가 준 실제 cwd에서 갖는다. 제한된 도구 구성은
   명시적 `--mode plan|review`에서만 생기며 Write·Edit는 없지만 git 셸은 기본으로 남으므로
   filesystem 읽기 전용은 아니다. 권한 분리는 오직 flag 조합으로만 이뤄진다.

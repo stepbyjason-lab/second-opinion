@@ -3,11 +3,11 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "^(write|edit|apply_patch|notebook_edit|exec|write_to_process)$",
+        "matcher": "^(write|edit|apply_patch|notebook_edit|write_to_process)$",
         "hooks": [
           {
             "type": "command",
-            "command": "node -e \"process.stdout.write(JSON.stringify({decision:'block',reason:'second-opinion read-only mode blocks writes and command execution'}))\""
+            "command": "node -e \"process.stdout.write(JSON.stringify({decision:'block',reason:'second-opinion read-only mode blocks writes'}))\""
           }
         ]
       }

@@ -37,9 +37,11 @@ Devin에는 effort 인자가 없다. **effort는 슬러그 끝으로 고른다**
 - dispatcher는 brief 본문을 argv나 stdin에 넣지 않고 `--prompt-file <절대경로>`로만 넘긴다.
 - `-p` 단발 비대화 실행이며 `--respect-workspace-trust false`로 headless trust prompt를 피한다.
 - mode 생략은 차단 hook 없는 config와 `--permission-mode dangerous`: 읽기·쓰기·명령을 승인 입력 없이 수행한다.
-- `--mode plan|review`는 write/edit/notebook_edit/exec/write_to_process를 막는 PreToolUse
-  hook이 든 read-only config와 `dangerous`를 함께 쓴다. hook의 block 이유가 자식에게 돌아가므로
-  세션은 계속된다. 두 mode의
+- `--mode plan|review`는 write/edit/notebook_edit/write_to_process를 막는 PreToolUse
+  hook이 든 read-only config와 `dangerous`를 함께 쓴다. `exec`는 열어 두어 리뷰어가
+  `git diff`·`git log`·시험을 직접 돌린다. 셸이 도는 이상 셸로 파일을 쓸 수 있으므로
+  쓰기를 붙잡는 것은 brief의 금지 지시뿐이다(claude 리뷰와 같은 자세). hook의 block 이유가
+  자식에게 돌아가므로 세션은 계속된다. 두 mode의
   권한 자세는 같고 receipt identity만 plan/review로 보존한다.
 - image-analyze/image-generate와 `--effort`는 spawn 전에 거부한다.
 
@@ -48,7 +50,8 @@ Devin에는 effort 인자가 없다. **effort는 슬러그 끝으로 고른다**
 dispatcher는 default에 `scripts/devin-isolated-config.json`, plan/review에
 `scripts/devin-readonly-config.json`을 `--config`로 넘긴다. 두 파일은
 `read_config_from`의 `agents_standard`, `cursor`, `windsurf`, `claude`, `copilot`, `opencode`, `vscode`,
-`zed`를 모두 `false`로 둔다. read-only 파일은 추가로 위 다섯 도구를 PreToolUse에서 block한다.
+`zed`를 모두 `false`로 둔다. read-only 파일은 추가로 위 네 도구를 PreToolUse에서 block하고
+`exec`는 열어 둔다.
 `apply_patch`도 예방적으로 matcher에 포함하지만, Devin CLI 3000.10.31에서는 미노출 도구이므로
 실제 호출·차단 성공으로 세지 않는다.
 두 설정에는 계정·조직 ID나 절대 홈 경로 같은 기계 고유값을 넣지 않으며, `shell.setup_complete`만으로
@@ -64,7 +67,7 @@ portable 영수증은 그 경로를
 
 검증 범위: 로컬 단위 테스트는 설정의 matcher와 hook 명령이 반환하는 block 결정·이유를 확인한다.
 Devin의 실제 도구 호출이나 거절 뒤 실행 계속 여부를 대신 증명하지 않는다. 3000.10.31 실호출에서는
-plan/review 각각 위 다섯 도구의 차단 이유와 이후 읽기 단계 진행을 확인했다.
+plan/review 각각 쓰기 도구의 차단 이유와 이후 읽기 단계 진행을 확인했다.
 
 ## 영수증
 

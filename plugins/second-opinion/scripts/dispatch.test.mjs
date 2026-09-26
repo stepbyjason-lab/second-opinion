@@ -677,12 +677,12 @@ test("skill resolves the catalog path directly before declaring it missing", () 
   assert.match(skill, /검색 결과가 비었다는 이유만으로 설치 누락이나 카탈로그 오류라고 단정하지 않는다/);
 });
 
-test("0.9.21 public help and documentation describe cache-first ranked routing", () => {
+test("0.9.22 public help and documentation describe cache-first ranked routing", () => {
   const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
   const skill = readFileSync(new URL("../skills/second-opinion/SKILL.md", import.meta.url), "utf8");
   const publicReadmeUrls = [new URL("../../../README.md", import.meta.url), new URL("../../../README.ko.md", import.meta.url)];
   const publicReadmes = publicReadmeUrls.filter((url) => existsSync(url)).map((url) => readFileSync(url, "utf8"));
-  assert.equal(plugin.version, "0.9.21");
+  assert.equal(plugin.version, "0.9.22");
   assert.ok(publicReadmes.length === 0 || publicReadmes.length === 2, "public snapshot must carry both README files");
   // Derived from plugin.json rather than written out again: the literal was a
   // third place a release had to edit, and a bump that missed it failed here
@@ -989,14 +989,14 @@ test("devin uses prompt-file only, maps permissions by mode, and records transcr
   assert.equal(defaultConfig.shell.setup_complete, true, "first call uses an initialized config location");
   assert.equal(readonlyConfig.shell.setup_complete, true, "read-only first call uses an initialized config location");
   const hook = readonlyConfig.hooks.PreToolUse[0];
-  assert.equal(hook.matcher, "^(write|edit|apply_patch|notebook_edit|exec|write_to_process)$");
+  assert.equal(hook.matcher, "^(write|edit|apply_patch|notebook_edit|write_to_process)$");
   const script = hook.hooks[0].command.match(/^node -e "(.*)"$/)?.[1];
   assert.ok(script, "read-only hook is an executable Node command");
   const hookResult = spawnSync(process.execPath, ["-e", script], { encoding: "utf8", shell: false, windowsHide: true });
   assert.equal(hookResult.status, 0, hookResult.stderr);
   assert.deepEqual(JSON.parse(hookResult.stdout), {
     decision: "block",
-    reason: "second-opinion read-only mode blocks writes and command execution",
+    reason: "second-opinion read-only mode blocks writes",
   });
 });
 
@@ -1043,29 +1043,29 @@ function exerciseDevinHook(config, tool) {
 
 function assertDevinHookDecision(row) {
   assert.equal(row.blocked, true, `${row.tool} hook must return a block decision`);
-  assert.match(row.reason, /read-only mode blocks writes and command execution/);
+  assert.match(row.reason, /read-only mode blocks writes/);
 }
 
 test("Devin config-hook unit: each configured name returns a block reason; removing its matcher fails the check", () => {
   const readonlyConfig = JSON.parse(readFileSync(DEVIN_READONLY_CONFIG, "utf8"));
   // apply_patch is a defensive matcher, not an exposed tool in Devin 3000.10.31.
   // Mode-to-config mapping is tested separately; both modes share this hook.
-  const tools = ["write", "edit", "apply_patch", "notebook_edit", "exec", "write_to_process"];
+  const tools = ["write", "edit", "apply_patch", "notebook_edit", "write_to_process"];
   for (const tool of tools) {
     assertDevinHookDecision(exerciseDevinHook(readonlyConfig, tool));
     const mutated = JSON.parse(JSON.stringify(readonlyConfig));
     mutated.hooks.PreToolUse[0].matcher = `^(${tools.filter((candidate) => candidate !== tool).join("|")})$`;
     assert.throws(() => assertDevinHookDecision(exerciseDevinHook(mutated, tool)), `${tool} matcher removal must fail the hook check`);
   }
-  for (const tool of ["read", "glob", "grep"]) {
+  for (const tool of ["read", "glob", "grep", "exec"]) {
     assert.equal(exerciseDevinHook(readonlyConfig, tool).blocked, false, `${tool} must remain available`);
   }
 });
 
-test("the 0.9.21 plugin bundle carries every Devin runtime and adapter asset", () => {
+test("the 0.9.22 plugin bundle carries every Devin runtime and adapter asset", () => {
   const plugin = JSON.parse(readFileSync(new URL("../.claude-plugin/plugin.json", import.meta.url), "utf8"));
   const marketplace = JSON.parse(readFileSync(new URL("../../../.claude-plugin/marketplace.json", import.meta.url), "utf8"));
-  assert.equal(plugin.version, "0.9.21");
+  assert.equal(plugin.version, "0.9.22");
   assert.match(plugin.description, /Devin/);
   assert.match(marketplace.plugins.find(({ name }) => name === "second-opinion")?.description ?? "", /Grok, Devin/);
   for (const asset of [
@@ -1102,6 +1102,38 @@ test("Devin docs distinguish unexposed apply_patch from verified runtime blockin
   }
   const adapter = readFileSync(new URL("../skills/second-opinion/references/adapter-devin.md", import.meta.url), "utf8");
   assert.match(adapter, /단위 테스트[\s\S]{0,160}대신 증명하지 않는다/);
+});
+
+// R033-H21. Plan/review leave exec open so the reviewer runs git and the suite
+// itself, while the write tools stay blocked. --help is the routing canon, so
+// every surface must say exec is open, that a running shell can still write so
+// the brief's prohibitions are the guard, and none may still say exec is blocked.
+test("Devin help and public docs say plan/review leave exec open and a shell can still write", () => {
+  const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
+  const skill = read("../skills/second-opinion/SKILL.md");
+  const skillDevinStart = skill.indexOf("### Devin CLI");
+  const skillDevin = skill.slice(skillDevinStart, skill.indexOf("\n## ", skillDevinStart));
+  const changelog = read("../../../CHANGELOG.md");
+  const surfaces = [
+    ["help", usageText(), [/write tools[\s\S]{0,80}exec stays open/, /A running shell can still write, so the brief's prohibitions stay the guard/]],
+    ["SKILL mode table", skill, [/Devin은 PreToolUse로 쓰기 차단\(명령 실행은 허용\)[^\n]*\n[^\n]*Devin은 PreToolUse로 쓰기 차단\(명령 실행은 허용\)/]],
+    ["SKILL caution", skill, [/Devin plan\/review는[\s\S]{0,160}`exec`는 열어 두어[\s\S]{0,120}셸로 파일을 쓸 수 있으므로 쓰기를 붙잡는 것은 brief의 금지 지시뿐/]],
+    ["SKILL Devin section", skillDevin, [/`exec`는 열어 두어[\s\S]{0,80}셸은 파일도 쓸 수 있어\s+쓰기를 붙잡는 것은 brief의 금지 지시/]],
+    ["adapter", read("../skills/second-opinion/references/adapter-devin.md"), [/`exec`는 열어 두어 리뷰어가/, /셸로 파일을 쓸 수 있으므로\s+쓰기를 붙잡는 것은 brief의 금지 지시뿐/, /`exec`는 열어 둔다/]],
+    ["README", read("../../../README.md"), [/Devin plan\/review leaves `exec` open/, /`exec` stays open, so a running shell can still write and the brief's prohibitions are the guard/, /`exec` stays open so the reviewer\s+can run git and the suite — a running shell can still write, so the brief's\s+prohibitions are the guard/]],
+    ["README.ko", read("../../../README.ko.md"), [/Devin plan\/review는 `exec`를 열어 두어/, /`exec`는 열어 둠 — 셸이 도는 이상 셸로 파일을 쓸 수 있어 쓰기를 붙잡는 것은 brief의 금지 지시/, /`exec`는 열어 두어 리뷰어가 git과 시험을\s+직접 돌린다\. 셸이 도는 이상 셸로 파일을 쓸 수 있으므로 붙잡는 것은 brief의 금지 지시뿐/]],
+    // No stale check: an earlier release entry still records the old posture.
+    ["CHANGELOG", changelog, [/Devin plan\/review에서 명령 실행\(`exec`\)을 연다/, /셸로 파일을 쓸 수 있으므로, 쓰기를 붙잡는 것은\s+brief의 금지 지시뿐/]],
+  ];
+  const stale = /write\/edit\/exec|notebook_edit\/exec|쓰기·명령 (?:차단|도구)|blocks writes and command execution|위 다섯 도구/;
+  for (const [name, text, patterns] of surfaces) {
+    for (const pattern of patterns) assert.match(text, pattern, `${name} lacks ${pattern}`);
+    if (name !== "CHANGELOG") assert.doesNotMatch(text, stale, `${name} still says exec is blocked`);
+  }
+  // 0.9.21 shipped with exec blocked, so the entry must stay above that release.
+  const entry = changelog.search(/Devin plan\/review에서 명령 실행\(`exec`\)을 연다/);
+  const release = changelog.search(/^## 0\.9\.21 — /m);
+  assert.ok(entry !== -1 && release !== -1 && entry < release, "the exec entry must sit outside the 0.9.21 release");
 });
 
 test("Devin help, comments, and public docs distinguish raw config paths from portable labels", () => {

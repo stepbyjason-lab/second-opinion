@@ -2,7 +2,7 @@
 
 **English** | [한국어](./README.ko.md)
 
-![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.21-informational)
+![License: MIT](https://img.shields.io/badge/license-MIT-green) ![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-blue) ![Version](https://img.shields.io/badge/version-0.9.22-informational)
 
 **Use other AI vendors from inside Claude Code — in plain language.**
 Second opinions, task offloading, and vendor capabilities like image generation.
@@ -121,8 +121,8 @@ CLI launches are not worth that diagnostic cost.
 | An AGY call sets reasoning effort inside the model slug | agy 1.1.26 split effort onto its own `--effort low|medium|high`; the old `-high` suffix still resolves alone, but pairing it with `--effort` exits 1 instead of choosing, and a bare model name without `--effort` is rejected — the dispatcher forwards both spellings untouched so the receipt shows what the vendor actually received. Only a name with no version at all (`gemini`) is rewritten, to the newest slug without an effort tail, and it takes `--effort` the same way; none is filled in for you |
 | AGY's default model moves without any local change | it lives on the Antigravity account, not in a config file; measured moving from `gemini-3.7-flash` to `gemini-3.8-flash-high` with nothing edited locally, so pin `--model` on any call whose result must be reproducible |
 | Grok review examples that omit reasoning effort silently use the vendor default | the standard review example explicitly uses `--effort medium` for cost/quality balance; dispatch forwards it unchanged and the receipt retains `effortRequested` |
-| A review must inspect the exact current diff, or run the suite, to judge | Claude plan/review includes Bash/PowerShell for `git diff` and history; `--no-host-shell` removes it. Grok/AGY explicit modes still have no git shell, so linked-worktree reviews must put the changed-file list and full unified diff in the brief and state any suite result the caller measured |
-| Devin can import the caller's agent/editor skills and MCP configuration | every Devin call receives a bundled config with all eight `read_config_from` sources disabled; default is unrestricted, while plan/review add a PreToolUse hook that blocks write/edit/exec tools and returns the reason to the child so execution continues |
+| A review must inspect the exact current diff, or run the suite, to judge | Claude plan/review includes Bash/PowerShell for `git diff` and history; `--no-host-shell` removes it. Devin plan/review leaves `exec` open for the same commands. Grok/AGY explicit modes still have no git shell, so linked-worktree reviews must put the changed-file list and full unified diff in the brief and state any suite result the caller measured |
+| Devin can import the caller's agent/editor skills and MCP configuration | every Devin call receives a bundled config with all eight `read_config_from` sources disabled; default is unrestricted, while plan/review add a PreToolUse hook that blocks the write tools and returns the reason to the child so execution continues — `exec` stays open, so a running shell can still write and the brief's prohibitions are the guard |
 
 - **Execution receipts** — after every vendor call the skill states what was
   actually observed: the vendor and model requested, the real backend if known,
@@ -248,6 +248,10 @@ CLI launches are not worth that diagnostic cost.
   `--mode review` as a safety mechanism there.
   Grok plan/review is stronger than Codex: `--permission-mode plan` plus a closed
   `--tools` allowlist. Unknown tool names fail-open, so `plan` is the floor.
+  Devin plan/review sits beside Claude: a bundled PreToolUse hook blocks the write
+  tools and returns the reason to the child, but `exec` stays open so the reviewer
+  can run git and the suite — a running shell can still write, so the brief's
+  prohibitions are the guard, the same posture as Claude's shell.
   Omitting `--mode` preserves the existing default call, which for Claude is the
   **full-access** one: all built-in tools plus non-interactive execution, in the
   caller's real cwd. The restricted tool set comes only from explicit

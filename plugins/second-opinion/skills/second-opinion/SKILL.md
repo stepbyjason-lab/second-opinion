@@ -14,7 +14,7 @@ description: >
 
 # second-opinion — 외부 AI 어댑터
 
-**버전 0.9.21** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). SuperGrok 구독 CLI `grok`과 Devin CLI `devin`. (정본 버전은 `plugin.json`.)
+**버전 0.9.22** — 소비자 호환 기준. 능력: 의견·오프로드·이미지 생성·멀티모달 입력·실행 영수증·기계적 라우팅(디스패처). SuperGrok 구독 CLI `grok`과 Devin CLI `devin`. (정본 버전은 `plugin.json`.)
 
 이 스킬은 **아무것도 차단하지 않는다** — 중개(relay)만 한다. 디스패처는 커맨드 정합성을 위한 도구일 뿐이다. "Claude가 디스패처를 반드시 거치게" 강제하는 것은 **부르는 쪽(caller)의 책임**이다 → [references/enforcement.md](references/enforcement.md).
 
@@ -44,8 +44,8 @@ plan/review 권한을 자동 적용하지 않는다. **`--mode`가 받는 값은
 | 호출 | 의미 | provider translation |
 |---|---|---|
 | mode 생략 | 기존 범용 호출 | AGY·Codex argv 불변; Claude는 모든 기본 도구; Devin은 `dangerous`로 승인 대기 없는 전권 실행 |
-| `--mode plan` | 같은 실제 project cwd를 전체 탐색하는 제한된 계획 | AGY native plan; Claude는 `Read,Glob,Grep` + git 셸; Grok plan; Devin은 PreToolUse로 쓰기·명령 차단; Codex는 호출 전 실패 |
-| `--mode review` | 같은 실제 project cwd를 전체 탐색하는 리뷰 | AGY native plan; Claude review; Grok plan; Devin은 PreToolUse로 쓰기·명령 차단; Codex native `exec review` — **권한 제한 없음(아래 주의)** |
+| `--mode plan` | 같은 실제 project cwd를 전체 탐색하는 제한된 계획 | AGY native plan; Claude는 `Read,Glob,Grep` + git 셸; Grok plan; Devin은 PreToolUse로 쓰기 차단(명령 실행은 허용); Codex는 호출 전 실패 |
+| `--mode review` | 같은 실제 project cwd를 전체 탐색하는 리뷰 | AGY native plan; Claude review; Grok plan; Devin은 PreToolUse로 쓰기 차단(명령 실행은 허용); Codex native `exec review` — **권한 제한 없음(아래 주의)** |
 
 - 이번 mode는 text operation 전용이다.
 - Claude plan/review에는 `Bash,PowerShell`과 `--permission-mode dontAsk`가 있어 `git diff`와
@@ -56,13 +56,15 @@ plan/review 권한을 자동 적용하지 않는다. **`--mode`가 받는 값은
   **변경 파일 목록과 unified diff 전문, 인용할 정본 전문을 brief 본문에 인라인**하고,
   **스위트 결과를 직접 재서 값으로 준다.** 경로만 주면 리뷰어는 그 자리를 안 읽고,
   그 실패는 산출물에 드러나지 않는다 — 「안 봤다」가 아니라 「지적할 것이 없다」로 돌아온다.
-- Devin plan/review는 read-only config의 PreToolUse hook이 write/edit/notebook_edit/exec/
-  write_to_process를 막고 이유를 자식에게 돌려준다. 호출은 `dangerous`로 비대화형을 유지하므로 거절 뒤에도
+- Devin plan/review는 read-only config의 PreToolUse hook이 write/edit/notebook_edit/
+  write_to_process를 막고 이유를 자식에게 돌려준다. `exec`는 열어 두어 리뷰어가 `git diff`·`git log`·시험을
+  직접 돌린다 — 셸이 도는 이상 셸로 파일을 쓸 수 있으므로 쓰기를 붙잡는 것은 brief의 금지 지시뿐이다
+  (claude 리뷰와 같은 자세). 호출은 `dangerous`로 비대화형을 유지하므로 거절 뒤에도
   세션이 계속된다. `apply_patch`는 예방적 matcher에만 포함되며 Devin CLI 3000.10.31에서는
   미노출 도구라 실제 차단 성공으로 세지 않는다. mode 생략은 차단 hook 없는 config와 `dangerous`라 승인을 기다리지 않는다.
 - **제한된 도구 구성은 명시적 plan/review뿐이다.** mode 생략은 좁은 호출이 아니라 범용
   full-access 호출이며, Write·Edit를 빼려면 mode를 명시해야 한다. Claude에는 git 셸이 기본으로
-  남으므로 filesystem 읽기 전용이나 sandbox로 계산하지 않는다.
+  남으므로 filesystem 읽기 전용이나 sandbox로 계산하지 않는다(Devin plan/review도 `exec`가 남아 같다).
 - ⚠ **`--mode review`의 강도는 벤더마다 다르다 — Codex에서는 권한을 제한하지 않는다.**
   Claude는 `--tools` allowlist에서 **내장 Write·Edit를 빼되 셸은 기본으로 남기고**, AGY는
   native plan + 입력 프로필로 쓰기 경로를 없앤다. 반면 **Codex CLI에는 그런 층이 없다** — 권한을 좁히는 수단이 샌드박스
@@ -463,9 +465,10 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch.mjs" --vendor devin --operation text 
   --out devin-result.txt --err devin-stderr.txt
 ```
 
-읽기 전용 계획·리뷰는 `--mode plan|review`를 붙인다. 두 mode는 쓰기·명령 도구를 PreToolUse에서 막는
-같은 read-only config를 쓰고, mode 생략은 차단 hook 없는 config의 전권 자세다. 세 호출 모두 비대화형
-`dangerous`를 써 승인 입력을 기다리지 않는다.
+읽기 전용 계획·리뷰는 `--mode plan|review`를 붙인다. 두 mode는 쓰기 도구를 PreToolUse에서 막는
+같은 read-only config를 쓰되 `exec`는 열어 두어 리뷰어가 git·시험을 직접 돌린다(셸은 파일도 쓸 수 있어
+쓰기를 붙잡는 것은 brief의 금지 지시다 — claude 리뷰와 같은 자세). mode 생략은 차단 hook 없는
+config의 전권 자세다. 세 호출 모두 비대화형 `dangerous`를 써 승인 입력을 기다리지 않는다.
 
 - brief는 `--prompt-file` 경로로만 전달하며 stdin과 argv 본문에는 싣지 않는다.
 - dispatcher는 `read_config_from`의 agent/editor 여덟 축을 모두 끈 bundled config를 `--config`로

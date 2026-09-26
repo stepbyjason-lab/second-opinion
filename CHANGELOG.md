@@ -4,6 +4,14 @@
 > add `Planned release version: <plugin.json version>` under `## Unreleased`.
 > Replace it with the matching release heading when releasing.
 
+## 0.9.22 — 2026-09-26
+
+- Devin plan/review에서 명령 실행(`exec`)을 연다 — 리뷰어가 `git diff`·`git log`·시험을 직접 돌린다.
+  `write`·`edit`·`apply_patch`·`notebook_edit`·`write_to_process`는 계속 PreToolUse에서 막고 거절 이유가
+  자식에게 돌아가 세션이 계속된다. 셸이 도는 이상 리뷰어는 셸로 파일을 쓸 수 있으므로, 쓰기를 붙잡는 것은
+  brief의 금지 지시뿐이라는 한계를 claude 리뷰와 같은 뜻으로 `--help`·SKILL.md·adapter-devin.md·README
+  2종에 공시한다.
+
 ## 0.9.21 — 2026-09-24
 
 - **버전 없는 모델 이름은 그 계열의 최신 버전으로 나간다.** codex·claude·agy·grok에 `sol`·`luna`·
